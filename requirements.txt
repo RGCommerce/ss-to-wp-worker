@@ -1,0 +1,11 @@
+# ss-to-wp-worker — Railway service dependencies
+# Saskaņots ar sslv-ai-runner-railway/crm (kopīga koda atkarības)
+
+# HTTP framework
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+
+# Datu un API klienti (tāpat kā crm/)
+psycopg[binary]==3.2.3
+requests==2.32.3
+python-dotenv==1.0.1

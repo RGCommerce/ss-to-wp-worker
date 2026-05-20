@@ -1,0 +1,17 @@
+# Railway service config — ss-to-wp-worker
+# Pievienot manuāli Railway dashboard-ā:
+#  - Service name: ss-to-wp-worker
+#  - Project: brave-harmony
+#  - Source: RGCommerce/ss-to-wp-worker (atsevišķs repo, NE inbox-to-listings)
+#  - Volume: pievienot existing volume "inbox-to-listings-volume" → mount /storage
+#  - Env vars: kopēt no sslv-ai-runner-railway/crm/.env (sk. .env.example)
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
