@@ -3,12 +3,13 @@
 # `import weasyprint` krīt ar OSError. Pievienojam tās build setup fāzē.
 # fonts-dejavu — fallback fonti, lai PDF teksts vienmēr renderējas.
 
+# Ubuntu 24.04 (noble) pakotņu nosaukumi. libjpeg NEvajag — WeasyPrint
+# bildes apstrādā ar Pillow (pip wheel ar iebūvētu JPEG).
 [phases.setup]
 aptPkgs = [
   "libpango-1.0-0",
   "libpangoft2-1.0-0",
   "libharfbuzz0b",
-  "libjpeg62-turbo",
   "libffi-dev",
   "fonts-dejavu",
 ]
