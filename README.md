@@ -39,6 +39,7 @@ Volume: inbox-to-listings-volume mounted → /storage
 | POST | `/publish/{listing_id}` | `X-RGC-Token` | Pilns pipeline (image_pipeline + classify + publish) |
 | POST | `/classify/{listing_id}` | `X-RGC-Token` | Tikai klasificē (lēts pretests) |
 | POST | `/enhance-openai/{listing_id}` | `X-RGC-Token` | Selektīvi OpenAI gpt-image-1 sliktajām bildēm |
+| POST | `/pdf/{listing_id}` | `X-RGC-Token` | RGC sludinājuma PDF brošūra (atgriež `application/pdf`) |
 
 Body params (visi POST, visi opcionāli):
 - `force: bool` — pārpublicē/pārapstrādā

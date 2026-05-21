@@ -9,3 +9,7 @@ uvicorn[standard]==0.32.0
 psycopg[binary]==3.2.3
 requests==2.32.3
 python-dotenv==1.0.1
+
+# PDF brošūru ģenerēšana (pdf_maker.py — HTML+CSS → PDF)
+# Railway vajag system libs (pango utt.) — sk. nixpacks.toml
+weasyprint==63.1

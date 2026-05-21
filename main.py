@@ -36,7 +36,7 @@ from typing import Annotated, Optional
 
 import psycopg
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from psycopg.rows import dict_row
 from pydantic import BaseModel
 
@@ -44,6 +44,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent))
 import image_classify  # noqa: E402
 import image_enhance_openai  # noqa: E402
+import pdf_maker  # noqa: E402
 import publish_to_wp  # noqa: E402
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -175,3 +176,21 @@ def _enhance_inner(listing_id: int, images: Optional[list[str]],
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         return image_enhance_openai.enhance_listing(
             conn, listing_id, images, quality, force, dry_run=False)
+
+
+@app.post("/pdf/{listing_id}", dependencies=[Depends(require_token)])
+def pdf(listing_id: int):
+    """Ģenerē RGC sludinājuma PDF brošūru (1 īpašums). Atgriež PDF failu
+    (application/pdf). Broker Panel poga "Izveidot PDF" izsauks šo."""
+    try:
+        pdf_bytes = pdf_maker.render_pdf(listing_id)
+    except SystemExit as e:
+        raise HTTPException(500, f"PDF kļūda: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"PDF kļūda: {type(e).__name__}: {e}")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="listing_{listing_id}.pdf"'},
+    )
