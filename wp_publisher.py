@@ -223,10 +223,19 @@ class WPPublisher:
         taxonomy: str,
         name: str,
         parent_name: Optional[str] = None,
+        icon_type: Optional[str] = None,
+        icon_image_id: Optional[int] = None,
     ) -> dict:
+        """Lookup-or-create taksonomijas term. icon_type + icon_image_id
+        (opcionāli) — plugin tos iestata TIKAI jaunizveidotam term-am
+        (property_feature ikona); esošam term-am icon netiek aiztikts."""
         body: dict[str, Any] = {"taxonomy": taxonomy, "name": name}
         if parent_name:
             body["parent_name"] = parent_name
+        if icon_type:
+            body["icon_type"] = icon_type
+        if icon_image_id:
+            body["icon_image_id"] = int(icon_image_id)
         return self._request("POST", "/term", json_body=body)
 
 

@@ -115,12 +115,25 @@ FEATURE_CHECK_FIELDS: dict[str, str] = {
 }
 
 
+# Jaunizveidoto property_feature term-u ikona (Raimonds 2026-05-21):
+# RGC logo SVG. attachment ID 7647 = istais-logo.svg — tas pats, ko Raimonds
+# manuāli uzlika ESOŠAJIEM features. Plugin to iestata TIKAI pie CREATE;
+# esošie termi paliek neskarti.
+FEATURE_ICON_TYPE = "custom"
+FEATURE_ICON_IMAGE_ID = 7647
+
+
 def resolve_feature_terms(publisher, raw: dict) -> list[int]:
-    """DB feature lauki → Houzez property_feature term_id saraksts (ensure_term)."""
+    """DB feature lauki → Houzez property_feature term_id saraksts (ensure_term).
+    Jaunizveidotiem term-iem automātiski tiek uzlikta RGC logo ikona."""
     ids: list[int] = []
 
     def _ensure(name: str):
-        term = publisher.ensure_term("property_feature", name)
+        term = publisher.ensure_term(
+            "property_feature", name,
+            icon_type=FEATURE_ICON_TYPE,
+            icon_image_id=FEATURE_ICON_IMAGE_ID,
+        )
         tid = term.get("term_id")
         if tid:
             ids.append(int(tid))
