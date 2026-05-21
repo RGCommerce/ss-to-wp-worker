@@ -200,14 +200,21 @@ def _meta(listing: dict, bp: dict) -> dict:
             sec_price = str(round(float(price_n) / float(area_n), 2))
     except (ValueError, ZeroDivisionError):
         sec_price = ""
+    land_n = _numeric(g("Zemes_gabals_m2"))
     m = {
         "fave_property_price":        price_n or "",
         "fave_property_price_postfix": "" if is_sale else "Mēnesī",
         "fave_property_sec_price":    sec_price,                 # m² cena
         "fave_property_size":         area_n or "",
         "fave_property_size_prefix":  "m²",
-        "fave_property_rooms":        _numeric(g("Cik_telpas")) or "",
+        # Raimonda LV Houzez setup: "Telpas" lauks = fave_property_bedrooms
+        # (NE fave_property_rooms — tas Tavā setup-ā ir "Virtuves"!).
+        # Telpu skaitu (Cik_telpas) liekam fave_property_bedrooms.
+        "fave_property_bedrooms":     _numeric(g("Cik_telpas")) or "",
         "fave_property_bathrooms":    _numeric(g("cik_WC")) or "",
+        # Zemes platība — tikai ja DB Zemes_gabals_m2 nav NULL
+        "fave_property_land":         land_n or "",
+        "fave_property_land_postfix": "m²" if land_n else "",
         "fave_property_address":      _title(listing, bp),
         "fave_property_map_address":  _title(listing, bp),
         "fave_property_city":         g("city") or "",

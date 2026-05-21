@@ -320,6 +320,11 @@ def render_body(space_group: str, raw: dict) -> str:
         else:
             eka.append("Ir pieejama autostāvvieta")
 
+    # Zemes platība — tikai ja DB Zemes_gabals_m2 nav NULL (Raimonds 2026-05-21)
+    land = _num(raw.get("Zemes_gabals_m2"))
+    if land:
+        eka.append(f"Zemes platība ir {_money(land)} m²")
+
     sec = _section("Par ēku:", eka)
     if sec:
         blocks.append(sec)
