@@ -234,7 +234,12 @@ def _meta(listing: dict, bp: dict) -> dict:
         "rgc_sync_source":            listing.get("source") or "ss_lv_auto",
     }
     # Skaitliskos tukšos NEsūta (Houzez intval uz '' arī OK, bet drošāk izlaist)
-    return {k: v for k, v in m.items() if v not in (None, "")}
+    out = {k: v for k, v in m.items() if v not in (None, "")}
+    # "Virtuves" (fave_property_rooms) — VIENMĒR tīrām uz tukšu: auto-publish
+    # nav virtuvju skaita datu, un iepriekš kļūdaini te nokļuva telpu skaits.
+    # Sūtam EXPLICIT "" (citādi vecā vērtība paliek, kā Yoast noindex gadījumā).
+    out["fave_property_rooms"] = ""
+    return out
 
 
 def publish(listing_id: int, dry_run: bool = False, force: bool = False,
