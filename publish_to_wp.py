@@ -407,25 +407,23 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
             # (strādājošo property formāts: ['22664']). Int masīvs → Houzez
             # schema atmet (meta=None) + lightbox.php kraš. Tāpēc str().
             meta["fave_property_images"] = [str(i) for i in gallery_ids]
-        if plan_attach_ids:
-            # Houzez Floor Plans tab: fave_floor_plans = masīvs ar dict-iem.
-            # Minimālais formāts: title + image (attachment ID). Houzez
-            # template renderēs šos atsevišķi no galvenās galerijas.
-            meta["fave_floor_plans"] = [
-                {"title": f"Plāns {i + 1}", "image": str(att),
-                 "size": "", "description": ""}
-                for i, att in enumerate(plan_attach_ids)
-            ]
+        # Floor plans — plugin (v5.1.0) servera pusē būvē Houzez Meta Box
+        # grupu 'floor_plans' no šiem attachment ID-iem (fave_plan_image =
+        # wp_get_attachment_url; tas ir file_input/URL lauks). Vienmēr sūtam
+        # (arī tukšu sarakstu) — lai plugin var iztīrīt veco, ja plānu nav.
         print(f"  → galerija: {len(gallery_ids)} bildes "
               f"(featured = att {gallery_ids[0] if gallery_ids else 'n/a'})")
         if plan_attach_ids:
-            print(f"  → plāni:    {len(plan_attach_ids)} → fave_floor_plans")
+            print(f"  → plāni:    {len(plan_attach_ids)} → Houzez floor_plans")
 
-        # 3. Create vai update — featured_media = pirmā galerijā (fasade ja ir)
+        # 3. Create vai update — featured_media = pirmā galerijā (fasade ja ir),
+        # floor_plan_attachment_ids → plugin būvē Houzez 'floor_plans' grupu
         common = dict(
             title=title, content=body, excerpt=excerpt, status="publish",
             author=agent, meta=meta, taxonomies=tax,
             featured_media=(gallery_ids[0] if gallery_ids else None),
+            floor_plan_attachment_ids=plan_attach_ids,
+            floor_plan_title="Telpu plāns",
         )
         if existing_wp_id:
             resp = wp.update_property(int(existing_wp_id), **common)

@@ -122,6 +122,8 @@ class WPPublisher:
         meta: Optional[dict] = None,
         taxonomies: Optional[dict] = None,
         featured_media: Optional[int] = None,
+        floor_plan_attachment_ids: Optional[list[int]] = None,
+        floor_plan_title: Optional[str] = None,
     ) -> dict:
         body: dict[str, Any] = {"title": title, "status": status}
         if content is not None:
@@ -136,6 +138,11 @@ class WPPublisher:
             body["taxonomies"] = taxonomies
         if featured_media is not None:
             body["featured_media"] = featured_media
+        if floor_plan_attachment_ids is not None:
+            body["floor_plan_attachment_ids"] = [
+                int(x) for x in floor_plan_attachment_ids]
+        if floor_plan_title:
+            body["floor_plan_title"] = floor_plan_title
         return self._request("POST", "/property/create", json_body=body)
 
     def update_property(
@@ -150,6 +157,8 @@ class WPPublisher:
         meta: Optional[dict] = None,
         taxonomies: Optional[dict] = None,
         featured_media: Optional[int] = None,
+        floor_plan_attachment_ids: Optional[list[int]] = None,
+        floor_plan_title: Optional[str] = None,
         force_text: bool = False,
     ) -> dict:
         body: dict[str, Any] = {}
@@ -169,6 +178,11 @@ class WPPublisher:
             body["taxonomies"] = taxonomies
         if featured_media is not None:
             body["featured_media"] = featured_media
+        if floor_plan_attachment_ids is not None:
+            body["floor_plan_attachment_ids"] = [
+                int(x) for x in floor_plan_attachment_ids]
+        if floor_plan_title:
+            body["floor_plan_title"] = floor_plan_title
         if force_text:
             body["force_text"] = True
         return self._request(
