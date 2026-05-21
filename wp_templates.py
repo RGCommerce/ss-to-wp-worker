@@ -166,6 +166,34 @@ def _plur(n_str: str, sing: str, plur: str) -> str:
     return f"{n_str} {word}"
 
 
+# Stāvu skaits → īpašības vārds ēkai ("Divstāvu ēka")
+_STAVU_VARDS = {
+    1: "Vienstāva", 2: "Divstāvu", 3: "Trīsstāvu", 4: "Četrstāvu",
+    5: "Piecstāvu", 6: "Sešstāvu", 7: "Septiņstāvu", 8: "Astoņstāvu",
+    9: "Deviņstāvu",
+}
+
+
+def _floor_sentence(floor: Optional[str], own_building: bool) -> str:
+    """Ievada stāva/ēkas teikums (Raimonds 2026-05-22).
+    - Pašu ēka (Sava_eka_check) → 'Divstāvu ēka.' — floor = stāvu SKAITS,
+      nevis kurā stāvā telpa atrodas (citādi maldina, ka telpa ir 2. stāvā).
+    - Citādi → 'Telpas atrodas X. stāvā.' (telpa lielākas ēkas stāvā)."""
+    if own_building:
+        n = None
+        m = re.search(r"\d+", str(floor or ""))
+        if m:
+            n = int(m.group(0))
+        if n and n in _STAVU_VARDS:
+            return f"{_STAVU_VARDS[n]} ēka."
+        if n and n > 9:
+            return f"Ēka ar {n} stāviem."
+        return "Atsevišķa ēka."  # pašu ēka, bet stāvu skaits nezināms
+    if floor:
+        return f"Telpas atrodas {floor}. stāvā."
+    return ""
+
+
 def render_body(space_group: str, raw: dict) -> str:
     g = lambda k: _clean(raw.get(k))
     veids = _VEIDS.get(space_group, "komerctelpas")
@@ -187,8 +215,11 @@ def render_body(space_group: str, raw: dict) -> str:
     if loc:
         intro += f" {loc}"
     ievads = _b(intro.strip().rstrip(".") + ".")
-    if floor:
-        ievads += f"<br>Telpas atrodas {floor}. stāvā."
+    # Pašu ēka → "Divstāvu ēka."; citādi → "Telpas atrodas X. stāvā."
+    own_building = _checked(raw.get("Sava_eka_check"))
+    floor_line = _floor_sentence(floor, own_building)
+    if floor_line:
+        ievads += f"<br>{floor_line}"
     blocks.append(ievads)
 
     # ---- 2. APRAKSTS — TELPA (bold virsraksts) ---------------------------
