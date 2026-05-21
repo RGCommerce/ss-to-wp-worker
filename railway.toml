@@ -1,16 +1,16 @@
 # Railway service config — ss-to-wp-worker
-# Pievienot manuāli Railway dashboard-ā:
+# Builderis: DOCKERFILE (Nixpacks vietā — WeasyPrint prasa system libs,
+# ko Nixpacks vide neredz; sk. Dockerfile).
 #  - Service name: ss-to-wp-worker
 #  - Project: brave-harmony
-#  - Source: RGCommerce/ss-to-wp-worker (atsevišķs repo, NE inbox-to-listings)
-#  - Volume: pievienot existing volume "inbox-to-listings-volume" → mount /storage
+#  - Source: RGCommerce/ss-to-wp-worker (atsevišķs repo)
+#  - Volume: existing "inbox-to-listings-volume" → mount /storage
 #  - Env vars: kopēt no sslv-ai-runner-railway/crm/.env (sk. .env.example)
 
 [build]
-builder = "NIXPACKS"
+builder = "DOCKERFILE"
 
 [deploy]
-startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
