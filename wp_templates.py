@@ -87,6 +87,24 @@ def _num(v) -> Optional[str]:
     return m.group(0).replace(",", ".") if m else None
 
 
+def _money(v) -> str:
+    """Skaitlis ar tūkstošu atdalītāju (LV konvencija ar atstarpi):
+    '436000' → '436 000', '785' → '785', '3.49' → '3.49'."""
+    s = str(v or "").strip()
+    if not s:
+        return s
+    neg = s.startswith("-")
+    s = s.lstrip("-")
+    intp, _, dec = s.partition(".")
+    grouped = ""
+    while len(intp) > 3:
+        grouped = " " + intp[-3:] + grouped
+        intp = intp[:-3]
+    grouped = intp + grouped
+    out = grouped + (f".{dec}" if dec else "")
+    return ("-" + out) if neg else out
+
+
 def _checked(v) -> bool:
     return str(v or "").strip().lower() == "checked"
 
@@ -176,17 +194,18 @@ def render_body(space_group: str, raw: dict) -> str:
     # ---- 2. APRAKSTS — TELPA (bold virsraksts) ---------------------------
     # Katrs fakts/teikums = sava rinda (Raimonda paraugs 2026-05-17).
     telpa: list[str] = []
-    # Agent_comment = AI jau uzrakstītā proza — sadalām pa teikumiem
-    ac = g("Agent_comment")
-    if ac and len(ac) > 12:
-        telpa.extend(_cap(s) for s in _sentences(ac))
     cond = g("Space_condition")
     logu = g("Logu_type")
     ceiling = _num(raw.get("Griestu_augstums"))
+    # Telpas stāvoklis — VIENS NO PIRMAJIEM tekstiem (Raimonds 2026-05-21)
     if cond:
         loc_adj = _COND_LOC.get(cond.lower())
         telpa.append(_cap(f"telpas ir {loc_adj} stāvoklī") if loc_adj
                      else _cap(f"telpu stāvoklis — {cond.lower()}"))
+    # Agent_comment = AI jau uzrakstītā proza — sadalām pa teikumiem
+    ac = g("Agent_comment")
+    if ac and len(ac) > 12:
+        telpa.extend(_cap(s) for s in _sentences(ac))
     if logu:
         telpa.append(_cap(logu.lower()))
     if ceiling:
@@ -209,7 +228,7 @@ def render_body(space_group: str, raw: dict) -> str:
                      flags=re.IGNORECASE).strip().lower() or floor_mat.lower()
         telpa.append(f"Grīdas ir {mat}")
     if floor_kg:
-        telpa.append(f"Grīdu slodze ir līdz {floor_kg} kg/m²")
+        telpa.append(f"Grīdu slodze ir vidēji līdz {floor_kg} kg/m²")
 
     # Dalama_telpa — Raimonds 2026-05-18: IGNORĒT (nerakstam 'dalāma')
     extras = []
@@ -293,7 +312,13 @@ def render_body(space_group: str, raw: dict) -> str:
 
     park = g("Parkings")
     if park:
-        eka.append(f"Autostāvvietā {park.lower()}")
+        pl = park.lower()
+        if "bezmaksas" in pl:
+            eka.append("Ir pieejama bezmaksas autostāvvieta")
+        elif "maksas" in pl:
+            eka.append("Ir pieejama maksas autostāvvieta")
+        else:
+            eka.append("Ir pieejama autostāvvieta")
 
     sec = _section("Par ēku:", eka)
     if sec:
@@ -306,14 +331,14 @@ def render_body(space_group: str, raw: dict) -> str:
     cost_lines: list[str] = []
     if price:
         lbl = "Cena" if sale else "Noma mēnesī"
-        cost_lines.append(f"{lbl}: {price} EUR.")
+        cost_lines.append(f"{lbl}: {_money(price)} EUR.")
         if not ppm2 and area_v:
             try:
                 ppm2 = str(round(float(price) / float(area_v), 2))
             except (ValueError, ZeroDivisionError):
                 ppm2 = None
     if ppm2:
-        cost_lines.append(f"Cena par m²: {ppm2} EUR/m².")
+        cost_lines.append(f"Cena par m²: {_money(ppm2)} EUR/m².")
     mgmt = g("Apsaimniekosanas_maksa")
     if mgmt:
         cost_lines.append(f"Apsaimniekošana: {mgmt}.")
