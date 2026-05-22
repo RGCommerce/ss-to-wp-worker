@@ -11,5 +11,8 @@ requests==2.32.3
 python-dotenv==1.0.1
 
 # PDF brošūru ģenerēšana (pdf_maker.py — HTML+CSS → PDF)
-# Railway vajag system libs (pango utt.) — sk. nixpacks.toml
+# Railway vajag system libs (pango utt.) — sk. Dockerfile
 weasyprint==63.1
+
+# Bilžu downscale PDF brošūrai (pdf_maker.py — 14 MB → ~2-3 MB)
+Pillow==11.0.0
