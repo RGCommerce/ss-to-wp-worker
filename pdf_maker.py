@@ -63,10 +63,16 @@ AGENT_CONTACTS = {
         "photo": "agent_ieva.jpg",
     },
     AGENT_RAIMONDS: {
-        "name": "Raimonds Grīnbergs", "phone": "", "email": "raimonds@rgcommerce.lv",
+        "name": "Raimonds Grīnbergs",
+        "phone": "+371 23072 4004",
+        "email": "raimonds@rgcommerce.lv",
         "photo": "agent_raimonds.jpg",
     },
 }
+
+# Mūsu logo (RGC Commercial Real Estate Firm) — transparent PNG → uzliek
+# uz kontaktu lapas navy fona bez baltas kastes ap to
+BRAND_LOGO = "rgc_logo.png"
 
 # Houzez Space_group → lietvārds virsrakstam
 _VEIDS = {
@@ -165,12 +171,7 @@ def _facts(listing: dict, bp: dict) -> list[tuple[str, str]]:
             out.append((label, s))
 
     # --- Izmēri / ģeometrija ---
-    area = _num(L.get("area_m2"))
-    add("Platība", f"{_money(area)} m²" if area else None)
-    ppm2 = _num(L.get("price_per_m2"))
-    add("Cena par m²", f"{ppm2} EUR/m²" if ppm2 else None)
-    land = _num(L.get("Zemes_gabals_m2"))
-    add("Zemes platība", f"{_money(land)} m²" if land else None)
+    # Platība, Cena par m², Zemes platība — IZLAISTI: tie jau ir titullapā
     add("Telpu skaits", _num(L.get("Cik_telpas")))
     add("Sanmezgli (WC)", _clean(L.get("cik_WC")))
     floor = _clean_floor(L.get("floor"))
@@ -269,6 +270,22 @@ def _data_uri(path: Path, max_w: int, quality: int = 82) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def _logo_data_uri(path: Path, max_w: int) -> str:
+    """Logo PNG ar alpha kanālu — saglabā transparency, neuzliek baltu fonu."""
+    try:
+        im = Image.open(path)
+    except Exception:
+        return ""
+    if im.mode not in ("RGBA", "LA"):
+        im = im.convert("RGBA")
+    if im.width > max_w:
+        im = im.resize((max_w, round(im.height * max_w / im.width)),
+                       Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 # ---------------------------------------------------------------------------
 # CSS
 # ---------------------------------------------------------------------------
@@ -291,8 +308,12 @@ body { font-family: 'Open Sans', 'DejaVu Sans', sans-serif;
                 text-transform: uppercase; font-weight: 700; }
 .cover-title { font-family: 'Playfair Display', 'DejaVu Serif', serif;
                font-size: 32pt; font-weight: 700; margin: 5mm 0 9mm; }
+.cover-facts { line-height: 1.3; }
 .cf-col { display: inline-block; vertical-align: top; }
 .cf-col + .cf-col { margin-left: 22mm; }
+/* 3-kolonu režīms (kad ir Zemes platība) — tuvāki gapi, mazāks fonts vērtībai */
+.cover-facts.cf-3col .cf-col + .cf-col { margin-left: 13mm; }
+.cover-facts.cf-3col .cf-v { font-size: 13.5pt; }
 .cf-v { font-weight: 700; font-size: 15pt; }
 .cf-l { color: #9aa6b6; font-size: 8pt; text-transform: uppercase;
         letter-spacing: 2px; margin-top: 1mm; }
@@ -306,7 +327,9 @@ body { font-family: 'Open Sans', 'DejaVu Sans', sans-serif;
       font-size: 17pt; font-weight: 700; color: #1a2638;
       border-bottom: 2pt solid #c8202a; padding-bottom: 2mm;
       margin: 0 0 6mm; page-break-after: avoid; }
-.section { margin-bottom: 10mm; }
+/* Katrai sadaļai sava lapa — apraksts / fakti / bildes (contact pati
+   ar page-break-before) */
+.section { margin-bottom: 10mm; page-break-after: always; }
 
 /* ---- Faktu tabula (3 kolonas) ---- */
 .facts { width: 100%; border-collapse: separate; border-spacing: 3mm;
@@ -330,22 +353,25 @@ body { font-family: 'Open Sans', 'DejaVu Sans', sans-serif;
 .gallery img { width: 100%; height: 60mm; object-fit: cover;
                border-radius: 3pt; display: block; }
 
-/* ---- Kontaktu lapa ---- */
+/* ---- Kontaktu lapa (logo augšā, bilde apakšā) ---- */
 .contact { page: contact; page-break-before: always;
            background: #1a2638; color: #f7f3ed; height: 297mm;
            display: flex; flex-direction: column;
            justify-content: center; align-items: center;
            text-align: center; padding: 20mm; }
-.agent-photo { width: 50mm; height: 64mm; object-fit: cover;
-               border-radius: 4pt; border: 2.5pt solid #c8202a; }
+.brand-logo { width: 110mm; height: auto; display: block;
+              margin: 0 auto 4mm; }
 .contact-h { font-family: 'Playfair Display', 'DejaVu Serif', serif;
-             font-size: 24pt; font-weight: 700; margin: 12mm 0 7mm; }
-.agent-name { font-size: 15pt; font-weight: 700; margin-bottom: 4mm; }
-.contact-row { font-size: 12pt; color: #d4dae2; margin-bottom: 2mm; }
-.contact-brand { color: #c8202a; font-weight: 700; font-size: 13pt;
-                 letter-spacing: 2px; margin-top: 16mm; }
-.contact-sep { width: 28mm; height: 2pt; background: #c8202a;
-               margin: 16mm auto 0; }
+             font-size: 24pt; font-weight: 700; margin: 9mm 0 6mm; }
+.agent-name { font-size: 16pt; font-weight: 700; margin-bottom: 4mm; }
+.contact-row { font-size: 12.5pt; color: #d4dae2; margin-bottom: 2mm; }
+.contact-sep { width: 32mm; height: 2pt; background: #c8202a;
+               margin: 10mm auto 8mm; }
+.agent-photo { width: 72mm; height: 92mm; object-fit: cover;
+               border-radius: 4pt; border: 2.5pt solid #c8202a;
+               display: block; margin: 0 auto; }
+.contact-url { color: #c8202a; font-weight: 700; font-size: 12pt;
+               letter-spacing: 2px; margin-top: 6mm; }
 """
 
 
@@ -374,6 +400,7 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
     city = (bp.get("city") or listing.get("city") or "").strip()
     district = (bp.get("district") or listing.get("district") or "").strip()
     loc_v = ", ".join(p for p in (district, city) if p)
+    land = _num(listing.get("Zemes_gabals_m2"))
 
     # ---- Bildes (downscale) ----
     imgs = _ordered_images(listing_id)
@@ -399,10 +426,8 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
         price_str += " / mēn."
 
     # ---- Faktu tabula (3 kolonas) ----
+    # Tips un Atrašanās vieta — IZLAISTI: tie jau ir titullapā (kicker + lokācija).
     facts = _facts(listing, bp)
-    facts.append(("Tips", veids))
-    if loc_v:
-        facts.append(("Atrašanās vieta", loc_v))
     cells = [
         f'<td><div class="fact-l">{_esc(l)}</div>'
         f'<div class="fact-v">{_esc(v)}</div></td>'
@@ -431,9 +456,11 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
         f'<table class="gallery">{gallery_rows}</table></div>'
         if gallery_rows else "")
 
-    # ---- Kontaktu lapa ----
+    # ---- Kontaktu lapa: aģenta foto + brand logo ----
     photo_path = ASSETS_DIR / agent.get("photo", "")
-    photo_uri = _data_uri(photo_path, 620, 86) if photo_path.is_file() else ""
+    photo_uri = _data_uri(photo_path, 800, 88) if photo_path.is_file() else ""
+    logo_path = ASSETS_DIR / BRAND_LOGO
+    logo_uri = _logo_data_uri(logo_path, 1200) if logo_path.is_file() else ""
     contact_rows = ""
     if agent.get("phone"):
         contact_rows += f'<div class="contact-row">Tālrunis: {_esc(agent["phone"])}</div>'
@@ -444,6 +471,23 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
                  else '<div class="cover-hero" style="background:#243349"></div>')
     photo_html = (f'<img class="agent-photo" src="{photo_uri}">' if photo_uri
                   else "")
+    logo_html = (f'<img class="brand-logo" src="{logo_uri}">' if logo_uri
+                 else '<div class="contact-url">RG COMMERCE</div>')
+
+    # ---- Cover facts: 2 vai 3 kolonas (Zemes platība → 3.) ----
+    cf_parts = [
+        ('Platība',  _money(area) + ' m²' if area else '—'),
+        ('Lokācija', loc_v or city or '—'),
+    ]
+    if land:
+        cf_parts.append(('Zemes platība', _money(land) + ' m²'))
+    cf_inner = "".join(
+        f'<div class="cf-col"><div class="cf-v">{_esc(v)}</div>'
+        f'<div class="cf-l">{_esc(l)}</div></div>'
+        for l, v in cf_parts
+    )
+    cf_class = 'cover-facts' + (' cf-3col' if land else '')
+    cover_facts_html = f'<div class="{cf_class}">{cf_inner}</div>'
 
     html_doc = f"""<!DOCTYPE html>
 <html lang="lv"><head><meta charset="utf-8">
@@ -455,24 +499,10 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
   <div class="cover-band">
     <div class="cover-kicker">{_esc(veids)}</div>
     <div class="cover-title">{_esc(addr)}</div>
-    <div>
-      <div class="cf-col">
-        <div class="cf-v">{_esc(_money(area) + ' m²' if area else '—')}</div>
-        <div class="cf-l">Platība</div>
-      </div>
-      <div class="cf-col">
-        <div class="cf-v">{_esc(loc_v or city or '—')}</div>
-        <div class="cf-l">Lokācija</div>
-      </div>
-    </div>
+    {cover_facts_html}
     <div class="cover-price">{_esc(price_lbl)}: {_esc(price_str)}</div>
     {f'<div class="cover-ppm2">{_esc(ppm2)} EUR/m²</div>' if ppm2 else ''}
   </div>
-</div>
-
-<div class="section">
-  <div class="h2">Galvenie fakti</div>
-  <table class="facts">{facts_rows}</table>
 </div>
 
 <div class="section">
@@ -480,15 +510,21 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
   <div class="desc">{desc_html}</div>
 </div>
 
+<div class="section">
+  <div class="h2">Galvenie fakti</div>
+  <table class="facts">{facts_rows}</table>
+</div>
+
 {gallery_section}
 
 <div class="contact">
-  {photo_html}
+  {logo_html}
   <div class="contact-h">Ieinteresēja šis īpašums?</div>
   <div class="agent-name">{_esc(agent["name"])}</div>
   {contact_rows}
   <div class="contact-sep"></div>
-  <div class="contact-brand">RG COMMERCE &nbsp;|&nbsp; rgcommerce.lv</div>
+  {photo_html}
+  <div class="contact-url">rgcommerce.lv</div>
 </div>
 
 </body></html>"""
