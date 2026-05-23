@@ -39,6 +39,7 @@ from typing import Annotated, Optional
 import psycopg
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from psycopg.rows import dict_row
 from pydantic import BaseModel
 
@@ -80,6 +81,16 @@ app = FastAPI(
     version=SERVICE_VERSION,
     description=__doc__,
     lifespan=lifespan,
+)
+
+# CORS — atļauj preview.html (file://) + rgcommerce.lv lasīt /agent/* endpointus.
+# X-RGC-Token tāpat aizsargā POST, tāpēc origin var būt vaļīgs.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 # Ceļš B — anketa-par-eku endpoints (Etaps 6, mig 025)
