@@ -26,11 +26,13 @@ listings), lai katram skriptam savs push cikls.
 """
 from __future__ import annotations
 
+import asyncio
 import io
+import logging
 import os
 import sys
 import traceback
-from contextlib import redirect_stdout
+from contextlib import asynccontextmanager, redirect_stdout
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -46,18 +48,37 @@ import image_classify  # noqa: E402
 import image_enhance_openai  # noqa: E402
 import pdf_maker  # noqa: E402
 import publish_to_wp  # noqa: E402
+import queue_poller  # noqa: E402
 
 load_dotenv(Path(__file__).parent / ".env")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 RGC_MK_TOKEN = os.getenv("RGC_MK_TOKEN")  # Auth header pārbaude
 SERVICE_NAME = "ss-to-wp-worker"
-SERVICE_VERSION = "0.1.0"
+SERVICE_VERSION = "0.2.0"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Palaiž queue_poller fona task uz startup, apstādina uz shutdown."""
+    stop_event = asyncio.Event()
+    poller_task = asyncio.create_task(queue_poller.run_loop(stop_event))
+    try:
+        yield
+    finally:
+        stop_event.set()
+        try:
+            await asyncio.wait_for(poller_task, timeout=5)
+        except asyncio.TimeoutError:
+            poller_task.cancel()
+
 
 app = FastAPI(
     title=SERVICE_NAME,
     version=SERVICE_VERSION,
     description=__doc__,
+    lifespan=lifespan,
 )
 
 
@@ -129,7 +150,14 @@ def health():
         "storage_exists": storage_ok,
         "has_database_url": bool(DATABASE_URL),
         "has_token": bool(RGC_MK_TOKEN),
+        "poller": queue_poller.get_status(),
     }
+
+
+@app.get("/poller/status")
+def poller_status():
+    """Detalizēts queue poller statuss (no /health saīsinātā skata)."""
+    return queue_poller.get_status()
 
 
 @app.post("/publish/{listing_id}", dependencies=[Depends(require_token)])

@@ -35,11 +35,27 @@ Volume: inbox-to-listings-volume mounted → /storage
 
 | Method | Path | Auth | Apraksts |
 |---|---|---|---|
-| GET  | `/health` | nav | Service + storage status |
+| GET  | `/health` | nav | Service + storage + poller status |
+| GET  | `/poller/status` | nav | Detalizēts queue poller statuss |
 | POST | `/publish/{listing_id}` | `X-RGC-Token` | Pilns pipeline (image_pipeline + classify + publish) |
 | POST | `/classify/{listing_id}` | `X-RGC-Token` | Tikai klasificē (lēts pretests) |
 | POST | `/enhance-openai/{listing_id}` | `X-RGC-Token` | Selektīvi OpenAI gpt-image-1 sliktajām bildēm |
 | POST | `/pdf/{listing_id}` | `X-RGC-Token` | RGC sludinājuma PDF brošūra (atgriež `application/pdf`) |
+
+### Queue poller (v0.2.0+)
+
+Servisa fona task lasa `properties.wp_export_queue` un apstrādā pa vienam
+ierakstam. Statusa pārejas: `pending → processing → done | error`.
+
+Broker Panel klikšķis "Export to WP" pievieno rindu → poller ņem un palaiž
+to pašu `publish_to_wp.publish()`, kas `/publish/{id}` endpointam.
+
+Konfigurējams ar env:
+- `POLLER_ENABLED` (default `"1"`) — uzliek `"0"`, lai izslēgtu
+- `POLLER_INTERVAL` (default `"10"`) — sekundes starp tukšiem polliem
+
+Poll lietoja `FOR UPDATE SKIP LOCKED`, tāpēc droši paralēli vairākiem
+servisa instances (ja Railway scales).
 
 Body params (visi POST, visi opcionāli):
 - `force: bool` — pārpublicē/pārapstrādā
