@@ -371,7 +371,9 @@ body { font-family: 'Open Sans', 'DejaVu Sans', sans-serif;
                border-radius: 4pt; border: 2.5pt solid #c8202a;
                display: block; margin: 0 auto; }
 .contact-url { color: #c8202a; font-weight: 700; font-size: 12pt;
-               letter-spacing: 2px; margin-top: 6mm; }
+               letter-spacing: 2px; margin-top: 6mm;
+               text-decoration: none; display: inline-block; }
+a.contact-url:visited { color: #c8202a; }
 """
 
 
@@ -524,7 +526,7 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
   {contact_rows}
   <div class="contact-sep"></div>
   {photo_html}
-  <div class="contact-url">rgcommerce.lv</div>
+  <a class="contact-url" href="https://www.rgcommerce.lv">www.rgcommerce.lv</a>
 </div>
 
 </body></html>"""
