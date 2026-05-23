@@ -49,6 +49,7 @@ import image_enhance_openai  # noqa: E402
 import pdf_maker  # noqa: E402
 import publish_to_wp  # noqa: E402
 import queue_poller  # noqa: E402
+import agent_api  # noqa: E402  # Ceļš B: anketa-par-eku endpoints (Etaps 6)
 
 load_dotenv(Path(__file__).parent / ".env")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -80,6 +81,10 @@ app = FastAPI(
     description=__doc__,
     lifespan=lifespan,
 )
+
+# Ceļš B — anketa-par-eku endpoints (Etaps 6, mig 025)
+# Visi prefiksā /agent/* ar X-RGC-Token auth (sk. agent_api.py).
+app.include_router(agent_api.router)
 
 
 # ---------- Auth ----------

@@ -44,9 +44,29 @@ logger = logging.getLogger("queue_poller")
 DATABASE_URL = os.getenv("DATABASE_URL")
 POLLER_ENABLED = os.getenv("POLLER_ENABLED", "1") != "0"
 POLLER_INTERVAL = float(os.getenv("POLLER_INTERVAL", "10"))
+# Cik laikā 'processing' ieraksts tiek uzskatīts par stale (worker mira/restart-ēja)
+STALE_PROCESSING_MIN = int(os.getenv("STALE_PROCESSING_MIN", "30"))
 
 
 # ---------- DB helpers ----------
+
+def _recover_stale() -> int:
+    """Pie startup — atjauno 'processing' ierakstus, kas iesprūduši pēc worker
+    restarta. Railway auto-redeploy nogalina vidū esošo publish_to_wp.publish(),
+    bet DB ieraksts paliek 'processing' un nekad netiek paņemts atpakaļ.
+
+    Atgriež atjaunoto rindu skaitu."""
+    if not DATABASE_URL:
+        return 0
+    with psycopg.connect(DATABASE_URL) as conn:
+        r = conn.execute(f"""
+            UPDATE properties.wp_export_queue
+            SET status = 'pending', started_at = NULL
+            WHERE status = 'processing'
+              AND started_at < now() - INTERVAL '{STALE_PROCESSING_MIN} minutes'
+        """)
+        return r.rowcount
+
 
 def _claim_next() -> Optional[dict]:
     """Atomāri paņem nākamo pending rindu un atzīmē processing.
@@ -168,10 +188,22 @@ async def run_loop(stop_event: asyncio.Event) -> None:
         return
 
     logger.info(
-        f"Queue poller sākts — interval={POLLER_INTERVAL}s"
+        f"Queue poller sākts — interval={POLLER_INTERVAL}s, "
+        f"stale_threshold={STALE_PROCESSING_MIN}min"
     )
     _state["running"] = True
     loop = asyncio.get_event_loop()
+
+    # Recovery — ja kāds ieraksts iesprūdis 'processing' (worker mira)
+    try:
+        recovered = await loop.run_in_executor(None, _recover_stale)
+        if recovered:
+            logger.warning(
+                f"Recovery: atjaunoti {recovered} 'processing' ieraksti uz "
+                f"'pending' (vecāki par {STALE_PROCESSING_MIN} min)"
+            )
+    except Exception as e:
+        logger.error(f"_recover_stale neizdevās: {e}", exc_info=True)
 
     try:
         while not stop_event.is_set():

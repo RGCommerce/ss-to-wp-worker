@@ -4,6 +4,7 @@
 # HTTP framework
 fastapi==0.115.4
 uvicorn[standard]==0.32.0
+python-multipart==0.0.12  # File upload priekš /agent/image-upload (anketa-par-eku)
 
 # Datu un API klienti (tāpat kā crm/)
 psycopg[binary]==3.2.3
