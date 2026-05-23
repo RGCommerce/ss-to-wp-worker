@@ -44,6 +44,7 @@ except Exception:
 sys.path.insert(0, str(Path(__file__).parent))
 from wp_templates import render_body, _floor as _clean_floor  # noqa: E402
 import image_classify  # noqa: E402
+import image_pipeline  # noqa: E402  # Seedream AI bilžu skaistināšana
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -537,10 +538,57 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
 # PDF render
 # ---------------------------------------------------------------------------
 
+def _ensure_ai_ready(listing_id: int, source: str | None) -> None:
+    """Ja source=ss un ai_ready/ tukšs → palaiž image_pipeline + classify.
+
+    Idempotents: ja bildes jau ir ai_ready/, image_pipeline cache to redz un
+    izlaiž. Drošs atkārtotai izsaukšanai.
+
+    Šī ir tā pati loģika, ko `publish_to_wp.publish()` izpilda pirms WP raksta.
+    PDF tagad nodrošina to pašu, lai ss.lv sludinājumu PDF būtu ar AI-tīrām
+    bildēm bez ūdenszīmēm.
+    """
+    src = (source or "").strip().lower()
+    if src != "ss":
+        # WP source — bildes jau pareizās, image_pipeline nav vajadzīga
+        return
+
+    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
+    if ai_dir.is_dir() and any(ai_dir.glob("img_*.jpg")):
+        # Cache hit — ai_ready jau ir
+        return
+
+    print(f"[pdf_maker] AI bildes vēl nav apstrādātas listingam {listing_id} "
+          f"(source=ss), palaižu image_pipeline...")
+    if DATABASE_URL is None:
+        raise SystemExit("DATABASE_URL nav konfigurēts")
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        res = image_pipeline.process_listing(conn, listing_id, force=False,
+                                              dry_run=False)
+        print(f"[pdf_maker] image_pipeline: {res.get('status')} "
+              f"({res.get('processed', 0)} bildes apstrādātas)")
+
+    # Klasificēšana — fasāde/plāns/interjers tagging (gpt-4o-mini vision,
+    # ~$0.001/bilde, kešots)
+    try:
+        image_classify.ensure_classified(STORAGE_ROOT, listing_id, None,
+                                          force=False, only_images=None)
+    except Exception as e:
+        print(f"[pdf_maker] image_classify brīdinājums: {e}")
+
+
 def render_pdf(listing_id: int) -> bytes:
     """Galvenā API — atgriež PDF baitus."""
     if not DATABASE_URL:
         raise SystemExit("DATABASE_URL nav .env failā.")
+
+    # Pirms render — pārliecināmies, ka AI bildes ir gatavas (ss source)
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        src_row = conn.execute(
+            "SELECT source FROM properties.listings WHERE id = %s",
+            (listing_id,),
+        ).fetchone()
+    _ensure_ai_ready(listing_id, src_row.get("source") if src_row else None)
     from weasyprint import HTML  # imports šeit — ja libs trūkst, skaidra kļūda
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         listing, bp = _fetch(conn, listing_id)
