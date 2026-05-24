@@ -117,6 +117,10 @@ class PublishRequest(BaseModel):
     skip_ai: bool = False
 
 
+class BulkPdfRequest(BaseModel):
+    listing_ids: list[int]
+
+
 class ClassifyRequest(BaseModel):
     force: bool = False
     images: Optional[list[str]] = None  # piem. ["img_002.jpg"]
@@ -220,6 +224,35 @@ def _enhance_inner(listing_id: int, images: Optional[list[str]],
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         return image_enhance_openai.enhance_listing(
             conn, listing_id, images, quality, force, dry_run=False)
+
+
+# ⚠ /pdf/bulk JĀBŪT pirms /pdf/{listing_id}, citādi FastAPI mēģina parsēt 'bulk'
+# kā int listing_id un atgriež 422.
+@app.post("/pdf/bulk", dependencies=[Depends(require_token)])
+def pdf_bulk(body: BulkPdfRequest):
+    """Apvieno N listingu PDF vienā saliktā brošūrā (klienta piedāvājums).
+
+    SYNC — laiks aug ar listingu skaitu un AI nepieciešamību. Tipisks ilgums:
+      - 1 listings, ai_ready jau ir: ~5-15s
+      - 1 listings, ss-source bez AI: ~5-10 min (image_pipeline + classify)
+      - N listings: N × pirmais ilgums
+    """
+    if not body.listing_ids:
+        raise HTTPException(400, "listing_ids tukšs saraksts")
+    if len(body.listing_ids) > 20:
+        raise HTTPException(400, "Maksimums 20 listingi vienā PDF")
+    try:
+        pdf_bytes = pdf_maker.render_pdf_bulk(body.listing_ids)
+    except SystemExit as e:
+        raise HTTPException(500, f"Bulk PDF kļūda: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Bulk PDF kļūda: {type(e).__name__}: {e}")
+    fname = f"rgc_offer_{len(body.listing_ids)}listings.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{fname}"'},
+    )
 
 
 @app.post("/pdf/{listing_id}", dependencies=[Depends(require_token)])
