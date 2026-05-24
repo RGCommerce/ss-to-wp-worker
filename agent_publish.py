@@ -154,10 +154,9 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
     # EASY mode: NULL → AI worker paķers + papildinās
     debug_status = "ok" if mode == "full" else None
 
-    composite = _composite_key(
-        building.get("street", ""), building.get("city", ""),
-        unit.get("area_m2", ""), unit.get("Space_group", ""),
-    )
+    # NB: listings tabula NEsatur composite_key (mig 016/017 attiecas uz
+    # building_profiles.building_key). Aģenta INSERT-iem vienkārši lietojam
+    # ID kā unikālais; duplikātu kontrole notiek manuāli pa adresi.
 
     # Galvenie lauki
     cols = {
@@ -165,7 +164,6 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         "street": building.get("street"),
         "city": building.get("city"),
         "district": building.get("district"),
-        "composite_key": composite,
         "source": source,
         "agent_user_id": wp_user_id,
         "agent_locked_fields": locked,
@@ -306,11 +304,24 @@ def publish_anketa(payload: dict) -> dict:
 
     # Step 5: pa katru listing → publish_to_wp.publish()
     for lid in listing_ids:
+        # Pārbauda vai šim listingam ir bildes (bez tām publish_to_wp crash)
+        ai_dir = STORAGE_ROOT / "listings" / str(lid) / "ai_ready"
+        n_imgs = (len(list(ai_dir.glob("img_*.jpg")))
+                  + len(list(ai_dir.glob("img_*.png")))
+                  + len(list(ai_dir.glob("img_*.webp"))))
+        if n_imgs == 0:
+            warnings.append(
+                f"Listing {lid}: nav bilžu /storage/listings/{lid}/ai_ready/ — "
+                f"WP publicēšana izlaista (raw ss.lv bildes uz WP aizliegtas)"
+            )
+            continue
         try:
             publish_to_wp.publish(lid, dry_run=False, force=False, skip_ai=True)
-            log.append(f"✓ publish_to_wp({lid}) sucess")
+            log.append(f"✓ publish_to_wp({lid}) — {n_imgs} bildes augšuplādētas")
+        except SystemExit as e:
+            warnings.append(f"publish_to_wp({lid}) atcelts: {str(e)[:200]}")
         except Exception as e:
-            warnings.append(f"publish_to_wp({lid}) neizdevās: {e}")
+            warnings.append(f"publish_to_wp({lid}) neizdevās: {type(e).__name__}: {str(e)[:200]}")
 
     # Step 6: izlasām wp_post_id atpakaļ
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
