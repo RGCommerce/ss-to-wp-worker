@@ -50,6 +50,7 @@ import image_enhance_openai  # noqa: E402
 import pdf_maker  # noqa: E402
 import publish_to_wp  # noqa: E402
 import queue_poller  # noqa: E402
+import pdf_poller  # noqa: E402
 import agent_api  # noqa: E402  # Ceļš B: anketa-par-eku endpoints (Etaps 6)
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -63,17 +64,19 @@ SERVICE_VERSION = "0.2.0"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Palaiž queue_poller fona task uz startup, apstādina uz shutdown."""
+    """Palaiž queue_poller un pdf_poller fona taskus uz startup, apstādina uz shutdown."""
     stop_event = asyncio.Event()
-    poller_task = asyncio.create_task(queue_poller.run_loop(stop_event))
+    wp_task = asyncio.create_task(queue_poller.run_loop(stop_event))
+    pdf_task = asyncio.create_task(pdf_poller.run_loop(stop_event))
     try:
         yield
     finally:
         stop_event.set()
-        try:
-            await asyncio.wait_for(poller_task, timeout=5)
-        except asyncio.TimeoutError:
-            poller_task.cancel()
+        for t in (wp_task, pdf_task):
+            try:
+                await asyncio.wait_for(t, timeout=5)
+            except asyncio.TimeoutError:
+                t.cancel()
 
 
 app = FastAPI(
@@ -171,6 +174,7 @@ def health():
         "has_database_url": bool(DATABASE_URL),
         "has_token": bool(RGC_MK_TOKEN),
         "poller": queue_poller.get_status(),
+        "pdf_poller": pdf_poller.get_status(),
     }
 
 
@@ -178,6 +182,42 @@ def health():
 def poller_status():
     """Detalizēts queue poller statuss (no /health saīsinātā skata)."""
     return queue_poller.get_status()
+
+
+@app.get("/pdf-poller/status")
+def pdf_poller_status():
+    """Detalizēts PDF poller statuss."""
+    return pdf_poller.get_status()
+
+
+@app.get("/pdf-jobs/{job_id}/file",
+         dependencies=[Depends(require_token)])
+def pdf_job_file(job_id: int):
+    """Atgriež PDF baitus konkrētam pdf_jobs ierakstam (TIKAI ja status='done').
+
+    Lieto Broker Panel proxy lejupielādei. file_path glabājas DB-ā kā relatīvs
+    ceļš (`pdf_jobs/<id>.pdf`) uz STORAGE_ROOT.
+    """
+    if not DATABASE_URL:
+        raise HTTPException(500, "DATABASE_URL nav konfigurēts")
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        row = conn.execute(
+            "SELECT status, file_path FROM properties.pdf_jobs WHERE id = %s",
+            (job_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, f"PDF job#{job_id} nav atrasts")
+    if row["status"] != "done" or not row["file_path"]:
+        raise HTTPException(409, f"PDF job#{job_id} vēl nav gatavs (status={row['status']})")
+
+    abs_path = pdf_poller.STORAGE_ROOT / row["file_path"]
+    if not abs_path.is_file():
+        raise HTTPException(410, f"PDF fails nav uz volume: {abs_path}")
+    return Response(
+        content=abs_path.read_bytes(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="rgc_offer_{job_id}.pdf"'},
+    )
 
 
 @app.post("/publish/{listing_id}", dependencies=[Depends(require_token)])
