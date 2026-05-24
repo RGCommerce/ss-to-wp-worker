@@ -334,6 +334,91 @@ class PublishReq(BaseModel):
     units: list[PublishUnitReq]
 
 
+# ---------------------------------------------------------------------------
+# 7) LISTING IMAGES — apskatīt esoša listing-a ai_ready bildes
+# ---------------------------------------------------------------------------
+
+@router.get("/listing-images/{listing_id}")
+def listing_images(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    """Atgriež listing-a /storage/listings/<id>/ai_ready/ bildes + manifest tipus."""
+    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
+    if not ai_dir.is_dir():
+        return {"images": [], "note": f"Nav mapes /storage/listings/{listing_id}/ai_ready/"}
+
+    manifest_path = ai_dir.parent / "_image_manifest.json"
+    manifest = {}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+
+    files = sorted(list(ai_dir.glob("img_*.jpg"))
+                   + list(ai_dir.glob("img_*.png"))
+                   + list(ai_dir.glob("img_*.webp")))
+    images = []
+    for f in files:
+        meta = manifest.get(f.name) or {}
+        images.append({
+            "name": f.name,
+            "type": meta.get("type", "interjers"),
+            "quality": meta.get("quality", "?"),
+            "url": f"/agent/image-proxy/{listing_id}/{f.name}",
+        })
+    return {"images": images}
+
+
+@router.get("/image-proxy/{listing_id}/{filename}")
+def image_proxy(
+    listing_id: int, filename: str,
+    token: Optional[str] = None,
+    x_rgc_token: Annotated[Optional[str], Header(alias="X-RGC-Token")] = None,
+):
+    """Atgriež bildes baitus no /storage/listings/<id>/ai_ready/.
+    Auth caur X-RGC-Token header VAI ?token=... query param (lai
+    <img src=...> bez JS headerinjekcijas strādātu)."""
+    from fastapi.responses import FileResponse
+    if not RGC_MK_TOKEN:
+        raise HTTPException(500, "Service nav konfigurēts")
+    if x_rgc_token != RGC_MK_TOKEN and token != RGC_MK_TOKEN:
+        raise HTTPException(403, "Trūkst tokena")
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Nepareizs filename")
+    path = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready" / filename
+    if not path.is_file():
+        raise HTTPException(404, "Bilde nav atrasta")
+    return FileResponse(path)
+
+
+# ---------------------------------------------------------------------------
+# 8) REPUBLISH — esoša listing-a (ne agent_anketa) publicēšana uz WP
+# ---------------------------------------------------------------------------
+
+@router.post("/republish/{listing_id}")
+def republish(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    """Izsauc publish_to_wp.publish() priekš jau eksistējoša listing-a (kas
+    DB-ā ir, bet wp_post_id=NULL). Lieto, kad aģents anketā autocomplete
+    ielādē esošu building_profile ar sslv-listings un grib tos arī uzlikt
+    uz WP bez datu pārievades."""
+    import publish_to_wp
+    try:
+        publish_to_wp.publish(listing_id, dry_run=False, force=False, skip_ai=False)
+    except SystemExit as e:
+        return {"wp_post_id": None, "warning": str(e)[:300]}
+    except Exception as e:
+        return {"wp_post_id": None, "error": f"{type(e).__name__}: {str(e)[:300]}"}
+
+    # Izlasām wp_post_id atpakaļ
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT wp_post_id FROM properties.listings WHERE id = %s", (listing_id,))
+        row = cur.fetchone()
+        wp_post_id = row["wp_post_id"] if row else None
+    return {
+        "wp_post_id": wp_post_id,
+        "url": (f"https://rgcommerce.lv/?p={wp_post_id}" if wp_post_id else None),
+    }
+
+
 @router.post("/publish")
 def publish_anketa(req: PublishReq, _auth: None = Depends(require_token)) -> dict:
     """Galvenais endpoint:
