@@ -340,51 +340,64 @@ class PublishReq(BaseModel):
 
 @router.get("/listing-images/{listing_id}")
 def listing_images(listing_id: int, _auth: None = Depends(require_token)) -> dict:
-    """Atgriež listing-a /storage/listings/<id>/ai_ready/ bildes + manifest tipus."""
-    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
-    if not ai_dir.is_dir():
-        return {"images": [], "note": f"Nav mapes /storage/listings/{listing_id}/ai_ready/"}
+    """Atgriež listing-a bildes:
+      raw/     = ss.lv oriģinālās (ar ūdenszīmi) — vienmēr ir, ja download_images.py
+                 worker tos jau notvēris (kas notiek automātiski).
+      ai_ready/= pēc image_pipeline.py (Seedream) — eksistē tikai pēc tam, kad
+                 aģents nospiedis "Ielikt WP" (publish_to_wp.publish() triggerē).
 
-    manifest_path = ai_dir.parent / "_image_manifest.json"
-    manifest = {}
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            manifest = {}
+    Atgriež RAW (priekš aģenta priekšskatu pirms publicēšanas).
+    """
+    base = STORAGE_ROOT / "listings" / str(listing_id)
+    raw_dir = base / "raw"
+    ai_dir = base / "ai_ready"
 
-    files = sorted(list(ai_dir.glob("img_*.jpg"))
-                   + list(ai_dir.glob("img_*.png"))
-                   + list(ai_dir.glob("img_*.webp")))
-    images = []
-    for f in files:
-        meta = manifest.get(f.name) or {}
-        images.append({
-            "name": f.name,
-            "type": meta.get("type", "interjers"),
-            "quality": meta.get("quality", "?"),
-            "url": f"/agent/image-proxy/{listing_id}/{f.name}",
-        })
-    return {"images": images}
+    has_raw = raw_dir.is_dir()
+    has_ai = ai_dir.is_dir()
+    if not has_raw and not has_ai:
+        return {"images": [], "note": f"Nav bilžu /storage/listings/{listing_id}/"}
+
+    # Priekšroka raw (oriģināls ar SS.lv ūdenszīmi); ja nav raw, fallback ai_ready
+    src_dir = raw_dir if has_raw else ai_dir
+    src_label = "raw" if has_raw else "ai_ready"
+
+    files = sorted(list(src_dir.glob("img_*.jpg"))
+                   + list(src_dir.glob("img_*.png"))
+                   + list(src_dir.glob("img_*.webp")))
+    images = [{
+        "name": f.name,
+        "type": src_label,  # 'raw' (ar ūdenszīmi) vai 'ai_ready' (apstrādāts)
+        "url": f"/agent/image-proxy/{listing_id}/{src_label}/{f.name}",
+    } for f in files]
+    return {
+        "images": images,
+        "source": src_label,
+        "has_ai_ready": has_ai,
+        "note": ("RAW bildes no SS.lv (ar ūdenszīmi). AI uzlabošana notiks pie 'Ielikt WP' klikšķa."
+                 if src_label == "raw" else
+                 "AI-apstrādātas bildes (ūdenszīme noņemta)."),
+    }
 
 
-@router.get("/image-proxy/{listing_id}/{filename}")
+@router.get("/image-proxy/{listing_id}/{folder}/{filename}")
 def image_proxy(
-    listing_id: int, filename: str,
+    listing_id: int, folder: str, filename: str,
     token: Optional[str] = None,
     x_rgc_token: Annotated[Optional[str], Header(alias="X-RGC-Token")] = None,
 ):
-    """Atgriež bildes baitus no /storage/listings/<id>/ai_ready/.
-    Auth caur X-RGC-Token header VAI ?token=... query param (lai
-    <img src=...> bez JS headerinjekcijas strādātu)."""
+    """Atgriež bildes baitus no /storage/listings/<id>/<folder>/.
+    folder = 'raw' (ss.lv oriģināls) vai 'ai_ready' (Seedream apstrādāts).
+    Auth: X-RGC-Token header VAI ?token=... query param."""
     from fastapi.responses import FileResponse
     if not RGC_MK_TOKEN:
         raise HTTPException(500, "Service nav konfigurēts")
     if x_rgc_token != RGC_MK_TOKEN and token != RGC_MK_TOKEN:
         raise HTTPException(403, "Trūkst tokena")
+    if folder not in ("raw", "ai_ready"):
+        raise HTTPException(400, "folder ir 'raw' vai 'ai_ready'")
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(400, "Nepareizs filename")
-    path = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready" / filename
+    path = STORAGE_ROOT / "listings" / str(listing_id) / folder / filename
     if not path.is_file():
         raise HTTPException(404, "Bilde nav atrasta")
     return FileResponse(path)
