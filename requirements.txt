@@ -17,3 +17,6 @@ weasyprint==63.1
 
 # Bilžu downscale PDF brošūrai (pdf_maker.py — 14 MB → ~2-3 MB)
 Pillow==11.0.0
+
+# PDF lapu apvienošana (bulk PDF endpoint — apvieno N listingus 1 brošūrā)
+pypdf==5.1.0

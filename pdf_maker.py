@@ -577,6 +577,43 @@ def _ensure_ai_ready(listing_id: int, source: str | None) -> None:
         print(f"[pdf_maker] image_classify brīdinājums: {e}")
 
 
+def render_pdf_bulk(listing_ids: list[int]) -> bytes:
+    """Apvieno N listingu PDF lapas vienā brošūrā (klientam dot kā saliktu
+    piedāvājumu).
+
+    Strādā secīgi — katram listingam:
+      1. `_ensure_ai_ready` (ss source: auto-image_pipeline)
+      2. `render_pdf` (WeasyPrint) → atsevišķs PDF
+      3. pypdf saliek lapas vienā gala dokumentā
+
+    Ilgums skaidri liels: ~5-10 min × N (pirmajā reizē uz ss-source).
+    Otrajā reizē — cache hit ai_ready/ → ātri.
+    """
+    from pypdf import PdfReader, PdfWriter  # lazy import (Railway)
+
+    if not listing_ids:
+        raise SystemExit("listing_ids tukšs saraksts")
+
+    writer = PdfWriter()
+    for idx, lid in enumerate(listing_ids, start=1):
+        print(f"[pdf_maker.bulk] {idx}/{len(listing_ids)} listing#{lid}")
+        try:
+            pdf_bytes = render_pdf(lid)
+        except Exception as e:
+            print(f"[pdf_maker.bulk] listing#{lid} izlaists: {e}")
+            continue
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        for page in reader.pages:
+            writer.add_page(page)
+
+    if len(writer.pages) == 0:
+        raise SystemExit("Nevienam listingam neizdevās izveidot PDF")
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def render_pdf(listing_id: int) -> bytes:
     """Galvenā API — atgriež PDF baitus."""
     if not DATABASE_URL:
