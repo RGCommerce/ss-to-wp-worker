@@ -51,6 +51,7 @@ import pdf_maker  # noqa: E402
 import publish_to_wp  # noqa: E402
 import queue_poller  # noqa: E402
 import pdf_poller  # noqa: E402
+import agent_ai_poller  # noqa: E402  # 3. AI plūsma — agent_anketa listings → AI papildina
 import agent_api  # noqa: E402  # Ceļš B: anketa-par-eku endpoints (Etaps 6)
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -64,15 +65,23 @@ SERVICE_VERSION = "0.2.0"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Palaiž queue_poller un pdf_poller fona taskus uz startup, apstādina uz shutdown."""
+    """Palaiž 3 fona pollerus uz startup, apstādina uz shutdown.
+
+    queue_poller — wp_export_queue → publish_to_wp (gan ss.lv, gan agent listings)
+    pdf_poller   — pdf_jobs → render_pdf_bulk + saglabā volume
+    agent_ai_poller — listings ar source LIKE 'agent_anketa%' un Debug_status NULL
+                      → OpenAI Vision + UPDATE listings ar AI laukiem
+                      (respect agent_locked_fields)
+    """
     stop_event = asyncio.Event()
     wp_task = asyncio.create_task(queue_poller.run_loop(stop_event))
     pdf_task = asyncio.create_task(pdf_poller.run_loop(stop_event))
+    ai_task = asyncio.create_task(agent_ai_poller.run_loop(stop_event))
     try:
         yield
     finally:
         stop_event.set()
-        for t in (wp_task, pdf_task):
+        for t in (wp_task, pdf_task, ai_task):
             try:
                 await asyncio.wait_for(t, timeout=5)
             except asyncio.TimeoutError:
@@ -175,7 +184,14 @@ def health():
         "has_token": bool(RGC_MK_TOKEN),
         "poller": queue_poller.get_status(),
         "pdf_poller": pdf_poller.get_status(),
+        "agent_ai_poller": agent_ai_poller.get_status(),
     }
+
+
+@app.get("/agent-ai/status")
+def agent_ai_status():
+    """Detalizēts agent AI poller statuss."""
+    return agent_ai_poller.get_status()
 
 
 @app.get("/poller/status")

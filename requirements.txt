@@ -20,3 +20,7 @@ Pillow==11.0.0
 
 # PDF lapu apvienošana (bulk PDF endpoint — apvieno N listingus 1 brošūrā)
 pypdf==5.1.0
+
+# AI worker (3. plūsma — agent_anketa listings) — ai_text_helpers.py + agent_ai_poller.py
+openai>=1.50.0
+beautifulsoup4>=4.12.0
