@@ -104,12 +104,12 @@ def _claim_next() -> Optional[dict]:
                        bp.has_conference_room    AS bp_has_conference_room
                 FROM properties.listings l
                 LEFT JOIN properties.building_profiles bp ON bp.id = l.building_profile_id
-                WHERE l.source LIKE 'agent_anketa%%'
+                WHERE l.source LIKE %s
                   AND l."Debug_status" IS NULL
                 ORDER BY l.id
                 LIMIT 1
                 FOR UPDATE OF l SKIP LOCKED
-            """)
+            """, ("agent_anketa%",))
             row = cur.fetchone()
             if not row:
                 return None
