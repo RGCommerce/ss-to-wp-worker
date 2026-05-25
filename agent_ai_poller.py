@@ -75,55 +75,46 @@ def get_status() -> dict:
 # ---------- DB ----------
 
 def _recover_stale() -> int:
-    """Atjauno listings ar Debug_status='processing' iesprūdis > AGENT_AI_STALE_MIN."""
-    if not DATABASE_URL:
-        return 0
-    with psycopg.connect(DATABASE_URL) as conn:
-        r = conn.execute(f"""
-            UPDATE properties.listings
-            SET "Debug_status" = NULL
-            WHERE source LIKE 'agent_anketa%%'
-              AND "Debug_status" = 'processing'
-              AND updated_at < now() - INTERVAL '{AGENT_AI_STALE_MIN} minutes'
-        """)
-        return r.rowcount
+    """No-op: Debug_status enum neatbalsta 'processing', tāpēc claim laikā
+    neuzliek processing flag. Mūsu paši pollers WAIT'os caur await
+    run_in_executor — dubultprocess viena workera ietvaros nenotiks.
+    Recovery vajadzīgs tikai, ja Railway scales > 1 instance (paliek TODO).
+    """
+    return 0
 
 
 def _claim_next() -> Optional[dict]:
-    """Atomāri paņem nākamo agent_anketa listings ar Debug_status NULL.
+    """Paņem nākamo agent_anketa listings ar Debug_status NULL.
 
-    Pievieno Debug_status='processing' lai citi workers (un mēs paši) to neizvēlas
-    atkārtoti. Atgriež visu listing rindu + building_profile dati (caur JOIN).
+    NB: Debug_status enum NEATĻAUJ 'processing' vērtību, tāpēc claim laikā
+    NEUZLIEK lock flag. Atstāj NULL kamēr AI pabeidz, tad uzliek 'ok'.
+
+    Iekš viena workera process (pašreiz) — `await run_in_executor` blokē
+    nākamo cikla iterāciju, tāpēc race condition nav iespējama. Ja Railway
+    kādreiz scales > 1, vajadzēs pārveidot uz vienu kopīgu transakciju visam
+    procesam (claim → AI → update) ar SELECT FOR UPDATE SKIP LOCKED.
     """
     if not DATABASE_URL:
         return None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        with conn.transaction():
-            cur = conn.execute("""
-                SELECT l.*,
-                       bp."Building_description" AS bp_building_description,
-                       bp.full_address           AS bp_full_address,
-                       bp.building_type          AS bp_building_type,
-                       bp.building_class         AS bp_building_class,
-                       bp.has_conference_room    AS bp_has_conference_room
-                FROM properties.listings l
-                LEFT JOIN properties.building_profiles bp ON bp.id = l.building_profile_id
-                WHERE l.source LIKE %s
-                  AND l."Debug_status" IS NULL
-                ORDER BY l.id
-                LIMIT 1
-                FOR UPDATE OF l SKIP LOCKED
-            """, ("agent_anketa%",))
-            row = cur.fetchone()
-            if not row:
-                return None
-            conn.execute(
-                """UPDATE properties.listings
-                   SET "Debug_status" = 'processing'
-                   WHERE id = %s""",
-                (row["id"],),
-            )
-            return dict(row)
+        cur = conn.execute("""
+            SELECT l.*,
+                   bp."Building_description" AS bp_building_description,
+                   bp.full_address           AS bp_full_address,
+                   bp.building_type          AS bp_building_type,
+                   bp.building_class         AS bp_building_class,
+                   bp.has_conference_room    AS bp_has_conference_room
+            FROM properties.listings l
+            LEFT JOIN properties.building_profiles bp ON bp.id = l.building_profile_id
+            WHERE l.source LIKE %s
+              AND l."Debug_status" IS NULL
+            ORDER BY l.id
+            LIMIT 1
+        """, ("agent_anketa%",))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
 
 
 def _mark_error(listing_id: int, error_msg: str) -> None:
