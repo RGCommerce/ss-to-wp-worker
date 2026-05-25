@@ -60,11 +60,22 @@ def _composite_key(street: str, city: str, area_m2: str, space_group: str) -> st
     return "|".join(parts)
 
 
+def _bget(building: dict, *keys):
+    """Paskata vairākus key variantus (atļauj abus kapitalizācijas formātus
+    no UI vs backend)."""
+    for k in keys:
+        v = building.get(k)
+        if v is not None and v != "":
+            return v
+    return None
+
+
 def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
-    """Atgriež building_profile_id. Ja existing_building_id ir norādīts,
-    UPDATE-o tukšos laukus; pretējā gadījumā INSERT jaunu."""
-    if building.get("existing_building_id"):
-        bp_id = int(building["existing_building_id"])
+    """Atgriež building_profile_id. Ja existing_building_id (vai existing_bp_id)
+    ir norādīts, UPDATE-o tukšos laukus; pretējā gadījumā INSERT jaunu."""
+    existing_id = _bget(building, "existing_building_id", "existing_bp_id")
+    if existing_id:
+        bp_id = int(existing_id)
         # UPDATE tikai tos laukus, ko aģents tagad ievada (un kuri DB-ā ir NULL)
         sets = []
         params = []
@@ -218,6 +229,15 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
     # building_profiles.building_key). Aģenta INSERT-iem vienkārši lietojam
     # ID kā unikālais; duplikātu kontrole notiek manuāli pa adresi.
 
+    # Helper — paskata abus kapitalizācijas variantus (lielo un mazo).
+    # UI šobrīd sūta mazos (space_group), bet vēsturiski lieli (Space_group).
+    def uget(*keys):
+        for k in keys:
+            v = unit.get(k)
+            if v is not None and v != "":
+                return v
+        return None
+
     # Galvenie lauki
     cols = {
         "building_profile_id": bp_id,
@@ -228,31 +248,64 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         "agent_user_id": wp_user_id,
         "agent_locked_fields": locked,
         "Debug_status": debug_status,
-        # Aģenta input
-        "Space_group": unit.get("Space_group"),
-        "area_m2": unit.get("area_m2"),
-        "floor": unit.get("floor"),
-        "Cik_telpas": unit.get("Cik_telpas"),
-        "cik_WC": unit.get("cik_WC"),
-        "price": unit.get("price"),
-        "price_type": unit.get("price_type"),
-        "Agent_comment": unit.get("Agent_comment"),
+        # Aģenta input — pieņem abus kapitalizācijas variantus
+        "Space_group": uget("Space_group", "space_group"),
+        "area_m2": uget("area_m2"),
+        "floor": uget("floor"),
+        "Cik_telpas": uget("Cik_telpas", "cik_telpas"),
+        "cik_WC": uget("cik_WC", "cik_wc"),
+        "price": uget("price"),
+        "price_type": uget("price_type"),
+        "Agent_comment": uget("Agent_comment", "agent_comment"),
     }
 
-    # FULL režīma papildlauki
+    # FULL režīma papildlauki — visi pieņem abus kapitalizācijas variantus
     if mode == "full":
-        for k in ("Space_condition", "Apkure", "Logu_type", "Gridas_materials",
-                  "Mebeleta_telpa", "Dalama_telpa", "Griestu_augstums",
-                  "electric_power_kw", "Gridas_izturiba_kg_m2",
-                  "Investiciju_strategija", "Pacelamie_varti_count",
-                  "Rampa_logistikai_count"):
-            v = unit.get(k)
+        full_field_pairs = [
+            ("Space_condition", "space_condition", "Space_condition"),
+            ("Apkure", "apkure", "Apkure"),
+            ("Logu_type", "logu_type", "Logu_type"),
+            ("Gridas_materials", "gridas_materials", "Gridas_materials"),
+            ("Mebeleta_telpa", "mebeleta_telpa", "Mebeleta_telpa"),
+            ("Dalama_telpa", "dalama_telpa", "Dalama_telpa"),
+            ("Griestu_augstums", "griestu_augstums", "Griestu_augstums"),
+            ("electric_power_kw", "electric_power_kw", "electric_power_kw"),
+            ("Gridas_izturiba_kg_m2", "gridas_izturiba_kg_m2", "Gridas_izturiba_kg_m2"),
+            ("Investiciju_strategija", "investiciju_strategija", "Investiciju_strategija"),
+            ("Pacelamie_varti_count", "pacelamie_varti_count", "Pacelamie_varti_count"),
+            ("Rampa_logistikai_count", "rampa_logistikai_count", "Rampa_logistikai_count"),
+            ("Parkings", "parkings", "Parkings"),
+            ("Zemes_gabals_m2", "zemes_gabals_m2", "Zemes_gabals_m2"),
+        ]
+        for big_key, small_key, db_col in full_field_pairs:
+            v = uget(big_key, small_key)
             if v:
-                cols[k] = v
-        # Check fields
+                cols[db_col] = v
+
+        # Boolean check lauki — UI tos sūta tieši kā augšējos lauks ar nosaukumiem
+        # piem. unit.Pacelamie_varti_check = "checked"/"not checked"/null
+        check_fields = [
+            "Pacelamie_varti_check", "Rampa_logistikai_check", "Virtuve_check",
+            "Sava_ieeja_check", "street_entrance",
+            "Apsargajama_teritorija_check", "Nozogota_teritorija_check",
+            "Auto_pacelajs_check", "Treifelis_Pacelajs",
+            "Ir_izlietne_telpa_check", "Balkons_check", "Sava_eka_check",
+        ]
+        for cf in check_fields:
+            v = uget(cf)
+            if v:
+                cols[cf] = v
+
+        # Vēsturiskais "checks" dict — ja UI to sūta atsevišķi
         for k, v in (unit.get("checks") or {}).items():
             if v:
                 cols[k] = v
+
+        # WC location no UI
+        wc_loc = uget("WC_location")
+        if wc_loc:
+            cols["WC_location"] = wc_loc
+
         # building_class/building_type uz listing (mig 014+ — listings = primary)
         if building.get("building_class"):
             cols["building_class"] = building["building_class"]

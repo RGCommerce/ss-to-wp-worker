@@ -278,60 +278,21 @@ def image_enhance_one(req: EnhanceOneReq, _auth: None = Depends(require_token)) 
 # 6) PUBLISH — galvenais endpoint, dabū anketas JSON un publicē uz WP
 # ---------------------------------------------------------------------------
 
-class PublishUnitReq(BaseModel):
-    Space_group: str
-    area_m2: str
-    floor: Optional[str] = None
-    Cik_telpas: Optional[str] = None
-    cik_WC: Optional[str] = None
-    price: str
-    price_type: str  # 'monthly' | 'regular'
-    Agent_comment: Optional[str] = None
-    images: list[str] = Field(default_factory=list)  # /storage relatīvie ceļi
-    plans: list[str] = Field(default_factory=list)
-    # Pilnā režīmā ievadītie lauki
-    Space_condition: Optional[str] = None
-    Apkure: Optional[str] = None
-    Logu_type: Optional[str] = None
-    Gridas_materials: Optional[str] = None
-    Mebeleta_telpa: Optional[str] = None
-    Dalama_telpa: Optional[str] = None
-    Griestu_augstums: Optional[str] = None
-    electric_power_kw: Optional[str] = None
-    Gridas_izturiba_kg_m2: Optional[str] = None
-    Investiciju_strategija: Optional[str] = None
-    # Check fields (pilnā režīmā)
-    checks: dict[str, str] = Field(default_factory=dict)
-    # Skaitiķi
-    Pacelamie_varti_count: Optional[str] = None
-    Rampa_logistikai_count: Optional[str] = None
-
-
-class PublishBuildingReq(BaseModel):
-    existing_building_id: Optional[int] = None  # ja autocomplete izvēlējās esošu
-    street: str
-    city: str
-    district: Optional[str] = None
-    building_type: Optional[str] = None
-    building_class: Optional[str] = None
-    has_conference_room: Optional[str] = None  # 'checked' | 'not checked'
-    images: list[str] = Field(default_factory=list)
-    # Pilnā režīmā
-    Building_description: Optional[str] = None
-    Apkure: Optional[str] = None
-    Parkings: Optional[str] = None
-    Apsaimniekosanas_maksa: Optional[str] = None
-    NIN: Optional[str] = None
-    Komunalie: Optional[str] = None
-    Zemes_gabals_m2: Optional[str] = None
-
-
 class PublishReq(BaseModel):
+    """Permissīva shēma — building un units ir dict, lai pieņem abus
+    kapitalizācijas variantus (Space_group / space_group, existing_bp_id /
+    existing_building_id) un images kā list[dict] (ar type+featured atzīmēm)
+    vai list[str] (tikai paths, vēsturiski).
+
+    Validācija un normalizēšana notiek agent_publish.py iekš _insert_listing()
+    un _get_or_create_bp(), kas paskata abas kapitalizācijas un images formāti.
+    """
     mode: str  # 'easy' | 'full'
     wp_user_id: int
-    draft_id: Optional[int] = None  # ja autosaved
-    building: PublishBuildingReq
-    units: list[PublishUnitReq]
+    draft_id: Optional[int] = None
+    requested_by_email: Optional[str] = None
+    building: dict[str, Any]
+    units: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
