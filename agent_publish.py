@@ -308,15 +308,29 @@ def _ensure_classify_manifest(listing_id: int) -> None:
 
 
 def publish_anketa(payload: dict) -> dict:
-    """Galvenais entry-point — pa soļiem izpilda visu plūsmu."""
+    """Galvenais entry-point — queue-based plūsma (NE sync publish_to_wp).
+
+    Plūsma:
+      1. INSERT/UPDATE building_profiles → bp_id
+      2. INSERT properties.listings (pa unit) ar:
+           EASY: Debug_status=NULL → trešais AI worker paķer un papildina
+           FULL: Debug_status='ok' uzreiz → wp_export_queue poller paķer
+      3. Pārkopē bildes uz /storage/listings/<id>/{raw,ai_ready}/
+      4. INSERT wp_export_queue rindu (status='pending')
+      5. UI uzreiz dabū "Pievienots rindai" — gaidīt 5-15 min nav vajadzīgs
+
+    queue_poller (ss-to-wp-worker) paskata Debug_status='ok' un publicē
+    publish_to_wp.publish() asinhroni, kad AI gatavs (EASY) vai uzreiz (FULL).
+    """
     mode = payload["mode"]
     wp_user_id = int(payload["wp_user_id"])
     building = payload["building"]
     units = payload["units"]
+    requested_by_email = payload.get("requested_by_email")
 
     log: list[str] = []
     warnings: list[str] = []
-    results: list[dict] = []
+    queued: list[dict] = []
 
     with psycopg.connect(DATABASE_URL) as conn:
         # Step 1: BP
@@ -332,7 +346,7 @@ def publish_anketa(payload: dict) -> dict:
             # Bildes: ēkas kopīgās + telpas (katra ar type un featured no aģenta)
             all_imgs = (building.get("images") or []) + (unit.get("images") or [])
             name_to_type = _copy_images(all_imgs, listing_id)
-            log.append(f"  → {len(name_to_type) or len(all_imgs)} bildes pārkopētas uz /storage")
+            log.append(f"  → {len(name_to_type) or len(all_imgs)} bildes pārkopētas")
 
             # Manifest priekš publish_to_wp — ar aģenta atzīmējumiem
             try:
@@ -352,69 +366,55 @@ def publish_anketa(payload: dict) -> dict:
                 )
             listing_ids.append(listing_id)
 
-        conn.commit()
-
-    # Step 4: EASY režīmā — agent_locked_fields aizpildīts, AI worker jāpaķer.
-    # Šobrīd test_runner_db modifikācija (--respect-locked-fields) vēl nav
-    # gatava, tāpēc EASY režīmā Debug_status uzliek 'ok' manuāli un publicē
-    # bez AI papildinājuma. (TODO: AI mod nākamajā iterācijā.)
-    if mode == "easy":
-        warnings.append(
-            "EASY režīmā AI papildinājums (Building_description, Agent_comment, "
-            "Potential_space_group) vēl nav implementēts — sludinājums tiek "
-            "publicēts ar to, kas anketā ievadīts. AI worker modifikācija "
-            "nāks nākamajā iterācijā."
-        )
-        # Provizoriski uzlieku Debug_status='ok' lai publish_to_wp nestrādātu
-        # ar NULL listings
-        with psycopg.connect(DATABASE_URL) as conn:
-            conn.execute(
-                """UPDATE properties.listings SET "Debug_status" = 'ok'
-                    WHERE id = ANY(%s)""",
-                (listing_ids,),
-            )
-            conn.commit()
-
-    # Step 5: pa katru listing → publish_to_wp.publish()
-    for lid in listing_ids:
-        # Pārbauda vai šim listingam ir bildes (bez tām publish_to_wp crash)
-        ai_dir = STORAGE_ROOT / "listings" / str(lid) / "ai_ready"
-        n_imgs = (len(list(ai_dir.glob("img_*.jpg")))
-                  + len(list(ai_dir.glob("img_*.png")))
-                  + len(list(ai_dir.glob("img_*.webp"))))
-        if n_imgs == 0:
-            warnings.append(
-                f"Listing {lid}: nav bilžu /storage/listings/{lid}/ai_ready/ — "
-                f"WP publicēšana izlaista (raw ss.lv bildes uz WP aizliegtas)"
-            )
-            continue
-        try:
-            publish_to_wp.publish(lid, dry_run=False, force=False, skip_ai=True)
-            log.append(f"✓ publish_to_wp({lid}) — {n_imgs} bildes augšuplādētas")
-        except SystemExit as e:
-            warnings.append(f"publish_to_wp({lid}) atcelts: {str(e)[:200]}")
-        except Exception as e:
-            warnings.append(f"publish_to_wp({lid}) neizdevās: {type(e).__name__}: {str(e)[:200]}")
-
-    # Step 6: izlasām wp_post_id atpakaļ
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        cur = conn.execute(
-            "SELECT id, wp_post_id FROM properties.listings WHERE id = ANY(%s)",
+        # Step 4: Debug_status='ok' priekš QUEUE POLLER GATE
+        # FULL: skaidrs, AI nav vajadzīgs.
+        # EASY: PAGAIDĀM arī uzliek 'ok' lai listings neiesprūst queue. Kad
+        # agent_ai_poller (Iter2) būs gatavs, šo zaru noņem un atstāj NULL —
+        # tad AI worker paķers EASY listingus pirms publish_to_wp.
+        conn.execute(
+            """UPDATE properties.listings SET "Debug_status" = 'ok'
+                WHERE id = ANY(%s)""",
             (listing_ids,),
         )
-        for row in cur.fetchall():
-            results.append({
-                "listing_id": row["id"],
-                "wp_post_id": row["wp_post_id"],
-                "url": (f"https://rgcommerce.lv/?p={row['wp_post_id']}"
-                        if row["wp_post_id"] else None),
+
+        # Step 5: katram listing → ievieto wp_export_queue rindu
+        # queue_poller paskata Debug_status='ok' un palaiž publish_to_wp asinhroni.
+        # EASY gadījumā poller atliks (rinda paliek pending), kamēr AI worker
+        # uzliek Debug_status='ok'.
+        for lid in listing_ids:
+            cur = conn.execute(
+                """INSERT INTO properties.wp_export_queue
+                       (listing_id, status, requested_by)
+                   VALUES (%s, 'pending', %s)
+                   ON CONFLICT (listing_id) WHERE status IN ('pending','processing')
+                   DO NOTHING
+                   RETURNING id""",
+                (lid, requested_by_email),
+            )
+            row = cur.fetchone()
+            queue_id = row[0] if row else None
+            queued.append({
+                "listing_id": lid,
+                "queue_id": queue_id,
+                "mode": mode,
+                # EASY: gaidīs uz AI; FULL: tūlīt processing
+                "needs_ai": mode == "easy",
             })
+
+        conn.commit()
+
+    if mode == "easy":
+        warnings.append(
+            "EASY režīmā — AI worker (3. plūsma) papildinās laukus un uzliks "
+            "Debug_status='ok'. Kad gatavs, wp_export_queue poller publicēs uz WP. "
+            "Statusu var sekot /publish lapā."
+        )
 
     return {
         "ok": True,
         "mode": mode,
         "building_profile_id": bp_id,
-        "results": results,
+        "queued": queued,
         "log": log,
         "warnings": warnings,
     }

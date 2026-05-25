@@ -71,19 +71,26 @@ def _recover_stale() -> int:
 def _claim_next() -> Optional[dict]:
     """Atomāri paņem nākamo pending rindu un atzīmē processing.
 
-    Atgriež claim-oto rindu vai None, ja nav pending. FOR UPDATE SKIP LOCKED
-    nodrošina, ka pat ar vairākiem pollers vienlaicīgi neviens neatkārtos."""
+    GATE: listings.Debug_status MUST = 'ok'. Tā agent_anketa EASY rindas, kuras
+    vēl gaida uz AI worker (3. plūsma) papildinājumu, NETIEK paķertas, kamēr
+    AI nav uzlicis Debug_status='ok'. publish_to_wp.publish() vienalga atteiktos
+    ar NULL Debug_status — labāk poller pats atliek.
+
+    Atgriež claim-oto rindu vai None. FOR UPDATE SKIP LOCKED — droši paralēli.
+    """
     if not DATABASE_URL:
         return None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         with conn.transaction():
             cur = conn.execute("""
-                SELECT id, listing_id, attempts
-                FROM properties.wp_export_queue
-                WHERE status = 'pending'
-                ORDER BY priority DESC, requested_at ASC
+                SELECT q.id, q.listing_id, q.attempts
+                FROM properties.wp_export_queue q
+                JOIN properties.listings l ON l.id = q.listing_id
+                WHERE q.status = 'pending'
+                  AND l."Debug_status" = 'ok'
+                ORDER BY q.priority DESC, q.requested_at ASC
                 LIMIT 1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF q SKIP LOCKED
             """)
             row = cur.fetchone()
             if not row:
