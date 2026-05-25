@@ -118,13 +118,16 @@ def _claim_next() -> Optional[dict]:
 
 
 def _mark_error(listing_id: int, error_msg: str) -> None:
+    """Marks listing as failed AI. Uzliek 'low_evidence' enum (lai _claim_next
+    to vairs neredz), saglabā kļūdu Debug_note. Lai retry — manuāli noliek
+    Debug_status=NULL caur DB skriptu."""
     if not DATABASE_URL:
         return
     truncated = (error_msg or "")[:500]
     with psycopg.connect(DATABASE_URL) as conn:
         conn.execute(
             """UPDATE properties.listings
-               SET "Debug_status" = NULL,
+               SET "Debug_status" = 'low_evidence',
                    "Debug_note"   = %s
                WHERE id = %s""",
             (truncated, listing_id),
