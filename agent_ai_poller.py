@@ -56,6 +56,10 @@ _state = {
     "processed_total": 0,
     "errors_total": 0,
     "skipped_no_key": 0,
+    # Diagnostika — kas notika pēdējā cyclā
+    "last_claim_at": None,
+    "last_claim_result": None,  # "row_id=82428" vai "None" vai "error: ..."
+    "loop_iterations": 0,
 }
 
 
@@ -337,15 +341,23 @@ async def run_loop(stop_event: asyncio.Event) -> None:
         logger.error(f"Recovery kļūda: {e}", exc_info=True)
 
     try:
+        from datetime import datetime, timezone
         while not stop_event.is_set():
+            _state["loop_iterations"] += 1
+            _state["last_claim_at"] = datetime.now(timezone.utc).isoformat()
             # Ja nav API key, gaida un atkārto pārbaudi
             if not os.getenv("OPENAI_API_KEY"):
+                _state["last_claim_result"] = "skipped: no OPENAI_API_KEY"
                 await _sleep_interruptible(stop_event, AGENT_AI_INTERVAL)
                 continue
 
             try:
                 row = await loop.run_in_executor(None, _claim_next)
+                _state["last_claim_result"] = (
+                    f"row_id={row['id']}" if row else "None (no pending rows)"
+                )
             except Exception as e:
+                _state["last_claim_result"] = f"error: {type(e).__name__}: {str(e)[:200]}"
                 logger.error(f"_claim_next: {e}", exc_info=True)
                 await _sleep_interruptible(stop_event, AGENT_AI_INTERVAL)
                 continue
