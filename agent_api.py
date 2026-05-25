@@ -403,6 +403,29 @@ def image_proxy(
     return FileResponse(path)
 
 
+@router.get("/draft-image-proxy/{draft_id}/{target}/{filename}")
+def draft_image_proxy(
+    draft_id: int, target: str, filename: str,
+    token: Optional[str] = None,
+    x_rgc_token: Annotated[Optional[str], Header(alias="X-RGC-Token")] = None,
+):
+    """Atgriež bildes baitus no /storage/agent_drafts/<draft_id>/<target>/.
+    Lieto anketa-par-eku frontendam, lai parādītu draftā augšupielādētās
+    bildes pirms publikācijas (kad tās vēl nav uz listings/<id>/raw/)."""
+    from fastapi.responses import FileResponse
+    if not RGC_MK_TOKEN:
+        raise HTTPException(500, "Service nav konfigurēts")
+    if x_rgc_token != RGC_MK_TOKEN and token != RGC_MK_TOKEN:
+        raise HTTPException(403, "Trūkst tokena")
+    safe_target = target.replace("/", "_").replace("\\", "_")[:32]
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Nepareizs filename")
+    path = STORAGE_ROOT / "agent_drafts" / str(draft_id) / safe_target / filename
+    if not path.is_file():
+        raise HTTPException(404, "Bilde nav atrasta")
+    return FileResponse(path)
+
+
 # ---------------------------------------------------------------------------
 # 8) REPUBLISH — esoša listing-a (ne agent_anketa) publicēšana uz WP
 # ---------------------------------------------------------------------------
