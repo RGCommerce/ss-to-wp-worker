@@ -367,15 +367,17 @@ def publish_anketa(payload: dict) -> dict:
             listing_ids.append(listing_id)
 
         # Step 4: Debug_status='ok' priekš QUEUE POLLER GATE
-        # FULL: skaidrs, AI nav vajadzīgs.
-        # EASY: PAGAIDĀM arī uzliek 'ok' lai listings neiesprūst queue. Kad
-        # agent_ai_poller (Iter2) būs gatavs, šo zaru noņem un atstāj NULL —
-        # tad AI worker paķers EASY listingus pirms publish_to_wp.
-        conn.execute(
-            """UPDATE properties.listings SET "Debug_status" = 'ok'
-                WHERE id = ANY(%s)""",
-            (listing_ids,),
-        )
+        # FULL: skaidrs, AI nav vajadzīgs — uzliek uzreiz.
+        # EASY: atstāj NULL — agent_ai_poller paķers listings, palaiž OpenAI
+        # Vision (teksts + bildes), papildina laukus respektējot
+        # agent_locked_fields, un beigās pats uzliek Debug_status='ok'.
+        # Tad queue_poller paķer rindu un publicē uz WP.
+        if mode == "full":
+            conn.execute(
+                """UPDATE properties.listings SET "Debug_status" = 'ok'
+                    WHERE id = ANY(%s)""",
+                (listing_ids,),
+            )
 
         # Step 5: katram listing → ievieto wp_export_queue rindu
         # queue_poller paskata Debug_status='ok' un palaiž publish_to_wp asinhroni.
