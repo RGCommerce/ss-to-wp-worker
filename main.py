@@ -60,7 +60,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 DATABASE_URL = os.getenv("DATABASE_URL")
 RGC_MK_TOKEN = os.getenv("RGC_MK_TOKEN")  # Auth header pārbaude
 SERVICE_NAME = "ss-to-wp-worker"
-SERVICE_VERSION = "0.2.0"
+SERVICE_VERSION = "0.3.0-agent-ai-fix2"
 
 
 @asynccontextmanager
@@ -192,6 +192,31 @@ def health():
 def agent_ai_status():
     """Detalizēts agent AI poller statuss."""
     return agent_ai_poller.get_status()
+
+
+@app.get("/agent-ai/debug/find-pending",
+         dependencies=[Depends(require_token)])
+def agent_ai_debug_find_pending():
+    """Diagnoze: atgriež visus agent_anketa listings ar Debug_status IS NULL
+    (=tos, kuriem AI workerim vajadzētu paķert). Bez FOR UPDATE."""
+    if not DATABASE_URL:
+        return {"error": "DATABASE_URL nav konfigurēts"}
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        cur = conn.execute("""
+            SELECT l.id, l.source, l."Debug_status", l."Debug_note",
+                   l.building_profile_id,
+                   COALESCE(array_length(l.local_image_paths_processed, 1), 0) AS img_count
+            FROM properties.listings l
+            WHERE l.source LIKE %s AND l."Debug_status" IS NULL
+            ORDER BY l.id DESC
+            LIMIT 10
+        """, ("agent_anketa%",))
+        rows = [dict(r) for r in cur.fetchall()]
+    return {
+        "count": len(rows),
+        "service_version": SERVICE_VERSION,
+        "rows": rows,
+    }
 
 
 @app.get("/poller/status")
