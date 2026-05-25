@@ -108,7 +108,7 @@ FEATURE_CHECK_FIELDS: dict[str, str] = {
     "Ir_izlietne_telpa_check":      "Izlietne telpā",
     "Sava_eka_check":               "Visa ēka",
     "Nozogota_teritorija_check":    "Nožogota teritorija",
-    "Has_conference_room":          "Konferenču zāle",
+    "Has_conference_room":          "Konferenču telpa",
     "Treifelis_Pacelajs":           "Treiferis / Pacēlājs",
     "Vides_pieejamiba_check":       "Vides pieejamība",
     "Mazgajamas_sienas_check":      "Mazgājamas sienas",
@@ -147,7 +147,9 @@ def resolve_feature_terms(publisher, raw: dict) -> list[int]:
 
     mb = str(raw.get("Mebeleta_telpa") or "").strip().lower()
     if mb in ("jā", "ja", "daļēji", "daleji"):
-        _ensure("Mēbelēta")
+        # "Mēbelēts" — kanoniskā vērtība (esošajā WP 28 īp.; "Mēbelēta" 2 īp. tika
+        # nepareizi izveidots kā dublikāts). Labots 2026-05-25.
+        _ensure("Mēbelēts")
 
     if str(raw.get("Logu_type") or "").strip() == "Lielie Logi":
         _ensure("Lieli logi")
