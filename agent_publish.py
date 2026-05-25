@@ -118,31 +118,91 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     return cur.fetchone()[0]
 
 
-def _copy_images(draft_image_paths: list[str], listing_id: int) -> int:
+# Bildes secības prioritāte (manifest order). Featured bilde TIEK pārvietota uz
+# pirmo vietu IEKŠ fasade kategorijas; plans iet pēdējās, jo publish_to_wp.py
+# tās novietos atsevišķi (fave_floor_plans) un izņems no galvenās galerijas.
+_TYPE_PRIORITY = {"fasade": 0, "interjers": 1, "cits": 2, "plans": 3}
+
+
+def _normalize_images(raw: list) -> list[dict]:
+    """Akceptē abus formātus:
+      list[str]           — tikai paths (vecais)
+      list[dict]          — ar 'path', 'type' (opcionāls), 'featured' (opcionāls)
+    Atgriež normalizētu list[dict].
+    """
+    out: list[dict] = []
+    for it in raw or []:
+        if isinstance(it, str):
+            out.append({"path": it, "type": None, "featured": False})
+        elif isinstance(it, dict) and it.get("path"):
+            out.append({
+                "path": it["path"],
+                "type": it.get("type"),
+                "featured": bool(it.get("featured")),
+                "enhanced_path": it.get("enhanced_path"),
+            })
+    return out
+
+
+def _sort_images_for_publish(images: list[dict]) -> list[dict]:
+    """Sakārto bildes WP publicēšanas secībā:
+       1) Featured bilde PIRMAJĀ vietā (kļūst img_001, kas publish_to_wp ņem
+          kā featured_media)
+       2) Citas fasāde
+       3) Interjers
+       4) Cits / unknown
+       5) Plāns (last — publish_to_wp.py to izņem no galerijas un sūta uz
+          fave_floor_plans)
+    """
+    def sort_key(idx_img: tuple[int, dict]) -> tuple[int, int, int]:
+        idx, img = idx_img
+        t = img.get("type") or "cits"
+        prio = _TYPE_PRIORITY.get(t, 2)  # unknown → "cits"
+        feat = 0 if img.get("featured") else 1
+        # Featured kandidāts paliek savā type prio, bet feat=0 to atstāj
+        # priekšā tās type grupā. Stable sort glabā oriģ. secību iekš grupas.
+        return (prio, feat, idx)
+
+    return [img for _idx, img in sorted(
+        enumerate(images), key=sort_key
+    )]
+
+
+def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
     """Pārkopē bildes no /storage/agent_drafts/<draft>/<target>/<file>
-    uz /storage/listings/<listing_id>/raw/ un ai_ready/. Atgriež skaitu."""
-    if not draft_image_paths:
-        return 0
+    uz /storage/listings/<listing_id>/{raw,ai_ready}/. Atgriež
+    {filename_in_dst: type} priekš manifest.
+    """
+    images = _normalize_images(draft_images)
+    if not images:
+        return {}
+    # Aģenta atzīmētā secība — featured first, fasade, interjers, cits, plans
+    ordered = _sort_images_for_publish(images)
+
     dst_raw = STORAGE_ROOT / "listings" / str(listing_id) / "raw"
     dst_ai = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
     dst_raw.mkdir(parents=True, exist_ok=True)
     dst_ai.mkdir(parents=True, exist_ok=True)
 
-    copied = 0
-    for i, rel_path in enumerate(draft_image_paths, start=1):
+    name_to_type: dict[str, str] = {}
+    copied_idx = 0
+    for img in ordered:
+        rel_path = img.get("enhanced_path") or img["path"]
         src = STORAGE_ROOT / rel_path
         if not src.is_file():
             print(f"  ⚠ Bilde nav atrasta: {rel_path}")
             continue
-        # Nosaukums standartizēts: img_001.jpg, img_002.jpg, ...
+        copied_idx += 1
         ext = src.suffix.lower() or ".jpg"
-        name = f"img_{i:03d}{ext}"
-        # raw — oriģināls
+        name = f"img_{copied_idx:03d}{ext}"
         shutil.copy2(src, dst_raw / name)
-        # ai_ready — tā pati bilde (aģenta bildes NAV jāIet caur Seedream)
+        # ai_ready — tā pati bilde (aģenta bildes NEIET caur Seedream)
         shutil.copy2(src, dst_ai / name)
-        copied += 1
-    return copied
+        # Manifest tips — aģenta atzīmējums vai None → vēlāk default
+        agent_type = img.get("type")
+        if agent_type in ("fasade", "interjers", "cits", "plans"):
+            name_to_type[name] = agent_type
+    return name_to_type
 
 
 def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
@@ -209,29 +269,42 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
     return listing_id
 
 
-def _ensure_classify_manifest(listing_id: int) -> None:
-    """Ja bildes ielādētas tieši ai_ready/ (aģenta uzfočētas), arī jāuztaisa
-    manifest, lai publish_to_wp.py zin secību (fasāde pirmā, plāns ārā).
-    Šobrīd default klasifikācija = pirmā kā fasade, pārējās interjers."""
-    import image_classify  # local import
+def _write_image_manifest(listing_id: int, agent_types: dict[str, str]) -> None:
+    """Pieraksta `_image_manifest.json` priekš publish_to_wp.py.
+
+    Aģents atzīmēja katrai bildei tipu (fasade/interjers/plans/cits) — tas iet
+    pa virsu. Neatzīmētajām bildēm uzliek default — pirmā = fasade, pārējās =
+    interjers (lai publish_to_wp pareizi sakārto galeriju un featured_media).
+    """
     ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
     if not ai_dir.is_dir():
         return
     images = sorted(ai_dir.glob("img_*.jpg")) + sorted(ai_dir.glob("img_*.png"))
     if not images:
         return
-    # Šobrīd vienkāršotā default klasifikācija. Vēlāk = gpt-4o-mini vision.
     manifest = {}
     for i, p in enumerate(images):
-        manifest[p.name] = {
-            "type": "fasade" if i == 0 else "interjers",
-            "quality": "good",
-        }
+        # Aģenta atzīmējums override default
+        agent_t = agent_types.get(p.name)
+        if agent_t:
+            manifest[p.name] = {"type": agent_t, "quality": "good"}
+        else:
+            manifest[p.name] = {
+                "type": "fasade" if i == 0 else "interjers",
+                "quality": "good",
+            }
     manifest_path = ai_dir.parent / "_image_manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _ensure_classify_manifest(listing_id: int) -> None:
+    """Backward compat — saglabāju veco nosaukumu, bet bez aģenta tipiem.
+    Lieto, ja `_copy_images` neatgrieza nekādu mapping (tas neturētu notikt
+    jaunajā plūsmā, kad agent_publish vienmēr pārsūta caur jauno path)."""
+    _write_image_manifest(listing_id, {})
 
 
 def publish_anketa(payload: dict) -> dict:
@@ -256,14 +329,14 @@ def publish_anketa(payload: dict) -> dict:
             listing_id = _insert_listing(conn, bp_id, unit, building, mode, wp_user_id)
             log.append(f"✓ listing #{i} → id={listing_id}")
 
-            # Bildes: ēkas kopīgās + telpas + plāni
+            # Bildes: ēkas kopīgās + telpas (katra ar type un featured no aģenta)
             all_imgs = (building.get("images") or []) + (unit.get("images") or [])
-            n_copied = _copy_images(all_imgs, listing_id)
-            log.append(f"  → {n_copied} bildes pārkopētas uz /storage")
+            name_to_type = _copy_images(all_imgs, listing_id)
+            log.append(f"  → {len(name_to_type) or len(all_imgs)} bildes pārkopētas uz /storage")
 
-            # Manifest priekš publish_to_wp galerijas secības
+            # Manifest priekš publish_to_wp — ar aģenta atzīmējumiem
             try:
-                _ensure_classify_manifest(listing_id)
+                _write_image_manifest(listing_id, name_to_type)
             except Exception as e:
                 warnings.append(f"manifest neizdevās listing {listing_id}: {e}")
 
