@@ -70,12 +70,60 @@ def _bget(building: dict, *keys):
     return None
 
 
+# LV adreses sufiksi — ja street nesatur kādu no šiem, default 'iela'
+_STREET_SUFFIXES = (
+    "iela", "gatve", "bulvāris", "bulvaris", "prospekts", "šoseja", "soseja",
+    "ceļš", "cels", "laukums", "aleja", "krastmala", "līnija", "linija",
+    "tilts", "pasāža", "pasaza",
+)
+
+
+def _ensure_street_suffix(street: str | None) -> str | None:
+    """Normalizē ielas nosaukumu uz 'Valdeķu iela 1' formātā.
+
+    Loģika:
+      - Ja jau satur kādu no suffix (iela/gatve/bulv./...) — atstāj kā ir.
+      - Citādi pieņem, ka pirmā vārds = ielas nosaukums (var būt vairāki),
+        pēdējais token = māju numurs. Iesprauž 'iela' starpā.
+
+    Piemēri:
+      "Valdeķu 1"           → "Valdeķu iela 1"
+      "Valdeķu iela 1"      → "Valdeķu iela 1"  (jau pareizs)
+      "Brīvības 33"         → "Brīvības iela 33"
+      "Brīvības gatve 411"  → "Brīvības gatve 411"  (jau pareizs)
+      "Kr. Barona 17"       → "Kr. Barona iela 17"
+    """
+    if not street:
+        return street
+    s = street.strip()
+    if not s:
+        return s
+    lower = s.lower()
+    for sfx in _STREET_SUFFIXES:
+        # Pārbauda kā atsevišķu vārdu (\b... bet ar Unicode burtiem). Vienkāršāk
+        # — pārbauda vai sastāv vārda robežās.
+        if f" {sfx} " in f" {lower} " or lower.endswith(f" {sfx}"):
+            return s  # jau ir suffix
+
+    # Pieņem, ka pēdējais tokens ir māju numurs. Pievieno 'iela' tieši pirms tā.
+    parts = s.rsplit(None, 1)
+    if len(parts) == 2:
+        name, number = parts
+        # Number var saturēt skaitļus, burtus (1, 1a, 12/3, 17b, ...) — pieņemam
+        if any(ch.isdigit() for ch in number):
+            return f"{name} iela {number}"
+    # Bez numurs — vienkārši pievieno suffix beigās
+    return f"{s} iela"
+
+
 def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     """Atgriež building_profile_id. Ja existing_building_id (vai existing_bp_id)
     ir norādīts, UPDATE-o tukšos laukus; pretējā gadījumā INSERT jaunu."""
     existing_id = _bget(building, "existing_building_id", "existing_bp_id")
     if existing_id:
         bp_id = int(existing_id)
+        # Ja existing BP — atstāj street kā ir DB (varbūt jau atvieglots ar 'iela').
+        # Šo Pārstrādājam tikai jaunajiem BP zemāk.
         # UPDATE tikai tos laukus, ko aģents tagad ievada (un kuri DB-ā ir NULL)
         sets = []
         params = []
@@ -97,7 +145,8 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
         return bp_id
 
     # Jauns BP
-    street = (building.get("street") or "").strip()
+    raw_street = (building.get("street") or "").strip()
+    street = _ensure_street_suffix(raw_street) or raw_street
     city = (building.get("city") or "").strip()
     if not street or not city:
         raise ValueError("street + city ir obligāti")
@@ -241,7 +290,7 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
     # Galvenie lauki
     cols = {
         "building_profile_id": bp_id,
-        "street": building.get("street"),
+        "street": _ensure_street_suffix(building.get("street")),
         "city": building.get("city"),
         "district": building.get("district"),
         "source": source,
