@@ -180,24 +180,23 @@ def _build_text_from_listing(row: Dict[str, Any]) -> str:
 def _build_image_urls_for_openai(row: Dict[str, Any]) -> List[str]:
     """Salikt publiskos image-proxy URLs (ar tokenu), ko OpenAI Vision fetch'os.
 
-    local_image_paths_processed satur `listings/<id>/ai_ready/img_*.jpg` ceļus.
-    Pārveido uz pilnu URL ar token query param (image-proxy backend atbalsta).
+    local_image_paths_processed var saturēt:
+      - relatīvos ceļus: "listings/<id>/ai_ready/img_001.jpg"
+      - absolūtos ceļus: "/storage/listings/<id>/ai_ready/img_001.jpg"
+    Regex atrod 'listings/<id>/<folder>/<file>' segmentu jebkurā formātā.
     """
     if not RGC_MK_TOKEN:
         return []
+    import re
     paths = row.get("local_image_paths_processed") or []
+    pattern = re.compile(r"listings/(\d+)/(ai_ready|raw)/([^/\\\\]+)$")
     urls: List[str] = []
     for rel in paths:
-        rel_str = str(rel)
-        # piem.: "listings/17554/ai_ready/img_001.jpg"
-        parts = rel_str.split("/")
-        if len(parts) < 4 or parts[0] != "listings":
+        rel_str = str(rel).replace("\\", "/")  # Windows path safety
+        m = pattern.search(rel_str)
+        if not m:
             continue
-        listing_id = parts[1]
-        folder = parts[2]  # "ai_ready" vai "raw"
-        filename = parts[3]
-        if folder not in ("ai_ready", "raw"):
-            continue
+        listing_id, folder, filename = m.groups()
         url = (
             f"{SS_TO_WP_BASE_URL}/agent/image-proxy/"
             f"{listing_id}/{folder}/{filename}?token={RGC_MK_TOKEN}"
