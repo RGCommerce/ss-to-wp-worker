@@ -87,14 +87,30 @@ def _num(v) -> Optional[str]:
     return m.group(0).replace(",", ".") if m else None
 
 
+def _trim_dec(v) -> str:
+    """Cenas decimāldaļas likums (Raimonds 2026-05-28): vesels skaitlis → bez
+    decimālēm ('12.00'→'12'); ja ir kapeikas → tieši 2 cipari ('12.5'→'12.50',
+    '12.1'→'12.10', '12.14'→'12.14'). BEZ tūkstošu atstarpēm (Houzez meta).
+    Nečīkst, ja nav skaitlis — atgriež kā ir."""
+    s = str(v or "").strip()
+    if not s:
+        return s
+    try:
+        f = float(s.replace(",", "."))
+    except ValueError:
+        return s
+    return str(int(f)) if f == int(f) else f"{f:.2f}"
+
+
 def _money(v) -> str:
-    """Skaitlis ar tūkstošu atdalītāju (LV konvencija ar atstarpi):
-    '436000' → '436 000', '785' → '785', '3.49' → '3.49'."""
+    """Cena ar tūkstošu atdalītāju (LV konvencija ar atstarpi) + _trim_dec
+    decimāldaļu likums: '436000'→'436 000', '785'→'785', '12.0'→'12',
+    '12.5'→'12.50', '12.14'→'12.14'."""
     s = str(v or "").strip()
     if not s:
         return s
     neg = s.startswith("-")
-    s = s.lstrip("-")
+    s = _trim_dec(s.lstrip("-"))
     intp, _, dec = s.partition(".")
     grouped = ""
     while len(intp) > 3:
@@ -461,7 +477,7 @@ def image_alt(space_group: str, raw: dict) -> str:
         bits.append(f"{a} m²")
     if price and a:
         try:
-            bits.append(f"{round(float(price)/float(a), 2)} EUR/m²")
+            bits.append(f"{_money(round(float(price)/float(a), 2))} EUR/m²")
         except (ValueError, ZeroDivisionError):
             pass
     return " ".join(bits)

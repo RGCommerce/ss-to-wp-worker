@@ -33,8 +33,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(Path(__file__).parent / "storage")))
 
 # Lauki, ko aģents tieši ievada caur anketu — AI worker tos NEDRĪKST pārrakstīt
-EASY_LOCKED_FIELDS = ["Space_group", "area_m2", "floor", "Cik_telpas", "cik_WC",
-                      "price", "price_type", "Agent_comment"]
+EASY_LOCKED_FIELDS = ["Space_group", "area_m2", "floor",
+                      "price", "price_type", "Agent_comment",
+                      # Izdevumi — aģents ievada; AI tos NEDRĪKST uzminēt (tukši → klusē)
+                      "Apsaimniekosanas_maksa", "Papildu_maksas"]
+# NB: Cik_telpas / cik_WC TĪŠI nav fiksētajā sarakstā — tie tiek lockoti dinamiski
+# _insert_listing-ā TIKAI ja aģents pats tos ievada (citādi AI uzmin no bildēm).
 FULL_LOCKED_FIELDS = EASY_LOCKED_FIELDS + [
     "Space_condition", "Apkure", "Logu_type", "Gridas_materials",
     "Mebeleta_telpa", "Dalama_telpa", "Griestu_augstums", "electric_power_kw",
@@ -124,7 +128,9 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
         bp_id = int(existing_id)
         # Ja existing BP — atstāj street kā ir DB (varbūt jau atvieglots ar 'iela').
         # Šo Pārstrādājam tikai jaunajiem BP zemāk.
-        # UPDATE tikai tos laukus, ko aģents tagad ievada (un kuri DB-ā ir NULL)
+        # UPDATE laukus, ko aģents tagad ievada — aģenta vērtība UZVAR (pārraksta
+        # DB), DB vērtību patur tikai ja aģents atstāj tukšu. Tā aģenta labojumi
+        # (piem. rajons Brasa→Centrs) tiešām stājas spēkā esošai ēkai.
         sets = []
         params = []
         for k in ("city", "district", "building_type", "building_class",
@@ -133,7 +139,7 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
                   "Zemes_gabals_m2"):
             v = building.get(k)
             if v:
-                sets.append(f'"{k}" = COALESCE(NULLIF("{k}", \'\'), %s)')
+                sets.append(f'"{k}" = COALESCE(NULLIF(%s, \'\'), "{k}")')
                 params.append(v)
         if sets:
             params.append(bp_id)
@@ -178,10 +184,8 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     return cur.fetchone()[0]
 
 
-# Bildes secības prioritāte (manifest order). Featured bilde TIEK pārvietota uz
-# pirmo vietu IEKŠ fasade kategorijas; plans iet pēdējās, jo publish_to_wp.py
-# tās novietos atsevišķi (fave_floor_plans) un izņems no galvenās galerijas.
-_TYPE_PRIORITY = {"fasade": 0, "interjers": 1, "cits": 2, "plans": 3}
+# Bilžu secība: aģents to sakārto pats (drag&drop UI) — saglabājam tādu, kā ir;
+# plāni iet pēdējie, jo publish_to_wp tos izņem no galerijas (fave_floor_plans).
 
 
 def _normalize_images(raw: list) -> list[dict]:
@@ -205,27 +209,16 @@ def _normalize_images(raw: list) -> list[dict]:
 
 
 def _sort_images_for_publish(images: list[dict]) -> list[dict]:
-    """Sakārto bildes WP publicēšanas secībā:
-       1) Featured bilde PIRMAJĀ vietā (kļūst img_001, kas publish_to_wp ņem
-          kā featured_media)
-       2) Citas fasāde
-       3) Interjers
-       4) Cits / unknown
-       5) Plāns (last — publish_to_wp.py to izņem no galerijas un sūta uz
-          fave_floor_plans)
-    """
-    def sort_key(idx_img: tuple[int, dict]) -> tuple[int, int, int]:
+    """Saglabā aģenta sakārtoto secību (drag&drop) — TĀ ir galerijas secība
+    sludinājumā; 1. bilde = galvenā (WP featured_media). Plāni tiek pārvietoti
+    uz beigām, jo publish_to_wp tos izņem no galvenās galerijas un sūta uz
+    floor_plans sekciju. Stabils sort glabā oriģ. secību iekš grupas."""
+    def sort_key(idx_img: tuple[int, dict]) -> tuple[int, int]:
         idx, img = idx_img
-        t = img.get("type") or "cits"
-        prio = _TYPE_PRIORITY.get(t, 2)  # unknown → "cits"
-        feat = 0 if img.get("featured") else 1
-        # Featured kandidāts paliek savā type prio, bet feat=0 to atstāj
-        # priekšā tās type grupā. Stable sort glabā oriģ. secību iekš grupas.
-        return (prio, feat, idx)
+        is_plan = 1 if (img.get("type") == "plans") else 0
+        return (is_plan, idx)
 
-    return [img for _idx, img in sorted(
-        enumerate(images), key=sort_key
-    )]
+    return [img for _idx, img in sorted(enumerate(images), key=sort_key)]
 
 
 def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
@@ -268,7 +261,13 @@ def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
 def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
                     mode: str, wp_user_id: int) -> int:
     """INSERT listings rinda, atgriež jauno ID."""
-    locked = EASY_LOCKED_FIELDS if mode == "easy" else FULL_LOCKED_FIELDS
+    locked = list(EASY_LOCKED_FIELDS if mode == "easy" else FULL_LOCKED_FIELDS)
+    # Telpu/sanitāro mezglu skaits: lock TIKAI ja aģents pats ievadīja; ja atstāj
+    # tukšu — AI to uzmin no bildēm (Raimonds 2026-05-28).
+    if unit.get("Cik_telpas") or unit.get("cik_telpas"):
+        locked.append("Cik_telpas")
+    if unit.get("cik_WC") or unit.get("cik_wc"):
+        locked.append("cik_WC")
     source = f"agent_anketa_{mode}"
     # FULL mode: Debug_status='ok' uzreiz (AI worker neaiztiks)
     # EASY mode: NULL → AI worker paķers + papildinās
@@ -306,6 +305,9 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         "price": uget("price"),
         "price_type": uget("price_type"),
         "Agent_comment": uget("Agent_comment", "agent_comment"),
+        # Izdevumi — aģents ievada manuāli (AI tos nezina)
+        "Apsaimniekosanas_maksa": uget("Apsaimniekosanas_maksa", "apsaimniekosanas_maksa"),
+        "Papildu_maksas": uget("Papildu_maksas", "papildu_maksas"),
     }
 
     # FULL režīma papildlauki — visi pieņem abus kapitalizācijas variantus
@@ -381,7 +383,10 @@ def _write_image_manifest(listing_id: int, agent_types: dict[str, str]) -> None:
     ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
     if not ai_dir.is_dir():
         return
-    images = sorted(ai_dir.glob("img_*.jpg")) + sorted(ai_dir.glob("img_*.png"))
+    images = sorted(
+        p for p in ai_dir.glob("img_*.*")
+        if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    )
     if not images:
         return
     manifest = {}

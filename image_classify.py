@@ -189,7 +189,8 @@ def _raw_files(storage_root: Path, listing_id: int) -> list[Path]:
     raw_dir = Path(storage_root) / "listings" / str(listing_id) / "raw"
     if not raw_dir.is_dir():
         return []
-    return sorted(raw_dir.glob("img_*.jpg"))
+    exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    return sorted(p for p in raw_dir.glob("img_*.*") if p.suffix.lower() in exts)
 
 
 def ensure_classified(storage_root: Path, listing_id: int,

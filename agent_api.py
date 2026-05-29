@@ -322,9 +322,9 @@ def listing_images(listing_id: int, _auth: None = Depends(require_token)) -> dic
     src_dir = raw_dir if has_raw else ai_dir
     src_label = "raw" if has_raw else "ai_ready"
 
-    files = sorted(list(src_dir.glob("img_*.jpg"))
-                   + list(src_dir.glob("img_*.png"))
-                   + list(src_dir.glob("img_*.webp")))
+    _img_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    files = sorted(p for p in src_dir.glob("img_*.*")
+                   if p.suffix.lower() in _img_exts)
     images = [{
         "name": f.name,
         "type": src_label,  # 'raw' (ar ūdenszīmi) vai 'ai_ready' (apstrādāts)

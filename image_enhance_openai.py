@@ -184,6 +184,24 @@ def openai_edit(image_bytes: bytes, filename: str, quality: str) -> bytes | None
     return None
 
 
+def enhance_image(src_path: Path, dst_path: Path, quality: str = "medium") -> Path:
+    """Vienas bildes uzlabošana: lasa src_path, palaiž gpt-image-1, raksta dst_path.
+
+    Atšķirībā no enhance_listing() (CLI, strādā pa listing_id + raw failiem), šī
+    strādā ar konkrētu failu pāri — lieto /agent/image-enhance (anketa-par-eku).
+    Met RuntimeError, ja nav OPENAI_API_KEY vai OpenAI neatgriež bildi."""
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY trūkst")
+    src_path = Path(src_path)
+    dst_path = Path(dst_path)
+    out = openai_edit(src_path.read_bytes(), src_path.name, quality)
+    if not out:
+        raise RuntimeError("OpenAI gpt-image-1 neatgrieza bildi (sk. worker logus)")
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    dst_path.write_bytes(out)
+    return dst_path
+
+
 def _select_raw_files(raw_files: list[Path], filter_names: list[str] | None
                       ) -> list[Path]:
     """Atstāj tikai tās raw bildes, kuru fails (img_NNN.jpg) ir filter_names."""

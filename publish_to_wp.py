@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from wp_publisher import WPPublisher, WPPublisherError
 from wp_templates import (render_body, render_excerpt, SUPPORTED_GROUPS,
                           seo_focus_keyphrase, seo_title, image_alt)
-from wp_templates import _floor as _clean_floor  # stāva tīrīšana ('1. stāvs'→'1')
+from wp_templates import _floor as _clean_floor, _trim_dec  # stāva + decimālu tīrīšana
 import houzez_reverse_map as hrm
 import image_pipeline  # Zilās kastes AI bilžu skaistināšana (Seedream)
 import image_classify  # Bilžu klasifikators (fasade/plans/interjers/cits)
@@ -197,15 +197,15 @@ def _meta(listing: dict, bp: dict) -> dict:
     sec_price = ""
     try:
         if price_n and area_n and float(area_n) > 0:
-            sec_price = str(round(float(price_n) / float(area_n), 2))
+            sec_price = _trim_dec(round(float(price_n) / float(area_n), 2))
     except (ValueError, ZeroDivisionError):
         sec_price = ""
     land_n = _numeric(g("Zemes_gabals_m2"))
     m = {
-        "fave_property_price":        price_n or "",
+        "fave_property_price":        _trim_dec(price_n) if price_n else "",
         "fave_property_price_postfix": "" if is_sale else "Mēnesī",
         "fave_property_sec_price":    sec_price,                 # m² cena
-        "fave_property_size":         area_n or "",
+        "fave_property_size":         _trim_dec(area_n) if area_n else "",
         "fave_property_size_prefix":  "m²",
         # Raimonda LV Houzez setup: "Telpas" lauks = fave_property_bedrooms
         # (NE fave_property_rooms — tas Tavā setup-ā ir "Virtuves"!).

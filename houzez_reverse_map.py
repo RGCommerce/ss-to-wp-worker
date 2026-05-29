@@ -142,8 +142,8 @@ def resolve_feature_terms(publisher, raw: dict) -> list[int]:
         if str(raw.get(field) or "").strip().lower() == "checked":
             _ensure(term_name)
 
-    if str(raw.get("Dalama_telpa") or "").strip().lower() in ("jā", "ja"):
-        _ensure("Dalāma telpa")
+    # "Dalāma telpa" NEKAD netiek auto-pievienota kā WP īpašība (Raimonds 2026-05-28):
+    # AI joprojām nosaka Dalama_telpa DB laukā, bet sludinājumā to kā funkciju neliek.
 
     mb = str(raw.get("Mebeleta_telpa") or "").strip().lower()
     if mb in ("jā", "ja", "daļēji", "daleji"):
