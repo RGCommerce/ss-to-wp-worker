@@ -157,20 +157,49 @@ def _m2_bucket(area) -> str:
     return _M2_TOP
 
 
-def _floor_bucket(floor_clean) -> str:
-    """Tīrs stāvs → Houzez fave_stc481vs opcija: 'Pagrabs' / '1' / '2+'."""
-    s = str(floor_clean or "").strip().lower()
+def _floor_display(floor_raw) -> str:
+    """Precīzais stāvs Houzez 'Stāvs' (fave_stc481vs) opcijas formātā:
+    '1'→'1.stāvs', '1.stāvs'→'1.stāvs', 'Pagrabs'/'Vienstāvu'/'Divstāvu' paliek.
+    (Raimonds: VIENMĒR precīzs, nekādu bucket — feedback_floor_exact_no_buckets.)"""
+    s = str(floor_raw or "").strip()
     if not s:
         return ""
-    if "pagrab" in s or s in ("-1", "0", "p"):
+    low = s.lower()
+    if "stāv" in low or "stav" in low:  # jau 'X.stāvs' / 'Vienstāvu' / 'Divstāvu'
+        return s
+    if low in ("pagrabs", "pagrabstāvs", "pagrabstavs", "p", "-1"):
         return "Pagrabs"
-    m = __import__("re").search(r"-?\d+", s)
-    if not m:
+    m = __import__("re").match(r"^-?(\d+)\s*\.?\s*$", s)
+    if m:
+        n = int(m.group(1))
+        return "Pagrabs" if n <= 0 else f"{n}.stāvs"
+    return s
+
+
+def _floor_search(floor_raw) -> str:
+    """Grupētais stāvs Houzez 'Search stāvs' (fave_search-stc481vs):
+    Pagrabs / 1.stāvs / 2+ (sk. crm/bulk_search_floor_wp.search_floor)."""
+    if floor_raw is None:
         return ""
-    n = int(m.group(0))
-    if n <= 0:
+    s = str(floor_raw).strip()
+    if s == "" or s in ("2+", "1+", "None"):
+        return ""
+    low = s.lower()
+    if low in ("pagrabs", "pagrabstāvs", "pagrabstavs"):
         return "Pagrabs"
-    return "1" if n == 1 else "2+"
+    if low == "vienstāvu":
+        return "1.stāvs"
+    _re = __import__("re")
+    if _re.match(r"^(div|trīs|tris|četr|piec|sest|septiņ|astoņ|deviņ|desmit)stāv[ua]?$", low):
+        return "2+"
+    m = _re.match(r"^(\d+)\s*\.?\s*(stāvi?s?)?\s*$", s, _re.IGNORECASE)
+    if m:
+        n = int(m.group(1))
+        if n == 1:
+            return "1.stāvs"
+        if 2 <= n <= 50:
+            return "2+"
+    return ""
 
 
 def _numeric(v):
@@ -222,7 +251,8 @@ def _meta(listing: dict, bp: dict) -> dict:
         # iepriekš sūtīts kā list → serializēts masīvs → Houzez get_post_meta
         # (..,true) sagaida plain STRING → neatzīmējās. Tagad = plain string.
         "fave_kv-m":     _m2_bucket(area_n) or "",
-        "fave_stc481vs": _floor_bucket(_clean_floor(g("floor"))) or "",
+        "fave_stc481vs":        _floor_display(g("floor")),          # precīzs "Stāvs"
+        "fave_search-stc481vs": _floor_search(g("floor")),           # grupēts "Search stāvs"
         # SEO: RĀDĪT meklētājos (Raimonds 2026-05-18 — labots; iepriekš kļūdaini
         # noindex). Sūtam EXPLICIT allow, lai pārrakstītu veco noindex postmeta
         # iepriekš publicētajiem (payload noņemšana vien NEdzēš veco meta).
