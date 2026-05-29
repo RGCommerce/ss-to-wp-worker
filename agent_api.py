@@ -364,6 +364,73 @@ def image_proxy(
     return FileResponse(path)
 
 
+# ---------------------------------------------------------------------------
+# Listinga bilžu rediģēšana (Broker Panel image-edit, Plan B)
+# Panelim NAV volume (Railway = 1 volume/serviss), tāpēc upload/delete iet caur
+# šo worker (kam pieder volume). Šis dara TIKAI failu I/O; DB masīvu
+# (local_image_paths_*) atjauno panelis (tam ir chooseImageSource + Prisma).
+# ---------------------------------------------------------------------------
+
+_EDIT_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+_EDIT_FOLDERS = {"raw", "ai_ready", "wp_raw"}
+
+
+@router.post("/listing-file-write/{listing_id}")
+def listing_file_write(
+    listing_id: int,
+    folder: str = Form(...),
+    file: UploadFile = File(...),
+    _auth: None = Depends(require_token),
+) -> dict:
+    """Saglabā 1 augšupielādētu bildi uz /storage/listings/<id>/<folder>/.
+    Atgriež relatīvo ceļu, ko panelis pievieno DB masīvam."""
+    if folder not in _EDIT_FOLDERS:
+        raise HTTPException(400, f"folder jābūt {_EDIT_FOLDERS}")
+    if not file.filename:
+        raise HTTPException(400, "Filename trūkst")
+    ext = Path(file.filename).suffix.lower() or ".jpg"
+    if ext not in _EDIT_IMG_EXTS:
+        raise HTTPException(400, f"Nepieņemams paplašinājums: {ext}")
+    base = STORAGE_ROOT / "listings" / str(listing_id) / folder
+    base.mkdir(parents=True, exist_ok=True)
+    filename = f"img_user_{uuid.uuid4().hex}{ext}"
+    out_path = base / filename
+    with open(out_path, "wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {
+        "ok": True,
+        "path": f"listings/{listing_id}/{folder}/{filename}",
+        "size": out_path.stat().st_size,
+    }
+
+
+class ListingFileDeleteReq(BaseModel):
+    paths: list[str]  # relatīvi /storage ceļi: "listings/<id>/<folder>/<file>"
+
+
+@router.post("/listing-file-delete/{listing_id}")
+def listing_file_delete(
+    listing_id: int,
+    req: ListingFileDeleteReq,
+    _auth: None = Depends(require_token),
+) -> dict:
+    """Dzēš norādītos bilžu failus no volume. Drošība: tikai šī listinga mapē.
+    Panelis pēc tam atjauno DB masīvu."""
+    prefix = f"listings/{listing_id}/"
+    deleted = 0
+    for rel in req.paths:
+        if not rel.startswith(prefix) or ".." in rel:
+            continue
+        p = STORAGE_ROOT / rel
+        try:
+            if p.is_file():
+                p.unlink()
+                deleted += 1
+        except OSError:
+            pass
+    return {"ok": True, "deleted": deleted}
+
+
 @router.get("/draft-image-proxy/{draft_id}/{target}/{filename}")
 def draft_image_proxy(
     draft_id: int, target: str, filename: str,
