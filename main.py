@@ -52,6 +52,7 @@ import publish_to_wp  # noqa: E402
 import queue_poller  # noqa: E402
 import pdf_poller  # noqa: E402
 import agent_ai_poller  # noqa: E402  # 3. AI plūsma — agent_anketa listings → AI papildina
+import image_download_poller  # noqa: E402  # 4. ss.lv/WP bilžu lejupielāde uz volume (aizstāj image-downloader)
 import agent_api  # noqa: E402  # Ceļš B: anketa-par-eku endpoints (Etaps 6)
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -60,28 +61,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 DATABASE_URL = os.getenv("DATABASE_URL")
 RGC_MK_TOKEN = os.getenv("RGC_MK_TOKEN")  # Auth header pārbaude
 SERVICE_NAME = "ss-to-wp-worker"
-SERVICE_VERSION = "0.3.0-agent-ai-fix2"
+SERVICE_VERSION = "0.4.0-image-download-poller"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Palaiž 3 fona pollerus uz startup, apstādina uz shutdown.
+    """Palaiž 4 fona pollerus uz startup, apstādina uz shutdown.
 
     queue_poller — wp_export_queue → publish_to_wp (gan ss.lv, gan agent listings)
     pdf_poller   — pdf_jobs → render_pdf_bulk + saglabā volume
     agent_ai_poller — listings ar source LIKE 'agent_anketa%' un Debug_status NULL
                       → OpenAI Vision + UPDATE listings ar AI laukiem
                       (respect agent_locked_fields)
+    image_download_poller — ss.lv/WP bildes (images_downloaded_at NULL) → volume
+                      (aizstāj atsevišķo image-downloader servisu, kam nav volume)
     """
     stop_event = asyncio.Event()
     wp_task = asyncio.create_task(queue_poller.run_loop(stop_event))
     pdf_task = asyncio.create_task(pdf_poller.run_loop(stop_event))
     ai_task = asyncio.create_task(agent_ai_poller.run_loop(stop_event))
+    img_task = asyncio.create_task(image_download_poller.run_loop(stop_event))
     try:
         yield
     finally:
         stop_event.set()
-        for t in (wp_task, pdf_task, ai_task):
+        for t in (wp_task, pdf_task, ai_task, img_task):
             try:
                 await asyncio.wait_for(t, timeout=5)
             except asyncio.TimeoutError:
@@ -185,6 +189,7 @@ def health():
         "poller": queue_poller.get_status(),
         "pdf_poller": pdf_poller.get_status(),
         "agent_ai_poller": agent_ai_poller.get_status(),
+        "image_download_poller": image_download_poller.get_status(),
     }
 
 
