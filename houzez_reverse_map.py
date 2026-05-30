@@ -242,8 +242,11 @@ def resolve_taxonomy_terms(
     for lab in labels_for(space_group, potential):  # Veikalam/Salonām utt.
         _add("property_label", lab)
     _add("property_city", city)
-    _add("property_area", district)
-    _add("property_area", krasts_name(district))  # Kreisais/Labais Krasts
+    # district var saturēt vairākus rajonus ar komatu (anketas multi-select, piem.
+    # "Centrs, Brasa"). Katram pievieno rajonu + tā krastu (auto).
+    for _d in [x.strip() for x in str(district or "").split(",") if x.strip()]:
+        _add("property_area", _d)
+        _add("property_area", krasts_name(_d))  # Kreisais/Labais Krasts
     for feat in features or []:
         _add("property_feature", feat)
 
