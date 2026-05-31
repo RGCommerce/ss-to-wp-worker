@@ -112,7 +112,8 @@ def autoload(bp_id: int, _auth: None = Depends(require_token)) -> dict:
         cur.execute(
             """
             SELECT id, "Space_group"::text, area_m2, floor, price, price_type,
-                   building_class::text, "Space_condition"::text, wp_post_id
+                   building_class::text, "Space_condition"::text, wp_post_id,
+                   source
               FROM properties.listings
              WHERE building_profile_id = %s
              ORDER BY id

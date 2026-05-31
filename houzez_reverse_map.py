@@ -241,7 +241,9 @@ def resolve_taxonomy_terms(
     _add("property_label", houzez_label_name(building_class))
     for lab in labels_for(space_group, potential):  # Veikalam/Salonām utt.
         _add("property_label", lab)
-    _add("property_city", city)
+    # city var saturēt vairākas pilsētas ar komatu (anketas multi-select).
+    for _c in [x.strip() for x in str(city or "").split(",") if x.strip()]:
+        _add("property_city", _c)
     # district var saturēt vairākus rajonus ar komatu (anketas multi-select, piem.
     # "Centrs, Brasa"). Katram pievieno rajonu + tā krastu (auto).
     for _d in [x.strip() for x in str(district or "").split(",") if x.strip()]:
