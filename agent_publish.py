@@ -120,27 +120,76 @@ def _ensure_street_suffix(street: str | None) -> str | None:
     return f"{s} iela"
 
 
+# Building_profile lauki, ko aģents var ievadīt/papildināt caur anketu vai
+# ēkas/listing lapu. (key, tips) — tips nosaka konversiju + SQL COALESCE loģiku.
+#   "text" → COALESCE(NULLIF(%s,''), col)  (tukša string nepārraksta)
+#   "int"  → COALESCE(%s::int, col)        (None nepārraksta)
+#   "bool" → COALESCE(%s, col)             (None nepārraksta; true/false pārraksta)
+# Adrese (street/city/full_address) NAV šeit — to apstrādā atsevišķi (sufiksi).
+_BP_FIELDS: list[tuple[str, str]] = [
+    # esošie (string)
+    ("city", "text"), ("district", "text"),
+    ("building_type", "text"), ("building_class", "text"),
+    ("Apkure", "text"), ("Parkings", "text"), ("Building_description", "text"),
+    ("Apsaimniekosanas_maksa", "text"), ("NIN", "text"), ("Komunalie", "text"),
+    ("Zemes_gabals_m2", "text"),
+    # jaunie ēkas fakti (mig 030)
+    ("building_name", "text"), ("ednica_nosaukums", "text"),
+    ("floors_count", "int"), ("bdg_year", "int"),
+    # jaunās ēkas fīčas (mig 030, boolean)
+    ("is_business_complex", "bool"), ("has_managed", "bool"),
+    ("has_canteen", "bool"), ("has_accessibility", "bool"), ("has_fenced", "bool"),
+    ("has_lift", "bool"), ("has_freight_lift", "bool"), ("has_gym", "bool"),
+    ("has_underground_parking", "bool"), ("has_ev_charging", "bool"),
+    ("has_bike_parking", "bool"), ("has_solar", "bool"), ("has_battery", "bool"),
+    ("has_generator", "bool"), ("has_showers", "bool"), ("has_roof_terrace", "bool"),
+    ("has_reception", "bool"), ("has_parcel_locker", "bool"),
+    ("has_security_24_7", "bool"), ("has_cctv", "bool"),
+    ("has_access_control", "bool"), ("has_conference_room", "bool"),
+]
+
+
+def _bp_coerce(value, typ):
+    """Aģenta vērtība → DB tips. Atgriež (sql_value | None). None = nepārraksta."""
+    if value is None:
+        return None
+    if typ == "bool":
+        if isinstance(value, bool):
+            return value
+        s = str(value).strip().lower()
+        if s in ("checked", "true", "yes", "jā", "ja", "1", "t"):
+            return True
+        if s in ("not checked", "false", "no", "nē", "ne", "0", "f"):
+            return False
+        return None  # tukšs/nezināms → nepārraksta
+    if typ == "int":
+        try:
+            return int(float(str(value).strip()))
+        except (ValueError, TypeError):
+            return None
+    s = str(value).strip()  # text
+    return s or None
+
+
 def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     """Atgriež building_profile_id. Ja existing_building_id (vai existing_bp_id)
-    ir norādīts, UPDATE-o tukšos laukus; pretējā gadījumā INSERT jaunu."""
+    ir norādīts → UPDATE (auto-update building_profile: aģenta ievadītā vērtība
+    UZVAR, tukšu/None lauku patur DB). Citādi → INSERT jaunu."""
     existing_id = _bget(building, "existing_building_id", "existing_bp_id")
     if existing_id:
         bp_id = int(existing_id)
-        # Ja existing BP — atstāj street kā ir DB (varbūt jau atvieglots ar 'iela').
-        # Šo Pārstrādājam tikai jaunajiem BP zemāk.
-        # UPDATE laukus, ko aģents tagad ievada — aģenta vērtība UZVAR (pārraksta
-        # DB), DB vērtību patur tikai ja aģents atstāj tukšu. Tā aģenta labojumi
-        # (piem. rajons Brasa→Centrs) tiešām stājas spēkā esošai ēkai.
-        sets = []
-        params = []
-        for k in ("city", "district", "building_type", "building_class",
-                  "Apkure", "Parkings", "Building_description",
-                  "Apsaimniekosanas_maksa", "NIN", "Komunalie",
-                  "Zemes_gabals_m2"):
-            v = building.get(k)
-            if v:
-                sets.append(f'"{k}" = COALESCE(NULLIF(%s, \'\'), "{k}")')
-                params.append(v)
+        # Aģenta labojumi/papildinājumi stājas spēkā esošai ēkai (auto-update).
+        # Adrese (street) tīši netiek pārrakstīta — paliek DB (jau ar sufiksu).
+        sets, params = [], []
+        for k, typ in _BP_FIELDS:
+            v = _bp_coerce(building.get(k), typ)
+            if v is None:
+                continue
+            if typ == "int":
+                sets.append(f'"{k}" = COALESCE(%s::int, "{k}")')
+            else:  # bool vai text — COALESCE(%s, col) der abiem (text tukšs jau filtrēts)
+                sets.append(f'"{k}" = COALESCE(%s, "{k}")')
+            params.append(v)
         if sets:
             params.append(bp_id)
             conn.execute(
@@ -159,27 +208,21 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     full_address = f"{street}, {city}".strip(", ")
     building_key = f"agent:{street.lower()}|{city.lower()}|{int(time.time())}"
 
+    cols = ['building_key', 'street', 'full_address']
+    vals = [building_key, street, full_address]
+    for k, typ in _BP_FIELDS:
+        v = _bp_coerce(building.get(k), typ)
+        if k == "city":
+            v = city  # vienmēr (validēts augšā)
+        cols.append(f'"{k}"')
+        vals.append(v)
+    cols += ['listing_count_total', 'listing_count_active',
+             'first_seen_at', 'last_seen_at', 'created_at', 'updated_at']
+    placeholders = ", ".join(["%s"] * len(vals)) + ", 0, 0, now(), now(), now(), now()"
     cur = conn.execute(
-        """
-        INSERT INTO properties.building_profiles
-            (building_key, street, city, district, full_address,
-             building_type, building_class, "Apkure", "Parkings",
-             "Building_description", "Apsaimniekosanas_maksa", "NIN",
-             "Komunalie", "Zemes_gabals_m2",
-             listing_count_total, listing_count_active,
-             first_seen_at, last_seen_at, created_at, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                0, 0, now(), now(), now(), now())
-        RETURNING id
-        """,
-        (
-            building_key, street, city, building.get("district"), full_address,
-            building.get("building_type"), building.get("building_class"),
-            building.get("Apkure"), building.get("Parkings"),
-            building.get("Building_description"),
-            building.get("Apsaimniekosanas_maksa"), building.get("NIN"),
-            building.get("Komunalie"), building.get("Zemes_gabals_m2"),
-        ),
+        f'INSERT INTO properties.building_profiles ({", ".join(cols)}) '
+        f'VALUES ({placeholders}) RETURNING id',
+        tuple(vals),
     )
     return cur.fetchone()[0]
 
