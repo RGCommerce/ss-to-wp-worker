@@ -411,11 +411,9 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
     gallery_imgs = imgs[1:] if len(imgs) > 1 else []
 
     # ---- Apraksts — tas pats render_body teksts ----
-    tdata = dict(listing)
-    for loc in ("city", "district", "street"):
-        if bp.get(loc):
-            tdata[loc] = bp[loc]
-    desc_html = render_body(sg if sg in _VEIDS else "Birojs", tdata)
+    # listing + bp ATSEVIŠĶI: street no listing = pilns "Stirnu 25";
+    # bp.street = "Stirnu" (numurs atsevišķi house_number) → NEpārrakstīt.
+    desc_html = render_body(sg if sg in _VEIDS else "Birojs", listing, bp)
 
     # ---- Agents ----
     is_sale_agent = str(listing.get("price_type") or "").lower() in _SALE_PT
