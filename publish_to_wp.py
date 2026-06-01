@@ -327,7 +327,7 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
                 tdata[loc] = bp[loc]
         # Teksts = template no JAU-AI-analizētajiem DB laukiem (Agent_comment,
         # Building_description u.c.). NAV live OpenAI (sk. memory).
-        body = render_body(sg, tdata)
+        body = render_body(sg, listing, bp)
         excerpt = render_excerpt(sg, tdata)
         price_type = listing.get("price_type")
         agent = _agent_id(sg, price_type)

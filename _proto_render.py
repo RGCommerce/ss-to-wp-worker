@@ -1,42 +1,19 @@
-"""Slot-based teksta šabloni WP property publish (NEAI, $0).
-
-JAUNAIS DIZAINS (2026-06-01, Raimonds): pilni teikumi aģenta stilā, 0% live AI
-— 100% deterministisks slot-šablons. AI tikai aizpilda DB lauku vērtības, ko
-šablons nolasa. (Iepriekšējais bullet-•-stils aizstāts.)
-
-Struktūra (render_body):
-  1. Virsraksts (Iznomā/Pārdod {veids} – {area} m²)
-  2. Ievads — godīgs: is_business_complex → komplekss; citādi Building_description
-     nes ēkas raksturu; + ēkas fakti (nosaukums/stāvi/gads) + stāva teikums.
-  3. "Telpu plānojums un tehniskais stāvoklis:" — pilni teikumi.
-  4. "Priekšrocības:" — ēkas līmeņa iespējas (≥1 īsta → sadaļa parādās).
-  5. "Nomas / Pārdošanas nosacījumi:" — cena + izmaksas (tikai ar reālu vērtību) + PVN.
-  6. Noslēgums.
-
-Lauks parādās tikai, ja aizpildīts (tukšus/'unknown' izlaiž klusi). Ēkas-līmeņa
-lauki (building_name, has_*, ...) nāk no building_profiles (mig 030); ja NULL →
-teksts iztiek bez tiem ("raksta kā raksta"), ja aizpildīts → ievij.
-
-Lietošana:
-    from wp_templates import render_body, render_excerpt, SUPPORTED_GROUPS
-    body = render_body(space_group, listing, bp)   # bp = building_profile dict
+"""PROTOTIPS — jaunais teksta dizains (pilni teikumi, godīgs ievads).
+Palaiž: python _proto_render.py <listing_id>
+NEAIZTIEK produkcijas wp_templates.py. Kad teksts ok → pārceļam kodā.
 """
-from __future__ import annotations
+import io, sys, os, re
+from pathlib import Path
+import psycopg
+from psycopg.rows import dict_row
+from dotenv import load_dotenv
 
-import re
-import sys
-from typing import Optional
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+load_dotenv(Path("..").resolve() / "sslv-ai-runner-railway" / "crm" / ".env")
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+_MISSING = {"", "unknown", "nezināms", "nav minēts", "none", "null", "n/a", "-", "~", "nē"}
+_SALE = {"regular", "parastā", "parasta", "sale", "sell", "buy"}
 
-_MISSING = {"", "unknown", "unkown", "nezināms", "nezinams", "nav minēts",
-            "nav", "none", "null", "n/a", "-", "~", "nē", "ne"}
-_SALE_PT = {"regular", "parastā", "parasta", "sale", "sell", "buy"}
-
-# Space_group → lietojams lietvārds ("Iznomā {X}")
 _VEIDS = {
     "Birojs": "biroja telpas", "Tirdzniecība": "tirdzniecības telpas",
     "Noliktava": "noliktavas telpas", "Ražošana": "ražošanas telpas",
@@ -107,79 +84,32 @@ _PRIEK_ORDER = ["has_lift", "has_freight_lift", "has_gym", "has_conference_room"
                 "has_roof_terrace", "has_reception", "has_parcel_locker",
                 "has_security_24_7", "has_cctv", "has_access_control"]
 
-SUPPORTED_GROUPS = sorted(_VEIDS.keys())
 
-
-# ─── Helperi ──────────────────────────────────────────────────────────────
-def _clean(v) -> Optional[str]:
+def c(v):
     if v is None:
         return None
     s = str(v).strip().lstrip("~").strip()
-    return None if s.lower() in _MISSING else (s or None)
+    return None if s.lower() in _MISSING else s
 
+def chk(v):
+    return str(v or "").strip().lower() == "checked"
 
-def _truthy(v) -> bool:
-    """True ja boolean True (building_profiles has_* lauki, mig 030) VAI
-    listings-stila teksts 'checked' / 'jā' / 'true' / '1'. NULL/False/'not
-    checked' → False. Tā render strādā gan ar bp boolean, gan listings text."""
-    if v is True:
-        return True
-    if v is None or v is False:
-        return False
-    return str(v).strip().lower() in ("checked", "true", "yes", "jā", "ja", "1", "t")
-
-
-def _num(v) -> Optional[str]:
-    s = _clean(v)
+def num(v):
+    s = c(v)
     if not s:
         return None
     m = re.search(r"\d+[.,]?\d*", s)
     return m.group(0).replace(",", ".") if m else None
 
-
-def _dec_lv(v) -> Optional[str]:  # 2.8 -> "2,8", 3.0 -> "3"
-    s = _num(v)
+def dec_lv(v):  # 2.8 -> "2,8", 3.0 -> "3"
+    s = num(v)
     if not s:
         return None
     f = float(s)
     return (str(int(f)) if f == int(f) else f"{f:.2f}".rstrip("0").rstrip(".")).replace(".", ",")
 
-
-def _trim_dec(v) -> str:
-    """Cenas decimāldaļas likums: vesels → bez decimālēm; kapeikas → 2 cipari.
-    BEZ tūkstošu atstarpēm. Nečīkst, ja nav skaitlis (importē publish_to_wp)."""
-    s = str(v or "").strip()
-    if not s:
-        return s
-    try:
-        f = float(s.replace(",", "."))
-    except ValueError:
-        return s
-    return str(int(f)) if f == int(f) else f"{f:.2f}"
-
-
-def _money(v) -> str:
-    """Cena ar tūkstošu atstarpi, decimāldaļa ar PUNKTU ('436000'→'436 000',
-    '12.5'→'12.50'). Lieto image_alt EUR/m² aprēķins."""
-    s = str(v or "").strip()
-    if not s:
-        return s
-    neg = s.startswith("-")
-    s = _trim_dec(s.lstrip("-"))
-    intp, _, dec = s.partition(".")
-    grouped = ""
-    while len(intp) > 3:
-        grouped = " " + intp[-3:] + grouped
-        intp = intp[:-3]
-    grouped = intp + grouped
-    out = grouped + (f".{dec}" if dec else "")
-    return ("-" + out) if neg else out
-
-
-def _money_lv(v) -> Optional[str]:
-    """LV cena teksta šablonam: tūkstošu atstarpe + decimāldaļa ar KOMATU
-    ('436000'→'436 000', '30.23'→'30,23', '6'→'6'). Aģenta stila teksts."""
-    s = _num(v)
+def money(v):
+    s = num(v)
     if not s:
         return None
     f = float(s)
@@ -191,36 +121,10 @@ def _money_lv(v) -> Optional[str]:
         intp = intp[:-3]
     return intp + out + (f",{dp}" if dp else "")
 
+def is_sale(pt):
+    return str(pt or "").strip().lower() in _SALE
 
-def _floor(v) -> Optional[str]:
-    """Tīrs stāva apzīmējums BEZ 'stāvs'/'st' (importē pdf_maker, publish_to_wp).
-    '1. stāvs'→'1', '3st'→'3', '2+st'→'2+', None→None."""
-    s = _clean(v)
-    if not s or "none" in s.lower() or "unknown" in s.lower():
-        return None
-    s = re.sub(r"st[āa]v[su]*", "", s, flags=re.IGNORECASE)
-    s = re.sub(r"\bst\b", "", s, flags=re.IGNORECASE)
-    s = s.replace(".", "").strip()
-    m = re.search(r"\d+\s*\+?", s)
-    if m:
-        return m.group(0).replace(" ", "")
-    s = s.strip(" .,-")
-    return s or None
-
-
-def _is_sale(pt) -> bool:
-    return str(pt or "").strip().lower() in _SALE_PT
-
-
-def _b(t: str) -> str:
-    return f"<strong>{t}</strong>"
-
-
-def _cap(s: str) -> str:
-    return s[:1].upper() + s[1:] if s else s
-
-
-def _join_lv(items) -> str:
+def join_lv(items):
     items = [i for i in items if i]
     if not items:
         return ""
@@ -228,14 +132,13 @@ def _join_lv(items) -> str:
         return items[0]
     return ", ".join(items[:-1]) + " un " + items[-1]
 
-
 _BDESC_BAD = ("nav redzam", "ārpus", "arpus", "nav saskat", "nezin", "neredz",
               "bilde", "foto", "attēl", "attel")
 
-
-def _clean_bdesc(s) -> Optional[str]:
-    """Izņem AI meta-klauzulas no Building_description (piem. 'Ārpuse nav redzama;')."""
-    s = _clean(s)
+def _clean_bdesc(s):
+    """Izņem AI meta-klauzulas no Building_description (piem. 'Ārpuse nav redzama;').
+    Sadala pa ';' un '.', izmet klauzulas ar aizliegtiem vārdiem, atlikušo saliek."""
+    s = c(s)
     if not s:
         return None
     parts = re.split(r"[;.]", s)
@@ -243,17 +146,16 @@ def _clean_bdesc(s) -> Optional[str]:
             if p.strip() and not any(b in p.lower() for b in _BDESC_BAD)]
     if not good:
         return None
-    return ". ".join(g[0].upper() + g[1:] for g in good)
-
+    out = ". ".join(g[0].upper() + g[1:] for g in good)
+    return out
 
 _VALUE_OK = {"pēc skaitītāja", "pēc skaitītājiem", "iekļauts", "iekļauts cenā",
              "iekļauts nomas maksā", "atsevišķi", "bezmaksas"}
 
-
-def _value_like(s) -> bool:
+def value_like(s):
     """True, ja izmaksu lauks izskatās pēc reālas vērtības (cipars vai zināma
     īsa frāze), nevis AI teikums/junk ('fakts bez cenas')."""
-    s = _clean(s)
+    s = c(s)
     if not s:
         return False
     if re.search(r"\d", s):
@@ -261,9 +163,10 @@ def _value_like(s) -> bool:
     return s.strip().lower().rstrip(".") in _VALUE_OK
 
 
-def _parse_wc(v) -> tuple[Optional[int], Optional[str]]:
-    """cik_WC = brīvteksts → (skaits|None, 'own'|'shared'|None)."""
-    s = _clean(v)
+def parse_wc(v):
+    """cik_WC = brīvteksts ('1 WC telpā' / '2 WC koplietošanā' / '3 WC').
+    Atgriež (skaits|None, 'own'|'shared'|None)."""
+    s = c(v)
     if not s:
         return None, None
     m = re.search(r"\d+", s)
@@ -273,8 +176,8 @@ def _parse_wc(v) -> tuple[Optional[int], Optional[str]]:
     return n, loc
 
 
-def _floor_n(v) -> tuple[Optional[int], bool]:
-    s = _clean(v)
+def floor_n(v):
+    s = c(v)
     if not s:
         return None, False
     low = s.lower()
@@ -283,22 +186,14 @@ def _floor_n(v) -> tuple[Optional[int], bool]:
     return (int(m.group(0)) if m else None), base
 
 
-# ─── Galvenais: render_body ────────────────────────────────────────────────
-def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> str:
-    """Jaunais pilnu-teikumu teksts → HTML (<p>/<strong>/<br>).
-
-    listing = properties.listings rinda (telpas līmeņa lauki).
-    bp = properties.building_profiles rinda (ēkas līmeņa: Building_description,
-         building_name, has_* ...). None → tukšs (bp-bloki izlaisti)."""
-    bp = bp or {}
-    L = listing
-    g = lambda k: _clean(L.get(k))
-    gb = lambda k: _clean(bp.get(k))
-    sg = (space_group or "").strip()
+def render(L, bp):
+    g = lambda k: c(L.get(k))
+    gb = lambda k: c(bp.get(k))
+    sg = (L.get("Space_group") or "").strip()
     veids = _VEIDS.get(sg, "komerctelpas")
-    sale = _is_sale(L.get("price_type"))
-    area = _num(L.get("area_m2"))
-    blocks: list[tuple[str, object]] = []
+    sale = is_sale(L.get("price_type"))
+    area = num(L.get("area_m2"))
+    blocks = []
 
     # 1. VIRSRAKSTS
     if sale:
@@ -315,9 +210,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
     bclass = (gb("building_class") or g("building_class") or "").strip().upper()
     btype = gb("building_type") or g("building_type")
-    is_complex = _truthy(bp.get("is_business_complex"))
+    is_complex = chk(bp.get("is_business_complex"))  # jauns lauks, vēl nav DB
     verb = "Tiek pārdotas" if sale else "Tiek iznomātas"
-    intro: list[str] = []
+    intro = []
     if is_complex:
         intro.append(f"{verb} {veids} modernā un aktīvā biznesa kompleksā {addr}.")
     elif bdesc:
@@ -331,9 +226,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         intro.append(bdesc.strip().rstrip(".") + ".")
     # ēkas faktu teikums (nosaukums/stāvi/gads/managed)
     bname = gb("building_name")
-    fy = _num(bp.get("bdg_year"))
-    fcount = _num(bp.get("floors_count"))
-    managed = _truthy(bp.get("has_managed"))
+    fy = num(bp.get("bdg_year"))
+    fcount = num(bp.get("floors_count"))
+    managed = chk(bp.get("has_managed"))
     subj = bname or "Ēka"
     eka_desc = ""
     if fcount and int(float(fcount)) in _STAVU:
@@ -352,9 +247,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     elif managed:
         intro.append("Ēku apsaimnieko profesionāla apsaimniekošanas kompānija.")
     # stāva teikums
-    fn, base = _floor_n(L.get("floor"))
-    own_entr = _truthy(L.get("Sava_ieeja_check"))
-    has_lift = _truthy(bp.get("has_lift"))
+    fn, base = floor_n(L.get("floor"))
+    own_entr = chk(L.get("Sava_ieeja_check"))
+    has_lift = chk(bp.get("has_lift"))
     if base:
         intro.append("Telpas atrodas cokolstāvā, kas labi piemērots saimnieciskām un noliktavas vajadzībām.")
     elif fn == 1:
@@ -368,23 +263,24 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     blocks.append(("P", " ".join(intro)))
 
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
-    tech: list[str] = []
+    tech = []
     cond = g("Space_condition")
     if cond and cond in _COND:
         tech.append(_COND[cond])
-    rooms = _num(L.get("Cik_telpas"))
+    # plānojums: telpas + logi + griesti
+    rooms = num(L.get("Cik_telpas"))
     logi = _LOGI.get(g("Logu_type") or "")
-    ceil = _dec_lv(L.get("Griestu_augstums"))
+    ceil = dec_lv(L.get("Griestu_augstums"))
     if rooms:
         n = int(float(rooms))
         base_s = f"Kopā ir {n} atsevišķa telpa" if n == 1 else f"Kopā ir {n} atsevišķas telpas"
         ext = []
         if logi:
-            ext.append(logi)
+            ext.append(f"lieliem logiem" if logi == "lieliem logiem" else logi)
         if ceil:
             ext.append(f"{ceil} m augstiem griestiem")
         if ext:
-            base_s += " ar " + _join_lv(ext)
+            base_s += " ar " + join_lv(ext)
         tech.append(base_s + ".")
     elif logi or ceil:
         ext = []
@@ -392,12 +288,12 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             ext.append(logi)
         if ceil:
             ext.append(f"{ceil} m augstiem griestiem")
-        tech.append("Telpas ir ar " + _join_lv(ext) + ".")
+        tech.append("Telpas ir ar " + join_lv(ext) + ".")
     # iekšā: virtuve, WC, balkons, izlietne
     inside = []
-    if _truthy(L.get("Virtuve_check")):
+    if chk(L.get("Virtuve_check")):
         inside.append("aprīkota virtuve")
-    wc_n, wc_loc = _parse_wc(L.get("cik_WC"))
+    wc_n, wc_loc = parse_wc(L.get("cik_WC"))
     shared_wc = None
     if wc_loc == "own" or (wc_n and wc_loc is None):
         if (wc_n or 1) == 1:
@@ -405,35 +301,35 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         else:
             inside.append(f"{wc_n} sanitārie mezgli")
     elif wc_loc == "shared":
-        shared_wc = wc_n
-    if _truthy(L.get("Balkons_check")):
+        shared_wc = wc_n  # atsevišķi (nav telpā)
+    if chk(L.get("Balkons_check")):
         inside.append("balkons")
-    if _truthy(L.get("Ir_izlietne_telpa_check")):
+    if chk(L.get("Ir_izlietne_telpa_check")):
         inside.append("sava izlietne")
     if inside:
         pron = "Tajā ir" if (rooms and int(float(rooms)) == 1) else "Tajās ir"
-        tech.append(pron + " " + _join_lv(inside) + ".")
+        tech.append(pron + " " + join_lv(inside) + ".")
     if shared_wc is not None:
         if shared_wc and shared_wc > 1:
             tech.append(f"Pieejami {shared_wc} koplietošanas sanitārie mezgli.")
         else:
             tech.append("Pieejams koplietošanas sanitārais mezgls.")
-    # aprīkojums / inženierija
+    # aprīkojums / inženierija — pa klauzulām (latviešu locījumi atšķiras pa verbiem)
     clauses = []
     gm = _GRIDAS.get(g("Gridas_materials") or "")
     if gm:
         fv = "ieklāts" if "segums" in gm else "ieklātas"
         clauses.append(f"{fv} {gm}")
     eng = []
-    ap = _APKURE.get(g("Apkure") or "")
+    ap = _APKURE.get(g("Apkure") or "")  # nominatīvs: "centrālā apkure"
     if ap:
         eng.append(ap)
-    if _truthy(L.get("Ventilacijas_sistema_check")):
+    if chk(L.get("Ventilacijas_sistema_check")):
         eng.append("ventilācijas sistēma")
     if eng:
-        clauses.append("ierīkota " + _join_lv(eng))
+        clauses.append("ierīkota " + join_lv(eng))
     if clauses:
-        s = _join_lv(clauses)
+        s = join_lv(clauses)
         tech.append(s[0].upper() + s[1:] + ".")
     # mēbeles
     mb = str(L.get("Mebeleta_telpa") or "").strip().lower()
@@ -443,184 +339,112 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         tech.append("Tās šobrīd ir daļēji mēbelētas.")
     # ražošanas/noliktavas specifika
     if sg in ("Ražošana", "Noliktava", "Autoserviss"):
-        kg = _num(L.get("Gridas_izturiba_kg_m2"))
+        kg = num(L.get("Gridas_izturiba_kg_m2"))
         if kg:
             tech.append(f"Grīdu nestspēja ir {kg} kg/m².")
         heavy = []
-        pv = _num(L.get("Pacelamie_varti_count"))
-        if _truthy(L.get("Pacelamie_varti_check")):
+        pv = num(L.get("Pacelamie_varti_count"))
+        if chk(L.get("Pacelamie_varti_check")):
             heavy.append(f"{pv} paceļamie vārti" if pv and pv != "0" else "paceļamie vārti")
-        rp = _num(L.get("Rampa_logistikai_count"))
-        if _truthy(L.get("Rampa_logistikai_check")):
+        rp = num(L.get("Rampa_logistikai_count"))
+        if chk(L.get("Rampa_logistikai_check")):
             heavy.append(f"{rp} iekraušanas rampa" if rp and rp != "0" else "iekraušanas rampa")
-        if _truthy(L.get("Treifelis_Pacelajs")):
+        if chk(L.get("Treifelis_Pacelajs")):
             heavy.append("kravas pacēlājs (telferis)")
-        if _truthy(L.get("Auto_pacelajs_check")):
+        if chk(L.get("Auto_pacelajs_check")):
             heavy.append("auto pacēlājs")
         if heavy:
-            tech.append("Loģistikai: " + _join_lv(heavy) + ".")
+            tech.append("Loģistikai: " + join_lv(heavy) + ".")
     pot = g("Potential_space_group")
     if pot:
-        gen = _join_lv([_PIELIET.get(p.strip(), p.strip().lower())
-                        for p in pot.split(",") if p.strip()])
+        gen = join_lv([_PIELIET.get(p.strip(), p.strip().lower())
+                       for p in pot.split(",") if p.strip()])
         tech.append(f"Piemērotas arī {gen} vajadzībām.")
     if tech:
         blocks.append(("S", ("Telpu plānojums un tehniskais stāvoklis:", " ".join(tech))))
 
-    # 4. PRIEKŠROCĪBAS (ēkas līmenis; slieksnis: ≥1 īsta iespēja)
+    # 4. PRIEKŠROCĪBAS (ēkas līmenis; dzīvākas frāzes; slieksnis: ≥1 īsta iespēja)
     bld = []
     real_amen = 0
     for fld in _PRIEK_ORDER:
-        if _truthy(bp.get(fld)):
+        on = chk(bp.get(fld)) or (fld == "has_conference_room" and chk(bp.get("Has_conference_room")))
+        if on:
             bld.append(_PRIEK[fld])
             real_amen += 1
-    if _truthy(bp.get("has_canteen")):
-        nm = _clean(bp.get("ednica_nosaukums"))
+    if chk(bp.get("has_canteen")):
+        nm = c(bp.get("ednica_nosaukums"))
         bld.append(f'ēdnīca "{nm}" ērtām pusdienām uz vietas' if nm
                    else "ēdnīca ērtām pusdienām uz vietas")
         real_amen += 1
-    if _truthy(L.get("Apsargajama_teritorija_check")) or _truthy(L.get("Nozogota_teritorija_check")) or _truthy(bp.get("has_fenced")):
+    if chk(L.get("Apsargajama_teritorija_check")) or chk(L.get("Nozogota_teritorija_check")) or chk(bp.get("has_fenced")):
         bld.append("apsargāta teritorija")
         real_amen += 1
-    if _truthy(L.get("Vides_pieejamiba_check")) or _truthy(bp.get("has_accessibility")):
+    if chk(L.get("Vides_pieejamiba_check")) or chk(bp.get("has_accessibility")):
         bld.append("vides pieejamība")
         real_amen += 1
     park = _PARK.get(g("Parkings") or "")
     if park:
         bld.append((park + " darbiniekiem un klientiem") if "autostāvvieta" in park else park)
     if real_amen >= 1 and bld:
-        blocks.append(("S", ("Priekšrocības:", "Ēkā ir " + _join_lv(bld) + ".")))
+        blocks.append(("S", ("Priekšrocības:", "Ēkā ir " + join_lv(bld) + ".")))
 
     # 5. NOSACĪJUMI
     ppm2 = g("price_per_m2")
     price = g("price")
-    av = _num(L.get("area_m2"))
+    av = num(L.get("area_m2"))
     if not ppm2 and price and av:
         try:
             ppm2 = str(round(float(price) / float(av), 2))
-        except (ValueError, ZeroDivisionError):
+        except Exception:
             ppm2 = None
     cost = []
     if sale:
         if price:
-            s = f"Cena ir {_money_lv(price)} EUR"
+            s = f"Cena ir {money(price)} EUR"
             if ppm2:
-                s += f" ({_money_lv(ppm2)} EUR/m²)"
+                s += f" ({money(ppm2)} EUR/m²)"
             cost.append(s + ".")
     else:
         if ppm2:
-            s = f"Nomas maksa ir {_money_lv(ppm2)} EUR/m² mēnesī"
+            s = f"Nomas maksa ir {money(ppm2)} EUR/m² mēnesī"
             if price:
-                s += f" (kopā {_money_lv(price)} EUR)"
+                s += f" (kopā {money(price)} EUR)"
             cost.append(s + ".")
         elif price:
-            cost.append(f"Nomas maksa ir {_money_lv(price)} EUR mēnesī.")
-    # Izmaksu lauki: TIKAI ja reāla vērtība (cipars / zināma frāze).
+            cost.append(f"Nomas maksa ir {money(price)} EUR mēnesī.")
+    # Izmaksu lauki: rāda TIKAI ja ir reāla vērtība (cipars / zināma frāze).
+    # Ja tikai "fakts bez cenas" vai vāgs apraksts bez summas → neminām vispār.
     extra = []
     for label, val in [("apsaimniekošana", g("Apsaimniekosanas_maksa")),
                        ("NĪN", g("NIN")),
                        ("komunālie maksājumi", g("Komunalie")),
                        ("citi maksājumi", g("Papildu_maksas"))]:
-        if _value_like(val):
+        if value_like(val):
             extra.append(f"{label} {val}")
     if extra:
-        cost.append("Papildus " + _join_lv(extra) + ".")
+        cost.append("Papildus " + join_lv(extra) + ".")
     cost.append("Visām cenām pieskaitāms PVN.")
-    blocks.append(("S", ("Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:", " ".join(cost))))
+    blocks.append(("S", ("Nomas nosacījumi:" if not sale else "Pārdošanas nosacījumi:", " ".join(cost))))
 
     # 6. NOSLĒGUMS
     blocks.append(("P", "Sazinieties ar mums, lai uzzinātu vairāk vai vienotos par telpu apskati. 🏢"))
+    return blocks
 
-    # ── HTML ──
-    html: list[str] = []
+
+def to_text(blocks):
+    out = []
     for typ, val in blocks:
         if typ == "B":
-            html.append(f"<p>{_b(val)}</p>")
+            out.append("**" + val + "**")
         elif typ == "P":
-            if val:
-                html.append(f"<p>{val}</p>")
+            out.append(val)
         elif typ == "S":
-            head, body = val  # type: ignore
-            html.append(f"<p>{_b(head)}<br>{body}</p>")
-    return "".join(html)
-
-
-# ─── SEO / excerpt / alt (nemainīti — lieto tdata ar district/city) ─────────
-def render_excerpt(space_group: str, raw: dict) -> str:
-    """Īss konspekts = Yoast meta description (auto no excerpt). ≤100 zīmes."""
-    g = lambda k: _clean(raw.get(k))
-    veids = _VEIDS.get(space_group, "komerctelpas")
-    sale = _is_sale(raw.get("price_type"))
-    district = _cap(g("district") or "")
-    city = _cap(g("city") or "")
-    a = _num(raw.get("area_m2"))
-    bc = g("building_class")
-    sak = "Pārdod" if sale else "Nomā"
-    txt = f"{sak} {veids}"
-    if a:
-        txt += f", {a} m²"
-    loc = district or city
-    if loc:
-        txt += f", {loc}"
-    if bc:
-        txt += f", {bc} klase"
-    txt += "."
-    return (txt[:97].rstrip(" ,") + "…") if len(txt) > 100 else txt
-
-
-def _status_word(raw: dict) -> str:
-    return "pārdošana" if _is_sale(raw.get("price_type")) else "noma"
-
-
-def seo_focus_keyphrase(space_group: str, raw: dict) -> str:
-    """Yoast focus keyphrase = (telpu veids) (status) (rajons)."""
-    g = lambda k: _clean(raw.get(k))
-    veids = _VEIDS.get(space_group, "komerctelpas")
-    loc = g("district") or g("city") or ""
-    return f"{veids} {_status_word(raw)} {loc}".strip().lower()
-
-
-def seo_title(space_group: str, raw: dict, address: str) -> str:
-    """Yoast SEO title — adrese + veids + platība + lokācija."""
-    g = lambda k: _clean(raw.get(k))
-    veids = _VEIDS.get(space_group, "komerctelpas")
-    a = _num(raw.get("area_m2"))
-    loc = _cap(g("district") or g("city") or "")
-    parts = [address, _cap(veids)]
-    if a:
-        parts.append(f"{a} m²")
-    if loc:
-        parts.append(loc)
-    return ", ".join(parts) + " | RG Commerce"
-
-
-def image_alt(space_group: str, raw: dict) -> str:
-    """Bildes ALT = (veids) (rajons) (platība) (m²cena)."""
-    g = lambda k: _clean(raw.get(k))
-    veids = _VEIDS.get(space_group, "komerctelpas")
-    loc = _cap(g("district") or g("city") or "")
-    a = _num(raw.get("area_m2"))
-    price = _num(raw.get("price"))
-    bits = [veids]
-    if loc:
-        bits.append(loc)
-    if a:
-        bits.append(f"{a} m²")
-    if price and a:
-        try:
-            bits.append(f"{_money(round(float(price)/float(a), 2))} EUR/m²")
-        except (ValueError, ZeroDivisionError):
-            pass
-    return " ".join(bits)
+            head, body = val
+            out.append("**" + head + "**\n" + body)
+    return "\n\n".join(out)
 
 
 if __name__ == "__main__":
-    import os
-    from pathlib import Path
-    import psycopg
-    from psycopg.rows import dict_row
-    from dotenv import load_dotenv
-    load_dotenv(Path("..").resolve() / "sslv-ai-runner-railway" / "crm" / ".env")
     LID = int(sys.argv[1]) if len(sys.argv) > 1 else 759
     with psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row) as conn:
         L = conn.execute("SELECT * FROM properties.listings WHERE id=%s", (LID,)).fetchone()
@@ -628,4 +452,17 @@ if __name__ == "__main__":
         if L.get("building_profile_id"):
             bp = conn.execute("SELECT * FROM properties.building_profiles WHERE id=%s",
                               (L["building_profile_id"],)).fetchone() or {}
-    print(render_body(L.get("Space_group", ""), L, bp))
+    fields = ["Space_group", "building_type", "building_class", "area_m2", "floor", "price",
+              "price_per_m2", "price_type", "Space_condition", "Cik_telpas", "Logu_type",
+              "Griestu_augstums", "Gridas_materials", "Apkure", "Mebeleta_telpa", "Virtuve_check",
+              "cik_WC", "Ventilacijas_sistema_check", "Parkings", "Sava_ieeja_check",
+              "Apsargajama_teritorija_check", "Nozogota_teritorija_check", "Vides_pieejamiba_check",
+              "Treifelis_Pacelajs", "Pacelamie_varti_check", "Rampa_logistikai_check",
+              "Potential_space_group", "Building_description", "Investiciju_strategija"]
+    print(f"### LISTING {LID}  ({L.get('street')}, {L.get('city')})  bp_id={L.get('building_profile_id')}")
+    for f in fields:
+        v = L.get(f)
+        if v not in (None, "", "unknown"):
+            print(f"   {f} = {v}")
+    print("\n" + "=" * 70 + "\n")
+    print(to_text(render(L, bp)))
