@@ -42,7 +42,8 @@ except Exception:
     pass
 
 sys.path.insert(0, str(Path(__file__).parent))
-from wp_templates import render_body, _floor as _clean_floor  # noqa: E402
+from wp_templates import (render_body, _floor as _clean_floor,  # noqa: E402
+                          _street_nominative, _cap)
 import image_classify  # noqa: E402
 import image_pipeline  # noqa: E402  # Seedream AI bilžu skaistināšana
 
@@ -391,7 +392,9 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
     sg = (listing.get("Space_group") or "").strip()
     veids = _VEIDS.get(sg, "Komerctelpas")
     sale = str(listing.get("price_type") or "").lower() in _SALE_PT
-    addr = _title(listing, bp)
+    # Cover virsraksts NOMINATĪVĀ ar 'iela' ("Stirnu iela 25"); fallback _title.
+    addr = _street_nominative(listing.get("street") or bp.get("full_address")) \
+        or _title(listing, bp)
     area = _num(listing.get("area_m2"))
     price = _num(listing.get("price"))
     ppm2 = _num(listing.get("price_per_m2"))
@@ -400,8 +403,8 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
             ppm2 = str(round(float(price) / float(area), 2))
         except (ValueError, ZeroDivisionError):
             ppm2 = None
-    city = (bp.get("city") or listing.get("city") or "").strip()
-    district = (bp.get("district") or listing.get("district") or "").strip()
+    city = _cap((bp.get("city") or listing.get("city") or "").strip())
+    district = _cap((bp.get("district") or listing.get("district") or "").strip())
     loc_v = ", ".join(p for p in (district, city) if p)
     land = _num(listing.get("Zemes_gabals_m2"))
 

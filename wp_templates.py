@@ -296,14 +296,19 @@ _SFX_LOC_TOKENS = {
 }
 
 
-def _street_locative(s) -> str:
-    """Adrese ievada teikumam LOKATĪVĀ ('kur?').
-      'Stirnu 25'            → 'Stirnu ielā 25'   (nav sufiksa → iespraud 'ielā')
-      'Stirnu iela 25'       → 'Stirnu ielā 25'   (iela → ielā)
-      'Brīvības gatve 411'   → 'Brīvības gatvē 411'
-      'Kurzemes pr. 3g'      → 'Kurzemes prospektā 3g'
-      'Čiekurkalna 1. l. 84' → 'Čiekurkalna 1. līnijā 84'
-    Pilsētu (aiz komata) atmet — ievadā tikai iela+numurs."""
+_SFX_NOM_TOKENS = {  # tas pats kā _SFX_LOC_TOKENS, bet NOMINATĪVS (cover etiķete)
+    "iela": "iela", "gatve": "gatve", "bulvāris": "bulvāris", "bulvaris": "bulvāris",
+    "bulv": "bulvāris", "prospekts": "prospekts", "pr": "prospekts",
+    "šoseja": "šoseja", "soseja": "šoseja", "ceļš": "ceļš", "cels": "ceļš",
+    "laukums": "laukums", "lauk": "laukums", "aleja": "aleja",
+    "krastmala": "krastmala", "līnija": "līnija", "linija": "līnija", "līn": "līnija",
+    "l": "līnija", "tilts": "tilts", "pasāža": "pasāža", "pasaza": "pasāža",
+}
+
+
+def _street_decline(s, table) -> str:
+    """Adrese ar ielas sufiksu, izvēlētajā locījumā (table = _SFX_LOC/_NOM_TOKENS).
+    Pilsētu (aiz komata) atmet. 'Stirnu 25' → '<Stirnu> <iela/ielā> 25'."""
     s = _clean(s)
     if not s:
         return ""
@@ -313,13 +318,30 @@ def _street_locative(s) -> str:
         return ""
     low = [t.lower().rstrip(".") for t in tokens]
     for i, lt in enumerate(low):
-        if lt in _SFX_LOC_TOKENS:
-            tokens[i] = _SFX_LOC_TOKENS[lt]
+        if lt in table:
+            tokens[i] = table[lt]
             return " ".join(tokens)
-    # nav sufiksa → iespraud 'ielā' pirms māju numura (pēdējais tokens ar ciparu)
+    dflt = table["iela"]  # 'iela' vai 'ielā' atkarībā no tabulas
     if len(tokens) >= 2 and any(c.isdigit() for c in tokens[-1]):
-        return " ".join(tokens[:-1]) + " ielā " + tokens[-1]
-    return s + " ielā"
+        return " ".join(tokens[:-1]) + f" {dflt} " + tokens[-1]
+    return s + f" {dflt}"
+
+
+def _street_nominative(s) -> str:
+    """Adrese NOMINATĪVĀ ar sufiksu (cover etiķete): 'Stirnu 25'→'Stirnu iela 25',
+    'Kurzemes pr. 3g'→'Kurzemes prospekts 3g'."""
+    return _street_decline(s, _SFX_NOM_TOKENS)
+
+
+def _street_locative(s) -> str:
+    """Adrese ievada teikumam LOKATĪVĀ ('kur?').
+      'Stirnu 25'            → 'Stirnu ielā 25'   (nav sufiksa → iespraud 'ielā')
+      'Stirnu iela 25'       → 'Stirnu ielā 25'   (iela → ielā)
+      'Brīvības gatve 411'   → 'Brīvības gatvē 411'
+      'Kurzemes pr. 3g'      → 'Kurzemes prospektā 3g'
+      'Čiekurkalna 1. l. 84' → 'Čiekurkalna 1. līnijā 84'
+    Pilsētu (aiz komata) atmet — ievadā tikai iela+numurs."""
+    return _street_decline(s, _SFX_LOC_TOKENS)
 
 
 # ─── Galvenais: render_body ────────────────────────────────────────────────
