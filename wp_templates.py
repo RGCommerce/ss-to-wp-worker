@@ -283,6 +283,45 @@ def _floor_n(v) -> tuple[Optional[int], bool]:
     return (int(m.group(0)) if m else None), base
 
 
+# Ielas tipa tokens (bez punkta, lowercase) → LOKATĪVS pilnā forma.
+# Ievada teikumam: "Tiek iznomātas telpas Stirnu IELĀ 25" (ne "iela"/"Stirnu").
+# Sedz gan pilnos vārdus, gan LV adrešu saīsinājumus (pr.=prospekts, l.=līnija).
+_SFX_LOC_TOKENS = {
+    "iela": "ielā", "gatve": "gatvē", "bulvāris": "bulvārī", "bulvaris": "bulvārī",
+    "bulv": "bulvārī", "prospekts": "prospektā", "pr": "prospektā",
+    "šoseja": "šosejā", "soseja": "šosejā", "ceļš": "ceļā", "cels": "ceļā",
+    "laukums": "laukumā", "lauk": "laukumā", "aleja": "alejā",
+    "krastmala": "krastmalā", "līnija": "līnijā", "linija": "līnijā", "līn": "līnijā",
+    "l": "līnijā", "tilts": "tiltā", "pasāža": "pasāžā", "pasaza": "pasāžā",
+}
+
+
+def _street_locative(s) -> str:
+    """Adrese ievada teikumam LOKATĪVĀ ('kur?').
+      'Stirnu 25'            → 'Stirnu ielā 25'   (nav sufiksa → iespraud 'ielā')
+      'Stirnu iela 25'       → 'Stirnu ielā 25'   (iela → ielā)
+      'Brīvības gatve 411'   → 'Brīvības gatvē 411'
+      'Kurzemes pr. 3g'      → 'Kurzemes prospektā 3g'
+      'Čiekurkalna 1. l. 84' → 'Čiekurkalna 1. līnijā 84'
+    Pilsētu (aiz komata) atmet — ievadā tikai iela+numurs."""
+    s = _clean(s)
+    if not s:
+        return ""
+    s = s.split(",")[0].strip()
+    tokens = s.split()
+    if not tokens:
+        return ""
+    low = [t.lower().rstrip(".") for t in tokens]
+    for i, lt in enumerate(low):
+        if lt in _SFX_LOC_TOKENS:
+            tokens[i] = _SFX_LOC_TOKENS[lt]
+            return " ".join(tokens)
+    # nav sufiksa → iespraud 'ielā' pirms māju numura (pēdējais tokens ar ciparu)
+    if len(tokens) >= 2 and any(c.isdigit() for c in tokens[-1]):
+        return " ".join(tokens[:-1]) + " ielā " + tokens[-1]
+    return s + " ielā"
+
+
 # ─── Galvenais: render_body ────────────────────────────────────────────────
 def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> str:
     """Jaunais pilnu-teikumu teksts → HTML (<p>/<strong>/<br>).
@@ -311,7 +350,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     blocks.append(("B", head))
 
     # 2. IEVADS
-    addr = gb("full_address") or g("street") or ""
+    addr = _street_locative(g("street") or gb("full_address"))
     bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
     bclass = (gb("building_class") or g("building_class") or "").strip().upper()
     btype = gb("building_type") or g("building_type")

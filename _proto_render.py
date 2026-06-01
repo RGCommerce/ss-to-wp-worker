@@ -186,6 +186,36 @@ def floor_n(v):
     return (int(m.group(0)) if m else None), base
 
 
+_SFX_LOC_TOKENS = {
+    "iela": "ielā", "gatve": "gatvē", "bulvāris": "bulvārī", "bulvaris": "bulvārī",
+    "bulv": "bulvārī", "prospekts": "prospektā", "pr": "prospektā",
+    "šoseja": "šosejā", "soseja": "šosejā", "ceļš": "ceļā", "cels": "ceļā",
+    "laukums": "laukumā", "lauk": "laukumā", "aleja": "alejā",
+    "krastmala": "krastmalā", "līnija": "līnijā", "linija": "līnijā", "līn": "līnijā",
+    "l": "līnijā", "tilts": "tiltā", "pasāža": "pasāžā", "pasaza": "pasāžā",
+}
+
+
+def street_locative(s):
+    """Adrese ievada teikumam LOKATĪVĀ: 'Stirnu 25'→'Stirnu ielā 25',
+    'Kurzemes pr. 3g'→'Kurzemes prospektā 3g'. Pilsētu (aiz komata) atmet."""
+    s = c(s)
+    if not s:
+        return ""
+    s = s.split(",")[0].strip()
+    tokens = s.split()
+    if not tokens:
+        return ""
+    low = [t.lower().rstrip(".") for t in tokens]
+    for i, lt in enumerate(low):
+        if lt in _SFX_LOC_TOKENS:
+            tokens[i] = _SFX_LOC_TOKENS[lt]
+            return " ".join(tokens)
+    if len(tokens) >= 2 and any(ch.isdigit() for ch in tokens[-1]):
+        return " ".join(tokens[:-1]) + " ielā " + tokens[-1]
+    return s + " ielā"
+
+
 def render(L, bp):
     g = lambda k: c(L.get(k))
     gb = lambda k: c(bp.get(k))
@@ -206,7 +236,7 @@ def render(L, bp):
     blocks.append(("B", head))
 
     # 2. IEVADS
-    addr = gb("full_address") or g("street") or ""
+    addr = street_locative(g("street") or gb("full_address"))
     bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
     bclass = (gb("building_class") or g("building_class") or "").strip().upper()
     btype = gb("building_type") or g("building_type")
