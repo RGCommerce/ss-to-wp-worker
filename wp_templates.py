@@ -109,6 +109,124 @@ _PRIEK_ORDER = ["has_lift", "has_freight_lift", "has_gym", "has_conference_room"
 
 SUPPORTED_GROUPS = sorted(_VEIDS.keys())
 
+# Rīgas rajons/apkaime → ĢENITĪVS (virsrakstam "X rajonā"). Tikai Rīgas
+# apkaimes — ārpus-Rīgas pilsētām/pagastiem (Jelgava, "mārupes pag.") "rajonā"
+# neder → tos NAV šeit → frāzi izlaiž. Key = lowercase (DB case jaukts).
+_DISTRICT_GEN = {
+    # Labais krasts
+    "centrs": "Centra", "vecrīga": "Vecrīgas", "klusais centrs": "Klusā centra",
+    "latgales rajons": "Latgales", "maskavas rajons": "Maskavas",
+    "latgales priekšpilsēta": "Latgales priekšpilsētas",
+    "dārzciems": "Dārzciema", "pļavnieki": "Pļavnieku", "pļavinieki": "Pļavinieku",
+    "purvciems": "Purvciema", "ķengarags": "Ķengaraga", "šķirotava": "Šķirotavas",
+    "dreiliņi": "Dreiliņu", "pētersala": "Pētersalas", "brasa": "Brasas",
+    "skanste": "Skanstes", "grīziņkalns": "Grīziņkalna", "teika": "Teikas",
+    "čiekurkalns": "Čiekurkalna", "vef": "VEF", "sarkandaugava": "Sarkandaugavas",
+    "mežaparks": "Mežaparka", "jaunciems": "Jaunciema", "mežciems": "Mežciema",
+    "jugla": "Juglas", "berģi": "Berģu", "rumbula": "Rumbulas",
+    "dārziņi": "Dārziņu", "vecmīlgrāvis": "Vecmīlgrāvja", "jaunmīlgrāvis": "Jaunmīlgrāvja",
+    "vecdaugava": "Vecdaugavas", "trīsciems": "Trīsciema", "bukulti": "Bukultu",
+    "berkši": "Berkšu", "brekši": "Brekšu", "mangaļsala": "Mangaļsalas",
+    "mangaļi": "Mangaļu", "vecāķi": "Vecāķu", "jaunmīlgravis": "Jaunmīlgrāvja",
+    "andrejsala": "Andrejsalas", "pētersalas-andrejsala": "Pētersalas-Andrejsalas",
+    "avoti": "Avotu", "atgāzene": "Atgāzenes", "kundziņsala": "Kundziņsalas",
+    # Kreisais krasts
+    "torņkalns": "Torņkalna", "torņakalns": "Torņakalna", "āgenskalns": "Āgenskalna",
+    "ziepniekalns": "Ziepniekalna", "ziepniekkalns": "Ziepniekkalna",
+    "iļģuciems": "Iļģuciema", "zolitūde": "Zolitūdes", "šampēteris": "Šampētera",
+    "pleskodāle": "Pleskodāles", "šampēteris-pleskodāle": "Šampētera-Pleskodāles",
+    "dzirciems": "Dzirciema", "imanta": "Imantas", "kleisti": "Kleistu",
+    "bieriņi": "Bieriņu", "dzegužkalns": "Dzegužkalna", "zasulauks": "Zasulauka",
+    "bolderāja": "Bolderājas", "daugavgrīva": "Daugavgrīvas", "buļļi": "Buļļu",
+    "beberbeķi": "Beberbeķu", "ķīpsala": "Ķīpsalas", "kleisti-suži": "Kleistu",
+    "klīversala": "Klīversalas", "lucavsala": "Lucavsalas", "bieķēnsala": "Bieķēnsalas",
+    "katlakalns": "Katlakalna", "voleri": "Voleru", "zasulauks-bišumuiža": "Zasulauka",
+}
+
+
+def _districts_phrase(raw) -> str:
+    """district (1 vai vairāki pa komatam) → 'X rajonā' ģenitīvā (Rīgas apkaimes).
+      'purvciems'                       → 'Purvciema rajonā'
+      'Purvciems, Dzirciems'            → 'Purvciema un Dzirciema rajonā'
+      'Purvciems, Dzirciems, Latgales rajons' → 'Purvciema, Dzirciema un Latgales rajonā'
+    Tikai zināmas Rīgas apkaimes; nepazīstams → izlaiž ('')."""
+    raw = _clean(raw)
+    if not raw:
+        return ""
+    gens = []
+    for p in raw.split(","):
+        p = p.strip().lower()
+        g = _DISTRICT_GEN.get(p)
+        if g and g not in gens:
+            gens.append(g)
+    if not gens:
+        return ""
+    if len(gens) == 1:
+        body = gens[0]
+    elif len(gens) == 2:
+        body = gens[0] + " un " + gens[1]
+    else:
+        body = ", ".join(gens[:-1]) + " un " + gens[-1]
+    return body + " rajonā"
+
+
+# Ārpus-Rīgas pilsēta/novads/pagasts → LOKATĪVS ('kur?'). Key = lowercase.
+# city DB bieži "Jelgava un raj." → _norm_city nogriež " un raj./novads".
+_CITY_LOC = {
+    "jelgava": "Jelgavā", "daugavpils": "Daugavpilī", "liepāja": "Liepājā",
+    "rēzekne": "Rēzeknē", "jēkabpils": "Jēkabpilī", "valmiera": "Valmierā",
+    "ventspils": "Ventspilī", "jūrmala": "Jūrmalā", "ogre": "Ogrē",
+    "tukums": "Tukumā", "cēsis": "Cēsīs", "bauska": "Bauskā", "sigulda": "Siguldā",
+    "salaspils": "Salaspilī", "olaine": "Olainē", "ķekava": "Ķekavā",
+    "preiļi": "Preiļos", "kuldīga": "Kuldīgā", "dobele": "Dobelē",
+    "limbaži": "Limbažos", "talsi": "Talsos", "madona": "Madonā",
+    "lielvārde": "Lielvārdē", "saldus": "Saldū", "krāslava": "Krāslavā",
+    "aizkraukle": "Aizkrauklē", "alūksne": "Alūksnē", "gulbene": "Gulbenē",
+    "ropaži": "Ropažos", "ikšķile": "Ikšķilē", "ķegums": "Ķegumā",
+    "baldone": "Baldonē", "saulkrasti": "Saulkrastos", "vangaži": "Vangažos",
+    "baloži": "Baložos", "carnikava": "Carnikavā", "līvāni": "Līvānos",
+    "dunava": "Dunavā", "ļaudona": "Ļaudonā", "ādaži": "Ādažos",
+    "mārupe": "Mārupē", "babīte": "Babītē", "stopiņi": "Stopiņos",
+    "garkalne": "Garkalnē", "mālpils": "Mālpilī", "sēja": "Sējā",
+    "vecumnieki": "Vecumniekos", "iecava": "Iecavā", "ozolnieki": "Ozolniekos",
+    "sloka": "Slokā", "kauguri": "Kauguros", "bulduri": "Bulduros",
+    "lielupe": "Lielupē", "ķekava": "Ķekavā", "līgatne": "Līgatnē",
+    "sigulda": "Siguldā", "krimulda": "Krimuldā", "ropaži": "Ropažos",
+    # DB pagastu/novadu formas (district) → centra lokatīvs
+    "ādažu nov.": "Ādažos", "mārupes pag.": "Mārupē", "babītes pag.": "Babītē",
+    "ķekavas pag.": "Ķekavā", "stopiņu nov.": "Stopiņos", "ropažu nov.": "Ropažos",
+    "ozolnieku pag.": "Ozolniekos", "garkalnes nov.": "Garkalnē",
+    "mālpils pag.": "Mālpilī", "sējas nov.": "Sējā", "vecumnieku pag.": "Vecumniekos",
+    "iecavas nov.": "Iecavā", "ikšķiles l. t.": "Ikšķilē", "salaspils l. t.": "Salaspilī",
+    "saulkrastu l. t.": "Saulkrastos", "baldones l. t.": "Baldonē",
+    "skultes pag.": "Skultē", "krimuldas pag.": "Krimuldā", "sējas nov.": "Sējā",
+    "daugmales pag.": "Daugmalē", "ķeguma": "Ķegumā", "olaines nov.": "Olainē",
+}
+
+
+def _norm_city(s) -> str:
+    """city DB → tīrs lowercase: 'Jelgava un raj.' → 'jelgava',
+    'Bauska un novads.' → 'bauska', 'Rīgas rajons' → 'rīgas rajons' (nav pilsēta)."""
+    s = (_clean(s) or "").lower()
+    for tail in (" un raj.", " un raj", " un novads.", " un novads", " un nov.", " un nov"):
+        if s.endswith(tail):
+            s = s[: -len(tail)]
+            break
+    return s.strip()
+
+
+def _location_phrase(district, city) -> str:
+    """Virsraksta lokācija: Rīgas apkaime → 'X rajonā'; ārpus-Rīga → pilsēta
+    lokatīvā 'Jelgavā'. Nezināms → ''. district prioritāte (specifiskāks)."""
+    rp = _districts_phrase(district)
+    if rp:
+        return rp
+    for src in (district, _norm_city(city)):
+        loc = _CITY_LOC.get((_clean(src) or "").lower())
+        if loc:
+            return loc
+    return ""
+
 
 # ─── Helperi ──────────────────────────────────────────────────────────────
 def _clean(v) -> Optional[str]:
@@ -367,6 +485,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         head = "Pārdod " + veids + (f" ({inv})" if inv else "")
     else:
         head = "Iznomā " + veids
+    dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
+    if dist:
+        head += " " + dist
     if area:
         head += f" – {area} m²"
     blocks.append(("B", head))
