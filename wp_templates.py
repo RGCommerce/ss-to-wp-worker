@@ -526,11 +526,14 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             intro.append("Kompleksu apsaimnieko profesionāla apsaimniekošanas kompānija.")
     else:
         subj = bname or "Ēka"
+        # Ēkas tips no DB (Jaukta tipa ēka / Biroju ēka / Tirdzniecības centrs ...);
+        # ja nav norādīts → "biznesa ēka". (Raimonds 2026-06-02 — ne vienmēr biznesa.)
+        btype_phrase = (btype or "").strip().lower() or "biznesa ēka"
         eka_desc = ""
         if fcount and int(float(fcount)) in _STAVU:
-            eka_desc = _STAVU[int(float(fcount))].lower() + " biznesa ēka"
-        elif bname:
-            eka_desc = "biznesa ēka"
+            eka_desc = _STAVU[int(float(fcount))].lower() + " " + btype_phrase
+        elif bname or btype:
+            eka_desc = btype_phrase
         if eka_desc:
             s = f"{subj} ir {eka_desc}"
             if fy:
