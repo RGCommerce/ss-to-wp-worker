@@ -778,17 +778,22 @@ def seo_focus_keyphrase(space_group: str, raw: dict) -> str:
 
 
 def seo_title(space_group: str, raw: dict, address: str) -> str:
-    """Yoast SEO title — adrese + veids + platība + lokācija."""
+    """Yoast SEO title = iela, rajons, tips, platība.
+    BEZ pilsētas (dublētu adresi) un BEZ "RG Commerce" (Yoast sitename pats
+    pieliktu → divreiz). Raimonds 2026-06-02."""
     g = lambda k: _clean(raw.get(k))
     veids = _VEIDS.get(space_group, "komerctelpas")
     a = _num(raw.get("area_m2"))
-    loc = _cap(g("district") or g("city") or "")
-    parts = [address, _cap(veids)]
+    district = _cap(g("district"))
+    parts = []
+    if address and address.strip():
+        parts.append(address.strip())
+    if district:
+        parts.append(district)
+    parts.append(_cap(veids))
     if a:
         parts.append(f"{a} m²")
-    if loc:
-        parts.append(loc)
-    return ", ".join(parts) + " | RG Commerce"
+    return ", ".join(parts)
 
 
 def image_alt(space_group: str, raw: dict) -> str:

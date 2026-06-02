@@ -93,6 +93,15 @@ def _title(listing: dict, bp: dict) -> str:
     return addr or f"Komercīpašums (listing {listing['id']})"
 
 
+def _map_address(listing: dict, bp: dict) -> str:
+    """Pilna ĢEOKODĒJAMA adrese kartei: iela + pilsēta + Latvija.
+    Tikai iela (kā _title) ģeokodējas neviennozīmīgi → karte lūst. (2026-06-02)"""
+    street = (bp.get("full_address") or listing.get("street") or "").strip()
+    city = (bp.get("city") or listing.get("city") or "").strip()
+    parts = [p for p in (street, city, "Latvija") if p]
+    return ", ".join(parts)
+
+
 def _image_paths(listing: dict) -> list[Path]:
     """TIKAI AI-apstrādātās (local_image_paths_processed) bildes.
 
@@ -245,7 +254,7 @@ def _meta(listing: dict, bp: dict) -> dict:
         "fave_property_land":         land_n or "",
         "fave_property_land_postfix": "m²" if land_n else "",
         "fave_property_address":      _title(listing, bp),
-        "fave_property_map_address":  _title(listing, bp),
+        "fave_property_map_address":  _map_address(listing, bp),
         "fave_property_city":         g("city") or "",
         # Houzez Fields-builder SELECT (bucket opcijas). Raimonds 2026-05-18:
         # iepriekš sūtīts kā list → serializēts masīvs → Houzez get_post_meta
