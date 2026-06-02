@@ -497,11 +497,14 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
     bclass = (gb("building_class") or g("building_class") or "").strip().upper()
     btype = gb("building_type") or g("building_type")
+    bname = gb("building_name")
     is_complex = _truthy(bp.get("is_business_complex"))
     verb = "Tiek pārdotas" if sale else "Tiek iznomātas"
     intro: list[str] = []
     if is_complex:
-        intro.append(f"{verb} {veids} modernā un aktīvā biznesa kompleksā {addr}.")
+        # Nosaukts komplekss → nosaukums adreses vietā ("Barona Kvartāls")
+        kompl = bname if bname else addr
+        intro.append(f"{verb} {veids} modernā un aktīvā biznesa kompleksā {kompl}.")
     elif bdesc:
         intro.append(f"{verb} {veids} {addr}.")
     else:
@@ -512,27 +515,33 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if bdesc and not is_complex:
         intro.append(bdesc.strip().rstrip(".") + ".")
     # ēkas faktu teikums (nosaukums/stāvi/gads/managed)
-    bname = gb("building_name")
     fy = _num(bp.get("bdg_year"))
     fcount = _num(bp.get("floors_count"))
     managed = _truthy(bp.get("has_managed"))
-    subj = bname or "Ēka"
-    eka_desc = ""
-    if fcount and int(float(fcount)) in _STAVU:
-        eka_desc = _STAVU[int(float(fcount))].lower() + " biznesa ēka"
-    elif bname:
-        eka_desc = "biznesa ēka"
-    if eka_desc:
-        s = f"{subj} ir {eka_desc}"
+    if is_complex and bname:
+        # Nosaukums jau pateikts ievadā — neatkārtojam "X ir biznesa ēka"
         if fy:
-            s += f", celta {fy}. gadā"
+            intro.append(f"Komplekss celts {fy}. gadā.")
         if managed:
-            s += ", ko apsaimnieko profesionāla apsaimniekošanas kompānija"
-        intro.append(s + ".")
-    elif fy:
-        intro.append(f"{subj} celta {fy}. gadā.")
-    elif managed:
-        intro.append("Ēku apsaimnieko profesionāla apsaimniekošanas kompānija.")
+            intro.append("Kompleksu apsaimnieko profesionāla apsaimniekošanas kompānija.")
+    else:
+        subj = bname or "Ēka"
+        eka_desc = ""
+        if fcount and int(float(fcount)) in _STAVU:
+            eka_desc = _STAVU[int(float(fcount))].lower() + " biznesa ēka"
+        elif bname:
+            eka_desc = "biznesa ēka"
+        if eka_desc:
+            s = f"{subj} ir {eka_desc}"
+            if fy:
+                s += f", celta {fy}. gadā"
+            if managed:
+                s += ", ko apsaimnieko profesionāla apsaimniekošanas kompānija"
+            intro.append(s + ".")
+        elif fy:
+            intro.append(f"{subj} celta {fy}. gadā.")
+        elif managed:
+            intro.append("Ēku apsaimnieko profesionāla apsaimniekošanas kompānija.")
     # stāva teikums
     fn, base = _floor_n(L.get("floor"))
     own_entr = _truthy(L.get("Sava_ieeja_check"))
@@ -653,6 +662,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     bld = []
     real_amen = 0
     for fld in _PRIEK_ORDER:
+        # 1. stāva / cokola telpām pasažieru lifts nav priekšrocība
+        if fld == "has_lift" and (fn == 1 or base):
+            continue
         if _truthy(bp.get(fld)):
             bld.append(_PRIEK[fld])
             real_amen += 1
