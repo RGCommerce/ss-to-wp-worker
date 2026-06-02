@@ -341,6 +341,94 @@ def listing_images(listing_id: int, _auth: None = Depends(require_token)) -> dic
     }
 
 
+class DuplicateReq(BaseModel):
+    draft_id: int
+    target: str  # "unit_<localId>" — kur draft mapē kopēt bildes
+
+
+# DB price_type → UI ("monthly"=noma / "regular"=pārdošana)
+_SALE_PRICE_TYPES = {"regular", "pārdošana", "pardosana", "sale", "pārdod", "pardod"}
+
+
+def _copy_listing_images_to_draft(listing_id: int, draft_id: int, target: str) -> list[dict]:
+    """Kopē listinga raw (vai ai_ready) bildes uz draft mapi → ImageRef[] paths,
+    lai dublētā telpa tās rāda kā parastas augšuplādētas bildes."""
+    base = STORAGE_ROOT / "listings" / str(listing_id)
+    src_dir = base / "raw"
+    if not src_dir.is_dir():
+        src_dir = base / "ai_ready"
+    if not src_dir.is_dir():
+        return []
+    dst = STORAGE_ROOT / "agent_drafts" / str(draft_id) / target
+    dst.mkdir(parents=True, exist_ok=True)
+    exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    files = sorted(p for p in src_dir.glob("img_*.*") if p.suffix.lower() in exts)
+    out: list[dict] = []
+    for f in files:
+        new = f"{uuid.uuid4().hex}{f.suffix.lower()}"
+        shutil.copy2(f, dst / new)
+        out.append({
+            "path": f"agent_drafts/{draft_id}/{target}/{new}",
+            "size": (dst / new).stat().st_size,
+        })
+    return out
+
+
+@router.post("/duplicate-listing/{listing_id}")
+def duplicate_listing(
+    listing_id: int, req: DuplicateReq, _auth: None = Depends(require_token)
+) -> dict:
+    """Dublē esošu listingu jaunā anketas telpā (UnitForm shape + bilžu kopijas).
+    Aģents tad to rediģē/akceptē; nevajadzīgo dzēš. Bildes kopējas draft mapē."""
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM properties.listings WHERE id = %s", (listing_id,))
+        L = cur.fetchone()
+    if not L:
+        raise HTTPException(404, f"Listing {listing_id} nav atrasts")
+
+    def s(col: str) -> str:
+        v = L.get(col)
+        return "" if v is None else str(v)
+
+    def chk(col: str):
+        v = str(L.get(col) or "").strip().lower()
+        return "checked" if v == "checked" else ("not checked" if v == "not checked" else None)
+
+    pt = str(L.get("price_type") or "").strip().lower()
+    price_type = "regular" if pt in _SALE_PRICE_TYPES else ("monthly" if pt else None)
+    wc_loc = L.get("WC_location")
+
+    unit = {
+        "space_group": L.get("Space_group"),
+        "area_m2": s("area_m2"),
+        "floor": s("floor"),
+        "price": s("price"),
+        "price_type": price_type,
+        "Apsaimniekosanas_maksa": s("Apsaimniekosanas_maksa"),
+        "Papildu_maksas": s("Papildu_maksas"),
+        "Space_condition": L.get("Space_condition"),
+        "cik_telpas": s("Cik_telpas"),
+        "cik_WC": s("cik_WC"),
+        "WC_location": wc_loc if wc_loc in ("Telpā", "Koplietošanā") else None,
+        "Griestu_augstums": s("Griestu_augstums"),
+        "electric_power_kw": s("electric_power_kw"),
+        "Gridas_izturiba_kg_m2": s("Gridas_izturiba_kg_m2"),
+        "Zemes_gabals_m2": s("Zemes_gabals_m2"),
+        "Parkings": L.get("Parkings"),
+        "Agent_comment": s("Agent_comment"),
+    }
+    for c in (
+        "Pacelamie_varti_check", "Rampa_logistikai_check", "Virtuve_check",
+        "Sava_ieeja_check", "street_entrance", "Apsargajama_teritorija_check",
+        "Nozogota_teritorija_check", "Auto_pacelajs_check", "Treifelis_Pacelajs",
+        "Ir_izlietne_telpa_check", "Balkons_check", "Sava_eka_check",
+    ):
+        unit[c] = chk(c)
+
+    images = _copy_listing_images_to_draft(listing_id, req.draft_id, req.target)
+    return {"unit": unit, "images": images}
+
+
 @router.get("/image-proxy/{listing_id}/{folder}/{filename}")
 def image_proxy(
     listing_id: int, folder: str, filename: str,
