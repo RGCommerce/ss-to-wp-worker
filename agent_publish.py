@@ -146,6 +146,8 @@ _BP_FIELDS: list[tuple[str, str]] = [
     ("has_reception", "bool"), ("has_parcel_locker", "bool"),
     ("has_security_24_7", "bool"), ("has_cctv", "bool"),
     ("has_access_control", "bool"), ("has_conference_room", "bool"),
+    # mig 031
+    ("has_multiple_buildings", "bool"),
 ]
 
 

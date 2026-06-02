@@ -542,6 +542,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             intro.append(f"{subj} celta {fy}. gadā.")
         elif managed:
             intro.append("Ēku apsaimnieko profesionāla apsaimniekošanas kompānija.")
+    # vairākas ēkas kompleksā (mig 031)
+    if _truthy(bp.get("has_multiple_buildings")):
+        intro.append("Komplekss sastāv no vairākām ēkām dažādos stāvos.")
     # stāva teikums
     fn, base = _floor_n(L.get("floor"))
     own_entr = _truthy(L.get("Sava_ieeja_check"))
