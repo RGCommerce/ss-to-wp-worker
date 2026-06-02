@@ -148,6 +148,10 @@ _BP_FIELDS: list[tuple[str, str]] = [
     ("has_access_control", "bool"), ("has_conference_room", "bool"),
     # mig 031
     ("has_multiple_buildings", "bool"),
+    # Īpašnieks / kontakti (CRM — NEiet uz publisko WP)
+    ("owner", "text"), ("responsible", "text"),
+    ("primary_phone", "text"), ("secondary_phone", "text"),
+    ("email", "text"), ("partnership_status", "text"),
 ]
 
 
