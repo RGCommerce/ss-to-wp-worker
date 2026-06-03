@@ -73,22 +73,33 @@ def autocomplete(
     q: str,
     _auth: None = Depends(require_token),
 ) -> list[dict]:
-    """ILIKE meklē building_profiles.full_address. Atgriež max 8 rezultātus
-    kā mini-cards anketas dropdown-am."""
+    """Tipa-neatkarīga adreses meklēšana building_profiles. "Cēsu 31" = "Cēsu iela 31";
+    "Brīvības" atrod arī gatve/bulvāris. Atgriež max 8 mini-cards anketas dropdown-am."""
+    import re as _re
     q = (q or "").strip()
     if len(q) < 2:
         return []
-    sql = """
-        SELECT id, full_address, city, district, building_type, building_class,
-               listing_count_active
-          FROM properties.building_profiles
-         WHERE full_address ILIKE '%%' || %s || '%%'
-            OR street ILIKE '%%' || %s || '%%'
-         ORDER BY listing_count_active DESC NULLS LAST, full_address
-         LIMIT 8
-    """
+    # Normalizē meklēšanas terminu tāpat kā DB izteiksme (tipa vārds + diakritika nost)
+    _LV = str.maketrans("āčēģīķļņōŗšūž", "acegiklnorsuz")
+    _TYPE = _re.compile(r"\b(iela|gatve|bulvaris|prospekts|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\b")
+    key = _re.sub(r"\s+", " ", _TYPE.sub(" ", q.split(",")[0].lower().translate(_LV))).strip()
+    # SQL norm izteiksme (= listings.street_search ģenerētā kolona)
+    norm = (r"btrim(regexp_replace(regexp_replace(translate(lower(split_part(%s,',',1)),"
+            r"'āčēģīķļņōŗšūž','acegiklnorsuz'),"
+            r"'\y(iela|gatve|bulvaris|prospekts|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\y',' ','g'),'\s+',' ','g'))")
+    cols = "id, full_address, city, district, building_type, building_class, listing_count_active"
+    order = "ORDER BY listing_count_active DESC NULLS LAST, full_address LIMIT 8"
     with _db() as conn, conn.cursor() as cur:
-        cur.execute(sql, (q, q))
+        if key:
+            sql = (f"SELECT {cols} FROM properties.building_profiles "
+                   f"WHERE {norm % 'full_address'} LIKE '%%'||%s||'%%' "
+                   f"   OR {norm % 'street'} LIKE '%%'||%s||'%%' "
+                   f"   OR full_address ILIKE '%%'||%s||'%%' {order}")
+            cur.execute(sql, (key, key, q))
+        else:
+            sql = (f"SELECT {cols} FROM properties.building_profiles "
+                   f"WHERE full_address ILIKE '%%'||%s||'%%' OR street ILIKE '%%'||%s||'%%' {order}")
+            cur.execute(sql, (q, q))
         return cur.fetchall()
 
 
