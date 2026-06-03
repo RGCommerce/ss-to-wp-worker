@@ -49,6 +49,10 @@ _BTYPE = {  # building_type → "kur" frāze (fallback, ja nav Building_descript
     "Industriāla ēka": "ražošanas-noliktavu kompleksā", "Medicīnas centrs": "medicīnas centrā",
     "Autoserviss": "autoservisa ēkā", "Jaukta tipa ēka": "jaukta tipa ēkā",
 }
+# Tirdzniecības centriem — vispārīgs teksts (der VISIEM t/c; NE AI Building_description,
+# kas mēdz minēt skatlogus/komerctelpas pirmajos stāvos — neder visiem). Raimonds 2026-06-03.
+_TC_STANDARD = ("Centrā ir regulāra apmeklētāju plūsma un ērta piekļuve, kas telpām "
+                "nodrošina labu atpazīstamību un pastāvīgu klientu klātbūtni.")
 _COND = {  # Space_condition → pilns teikums
     "Jauns": "Telpas ir jaunas, ar nesen veiktu remontu.",
     "Labs": "Telpu iekšējais stāvoklis ir labs — uzturēts un gatavs lietošanai.",
@@ -499,9 +503,16 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     btype = gb("building_type") or g("building_type")
     bname = gb("building_name")
     is_complex = _truthy(bp.get("is_business_complex"))
+    is_tc = (btype or "").strip().lower() == "tirdzniecības centrs"
     verb = "Tiek pārdotas" if sale else "Tiek iznomātas"
     intro: list[str] = []
-    if is_complex:
+    if is_tc:
+        # Tirdzniecības centrs → nosaukums adreses vietā (ja ir; citādi adrese — OK)
+        # + vispārīgs t/c teksts; AI Building_description NETIEK lietots (skatlogi u.tml.).
+        kur_tc = bname if bname else addr
+        intro.append(f"{verb} {veids} tirdzniecības centrā {kur_tc}.")
+        intro.append(_TC_STANDARD)
+    elif is_complex:
         # Nosaukts komplekss → nosaukums adreses vietā ("Barona Kvartāls")
         kompl = bname if bname else addr
         intro.append(f"{verb} {veids} modernā un aktīvā biznesa kompleksā {kompl}.")
@@ -512,13 +523,26 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         adj = "modernā " if bclass == "A" else ""
         kur_s = f" {adj}{kur}" if kur else ""
         intro.append(f"{verb} {veids}{kur_s} {addr}.".replace("  ", " "))
-    if bdesc and not is_complex:
+    if bdesc and not is_complex and not is_tc:
         intro.append(bdesc.strip().rstrip(".") + ".")
     # ēkas faktu teikums (nosaukums/stāvi/gads/managed)
     fy = _num(bp.get("bdg_year"))
     fcount = _num(bp.get("floors_count"))
     managed = _truthy(bp.get("has_managed"))
-    if is_complex and bname:
+    if is_tc:
+        # Nosaukums + "tirdzniecības centrs" jau pateikti ievadā — pievienojam tikai
+        # stāvus/gadu/apsaimniekošanu, neatkārtojot "X ir tirdzniecības centrs".
+        floor_w = ""
+        if fcount and int(float(fcount)) in _STAVU:
+            floor_w = _STAVU[int(float(fcount))].lower()
+        if fy:
+            intro.append(f"Centrs celts {fy}. gadā.")
+        if managed:
+            subj_tc = f"{floor_w.capitalize()} centru" if floor_w else "Centru"
+            intro.append(f"{subj_tc} apsaimnieko profesionāla apsaimniekošanas kompānija.")
+        elif floor_w:
+            intro.append(f"Tas ir {floor_w} tirdzniecības centrs.")
+    elif is_complex and bname:
         # Nosaukums jau pateikts ievadā — neatkārtojam "X ir biznesa ēka"
         if fy:
             intro.append(f"Komplekss celts {fy}. gadā.")
@@ -561,7 +585,11 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             intro.append("Telpas atrodas ērti pieejamā 1. stāvā.")
     elif fn and fn >= 2:
         lift = ", ēkā ar liftu" if has_lift else ""
-        intro.append(f"Telpas atrodas {fn}. stāvā{lift}, klusā un reprezentablā darba vidē.")
+        # "tirdzniecības vidē" tikai t/c telpai t/c ēkā; birojam u.c. t/c ēkā → "darba vidē".
+        vide = ("reprezentablā tirdzniecības vidē"
+                if (is_tc and sg == "Tirdzniecība")
+                else "klusā un reprezentablā darba vidē")
+        intro.append(f"Telpas atrodas {fn}. stāvā{lift}, {vide}.")
     blocks.append(("P", " ".join(intro)))
 
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
