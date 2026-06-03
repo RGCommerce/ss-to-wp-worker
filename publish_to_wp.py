@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 import psycopg
+import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -98,8 +99,100 @@ def _map_address(listing: dict, bp: dict) -> str:
     Tikai iela (kā _title) ģeokodējas neviennozīmīgi → karte lūst. (2026-06-02)"""
     street = (bp.get("full_address") or listing.get("street") or "").strip()
     city = (bp.get("city") or listing.get("city") or "").strip()
-    parts = [p for p in (street, city, "Latvija") if p]
+    parts: list[str] = []
+    for p in (street, city, "Latvija"):
+        # dedup: izlaiž, ja jau ietverts (piem. full_address jau satur pilsētu
+        # → "Rīga, Rīga" novēršana)
+        if p and not any(p.lower() in q.lower() for q in parts):
+            parts.append(p)
     return ", ".join(parts)
+
+
+# --- Ģeokodēšana (kartes pin) ------------------------------------------------
+# Karte rādās TIKAI ja postam ir koordinātes (houzez_geolocation_lat/long).
+# Auto-publish iepriekš tās neuzlika → karte nerādījās (tikai source='wp' manuālie
+# ar Houzez admin geocode tās dabūja). Risinājums: ģeokodē Python pusē publish
+# laikā un sūta koordinātes meta (v5 plugins tās izlaiž caur → saglabā). (2026-06-03)
+_GEO_UA = "RGCommerce-geocoder/1.0 (raimonds@rgcommerce.lv)"
+# LV ielu saīsinājumi → pilns vārds (Nominatim "Kr. Barona" neatrod, "Krišjāņa Barona" atrod).
+_ABBR = [
+    (r"\bKr\.?\s+Barona\b", "Krišjāņa Barona"),
+    (r"\bK\.?\s+Barona\b", "Krišjāņa Barona"),
+    (r"\bKr\.?\s+Valdemāra\b", "Krišjāņa Valdemāra"),
+    (r"\bK\.?\s+Valdemāra\b", "Krišjāņa Valdemāra"),
+    (r"\bKr\.\s*", "Krišjāņa "),
+]
+
+
+def _expand_abbr(addr: str) -> str:
+    import re as _re
+    out = addr
+    for pat, repl in _ABBR:
+        out = _re.sub(pat, repl, out, flags=_re.IGNORECASE)
+    return out
+
+
+def _geocode(address: str) -> "tuple[str, str] | None":
+    """Adrese → ('lat', 'lng') vai None. Google (ja GOOGLE_MAPS_API_KEY env)
+    citādi keyless OSM Nominatim (karti tāpat zīmē Google no koordinātēm)."""
+    if not address or not address.strip():
+        return None
+    addr = _expand_abbr(address.strip())
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if key:
+        try:
+            r = requests.get(
+                "https://maps.googleapis.com/maps/api/geocode/json",
+                params={"address": addr, "key": key, "region": "lv"}, timeout=15)
+            j = r.json()
+            if j.get("status") == "OK" and j.get("results"):
+                loc = j["results"][0]["geometry"]["location"]
+                return (str(loc["lat"]), str(loc["lng"]))
+        except Exception as e:
+            print(f"  ! Google geocode kļūda ({e!s:.80}) — mēģinu Nominatim")
+    # Nominatim fallback — progresīva vienkāršošana (ar nr → bez nr)
+    import re as _re
+    candidates = [addr]
+    no_nr = _re.sub(r"\b\d+[a-zA-Z]?\b", "", addr, count=1).replace(" ,", ",").strip()
+    if no_nr and no_nr != addr:
+        candidates.append(no_nr)
+    for q in candidates:
+        try:
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": q, "format": "json", "limit": 1, "countrycodes": "lv"},
+                headers={"User-Agent": _GEO_UA}, timeout=15)
+            j = r.json()
+            if j:
+                return (j[0]["lat"], j[0]["lon"])
+        except Exception as e:
+            print(f"  ! Nominatim kļūda ({e!s:.80})")
+    return None
+
+
+def _ensure_geo(conn, listing: dict, bp: dict, dry_run: bool = False) -> None:
+    """Aizpilda bp['geo_lat']/['geo_lng'] no DB cache vai ģeokodē (un saglabā
+    building_profiles). Ģeokodē TIKAI ja koordinātu vēl nav (re-publish $0)."""
+    if bp.get("geo_lat") and bp.get("geo_lng"):
+        return
+    coords = _geocode(_map_address(listing, bp))
+    if not coords:
+        print("  ! ģeokods neatrada koordinātes — karte šai adresei nerādīsies")
+        return
+    lat, lng = coords
+    bp["geo_lat"], bp["geo_lng"] = lat, lng
+    print(f"  → ģeokods: {lat}, {lng}")
+    bp_id = bp.get("id") or listing.get("building_profile_id")
+    if bp_id and not dry_run:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE properties.building_profiles "
+                    "SET geo_lat=%s, geo_lng=%s WHERE id=%s", (lat, lng, bp_id))
+            conn.commit()
+        except Exception as e:
+            print(f"  ! geo cache saglabāšana neizdevās ({e!s:.80})")
+            conn.rollback()
 
 
 def _image_paths(listing: dict) -> list[Path]:
@@ -255,6 +348,13 @@ def _meta(listing: dict, bp: dict) -> dict:
         "fave_property_land_postfix": "m²" if land_n else "",
         "fave_property_address":      _title(listing, bp),
         "fave_property_map_address":  _map_address(listing, bp),
+        # Kartes koordinātes (no bp cache vai _ensure_geo) — bez tām Houzez karti
+        # nerāda. lat/lng kā str; fave_property_location = "lat,lng,zoom". (2026-06-03)
+        "houzez_geolocation_lat":     str(bp.get("geo_lat") or "") or "",
+        "houzez_geolocation_long":    str(bp.get("geo_lng") or "") or "",
+        "fave_property_location": (f"{bp.get('geo_lat')},{bp.get('geo_lng')},14"
+                                   if bp.get("geo_lat") and bp.get("geo_lng") else ""),
+        "fave_property_map":          "1" if (bp.get("geo_lat") and bp.get("geo_lng")) else "",
         "fave_property_city":         g("city") or "",
         # Houzez Fields-builder SELECT (bucket opcijas). Raimonds 2026-05-18:
         # iepriekš sūtīts kā list → serializēts masīvs → Houzez get_post_meta
@@ -340,6 +440,7 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         excerpt = render_excerpt(sg, tdata)
         price_type = listing.get("price_type")
         agent = _agent_id(sg, price_type)
+        _ensure_geo(conn, listing, bp, dry_run=dry_run)  # kartes koordinātes
         meta = _meta(listing, bp)
         meta["fave_agents"] = str(agent)
         meta["fave_agent_display_option"] = "agent_info"
