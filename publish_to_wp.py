@@ -301,7 +301,13 @@ def _floor_search(floor_raw) -> str:
             return "1.stāvs"
         if 2 <= n <= 50:
             return "2+"
-    return ""
+    # Custom/nestandarta stāvs (piem. "-1-2" = pagrabs–2., "Cokols", "Mezanīns").
+    # Houzez search vajag bucket, citādi telpa nekur neparādās filtrā. Tīri
+    # pagraba/cokola telpas (bez augšējā stāva cipara) → Pagrabs; diapazoni ar
+    # augšējo stāvu un viss pārējais → "2+" (Raimonds 2026-06-04).
+    if not _re.search(r"[1-9]", s) and any(k in low for k in ("pagrab", "cokol", "suter")):
+        return "Pagrabs"
+    return "2+"
 
 
 def _numeric(v):
