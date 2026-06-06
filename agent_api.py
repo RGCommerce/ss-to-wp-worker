@@ -260,23 +260,33 @@ def image_upload(
 
 class EnhanceOneReq(BaseModel):
     image_path: str  # /storage relatīvais ceļš no /agent/image-upload
-    quality: str = "medium"  # low | medium | high
+    quality: str = "medium"  # low | medium | high (tikai openai dzinējam)
+    engine: str = "openai"  # openai (gpt-image-1) | replicate (Seedream)
 
 
 @router.post("/image-enhance")
 def image_enhance_one(req: EnhanceOneReq, _auth: None = Depends(require_token)) -> dict:
-    """Izsauc image_enhance_openai pa vienu bildi un atgriež enhanced path.
-    Frontend aizvieto src ar šo + uzliek enhanced=True flag."""
+    """Izsauc AI dzinēju pa vienu bildi un atgriež enhanced path. Frontend aizvieto
+    src ar šo + uzliek enhanced=True flag. Dzinējs: openai (gpt-image-1) vai
+    replicate (Seedream). KATRA bilde = atsevišķs, izolēts izsaukums."""
     src_path = STORAGE_ROOT / req.image_path
     if not src_path.is_file():
         raise HTTPException(404, f"Bilde nav atrasta: {req.image_path}")
 
-    # Enhance result iet blakus oriģinālam ar _enhanced.png sufiksu
-    out_path = src_path.with_name(src_path.stem + "_enhanced.png")
+    # Enhance result iet blakus oriģinālam. Atšķirīgs sufikss pa dzinējam, lai
+    # var salīdzināt abus blakus, neviens nepārraksta otru.
+    engine = (req.engine or "openai").strip().lower()
+    suffix = "_enhanced_repl.jpg" if engine == "replicate" else "_enhanced.png"
+    out_path = src_path.with_name(src_path.stem + suffix)
     try:
-        image_enhance_openai.enhance_image(
-            src_path=src_path, dst_path=out_path, quality=req.quality,
-        )
+        if engine == "replicate":
+            image_enhance_openai.enhance_image_replicate(
+                src_path=src_path, dst_path=out_path,
+            )
+        else:
+            image_enhance_openai.enhance_image(
+                src_path=src_path, dst_path=out_path, quality=req.quality,
+            )
     except Exception as e:
         raise HTTPException(500, f"AI uzlabošana neizdevās: {e}")
 
