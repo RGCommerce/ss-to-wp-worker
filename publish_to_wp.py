@@ -34,8 +34,9 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent))
 from wp_publisher import WPPublisher, WPPublisherError
 from wp_templates import (render_body, render_excerpt, SUPPORTED_GROUPS,
-                          seo_focus_keyphrase, seo_title, image_alt)
-from wp_templates import _floor as _clean_floor, _trim_dec  # stāva + decimālu tīrīšana
+                          seo_focus_keyphrase, seo_title, image_alt,
+                          meta_description)
+from wp_templates import _floor as _clean_floor, _trim_dec, _truthy  # stāvs/decimāli/check
 import houzez_reverse_map as hrm
 import image_pipeline  # Zilās kastes AI bilžu skaistināšana (Seedream)
 import image_classify  # Bilžu klasifikators (fasade/plans/interjers/cits)
@@ -84,19 +85,31 @@ def _fetch(conn, listing_id: int) -> tuple[dict, dict]:
     return listing, bp
 
 
+def _strip_city(addr: str, city: str) -> str:
+    """Nogriež trailing pilsētas/valsts daļas no komatā-atdalītas adreses, atstājot
+    tikai ielu+nr. Piem. "Kr. Barona iela 108, Rīga" → "Kr. Barona iela 108"."""
+    drop = {"rīga", "riga", "latvija"}
+    drop |= {c.strip().lower() for c in str(city or "").split(",") if c.strip()}
+    kept = [p.strip() for p in str(addr).split(",")
+            if p.strip() and p.strip().lower() not in drop]
+    return ", ".join(kept) or str(addr).strip()
+
+
 def _title(listing: dict, bp: dict) -> str:
-    """Title VIENMĒR = adrese (memory project_melna_kaste_template_slot_based)."""
+    """Title = TIKAI iela + nr, BEZ pilsētas (Raimonds 2026-06-05): "Rīga" nost no
+    H1/adreses lauka. Rajonu/krastu rāda property_area taksonomija, ne virsraksts."""
     full = (bp.get("full_address") or "").strip()
-    if full:
-        return full
-    parts = [listing.get("street"), listing.get("city")]
-    addr = ", ".join(p.strip() for p in parts if p and str(p).strip())
-    return addr or f"Komercīpašums (listing {listing['id']})"
+    city = (bp.get("city") or listing.get("city") or "").strip()
+    base = full or (listing.get("street") or "").strip()
+    if not base:
+        return f"Komercīpašums (listing {listing['id']})"
+    return _strip_city(base, city)
 
 
-def _map_address(listing: dict, bp: dict) -> str:
-    """Pilna ĢEOKODĒJAMA adrese kartei: iela + pilsēta + Latvija.
-    Tikai iela (kā _title) ģeokodējas neviennozīmīgi → karte lūst. (2026-06-02)"""
+def _geocode_address(listing: dict, bp: dict) -> str:
+    """Pilna ĢEOKODĒJAMA adrese (TIKAI koordinātu ieguvei, NErādās frontendā):
+    iela + pilsēta + Latvija. Tikai iela ģeokodējas neviennozīmīgi → karte lūst.
+    Displejā `fave_property_map_address` sūtam tukšu (2026-06-05). (2026-06-02)"""
     street = (bp.get("full_address") or listing.get("street") or "").strip()
     city = (bp.get("city") or listing.get("city") or "").strip()
     parts: list[str] = []
@@ -175,7 +188,7 @@ def _ensure_geo(conn, listing: dict, bp: dict, dry_run: bool = False) -> None:
     building_profiles). Ģeokodē TIKAI ja koordinātu vēl nav (re-publish $0)."""
     if bp.get("geo_lat") and bp.get("geo_lng"):
         return
-    coords = _geocode(_map_address(listing, bp))
+    coords = _geocode(_geocode_address(listing, bp))
     if not coords:
         print("  ! ģeokods neatrada koordinātes — karte šai adresei nerādīsies")
         return
@@ -340,7 +353,10 @@ def _meta(listing: dict, bp: dict) -> dict:
     land_n = _numeric(g("Zemes_gabals_m2"))
     m = {
         "fave_property_price":        _trim_dec(price_n) if price_n else "",
-        "fave_property_price_postfix": "" if is_sale else "Mēnesī",
+        # Raimonda Houzez: "Pirms cenas" (prefix) = "Mēnesī", "Pēc cenas" (postfix) = "m²".
+        # Iepriekš bija OTRĀDI — "Mēnesī" iekrita postfix-ā (kur jābūt m²). 2026-06-05.
+        "fave_property_price_prefix":  "" if is_sale else "Mēnesī",
+        "fave_property_price_postfix": "m²",
         "fave_property_sec_price":    sec_price,                 # m² cena
         "fave_property_size":         _trim_dec(area_n) if area_n else "",
         "fave_property_size_prefix":  "m²",
@@ -353,7 +369,8 @@ def _meta(listing: dict, bp: dict) -> dict:
         "fave_property_land":         land_n or "",
         "fave_property_land_postfix": "m²" if land_n else "",
         "fave_property_address":      _title(listing, bp),
-        "fave_property_map_address":  _map_address(listing, bp),
+        # fave_property_map_address — TĪŠI tukšs (sk. zemāk pēc filtra). Karte zīmējas
+        # no koordinātēm; adreses teksts zem virsraksta NErādās. (Raimonds 2026-06-05)
         # Kartes koordinātes (no bp cache vai _ensure_geo) — bez tām Houzez karti
         # nerāda. lat/lng kā str; fave_property_location = "lat,lng,zoom". (2026-06-03)
         "houzez_geolocation_lat":     str(bp.get("geo_lat") or "") or "",
@@ -380,10 +397,17 @@ def _meta(listing: dict, bp: dict) -> dict:
     }
     # Skaitliskos tukšos NEsūta (Houzez intval uz '' arī OK, bet drošāk izlaist)
     out = {k: v for k, v in m.items() if v not in (None, "")}
-    # "Virtuves" (fave_property_rooms) — VIENMĒR tīrām uz tukšu: auto-publish
-    # nav virtuvju skaita datu, un iepriekš kļūdaini te nokļuva telpu skaits.
-    # Sūtam EXPLICIT "" (citādi vecā vērtība paliek, kā Yoast noindex gadījumā).
-    out["fave_property_rooms"] = ""
+    # "Virtuves" (fave_property_rooms) Raimonda setup-ā = virtuvju skaits (NE telpas).
+    # Ja telpā ir aprīkota virtuve (Virtuve_check) → "1" (teksts arī raksta "aprīkota
+    # virtuve"); citādi tukšs. Iepriekš te kļūdaini nokļuva telpu skaits → tīrījām.
+    # Explicit, lai pārrakstītu veco vērtību re-publish gadījumā. (Raimonds 2026-06-05)
+    out["fave_property_rooms"] = "1" if _truthy(g("Virtuve_check")) else ""
+    # fave_property_map_address — EXPLICIT tukšs. Karte zīmējas no koordinātēm
+    # (fave_property_location), bet garais adreses teksts ("Kr. Barona iela 108,
+    # Rīga, Latvija") zem virsraksta NErādās — paliek tikai property_area
+    # ("Centrs, Labais Krasts"). Explicit "" lai pārrakstītu veco vērtību re-publish
+    # gadījumā (payload noņemšana vien NEdzēš veco meta). Raimonds 2026-06-05.
+    out["fave_property_map_address"] = ""
     return out
 
 
@@ -445,7 +469,10 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         body = render_body(sg, listing, bp)
         excerpt = render_excerpt(sg, tdata)
         price_type = listing.get("price_type")
-        agent = _agent_id(sg, price_type)
+        # Aģents (kontaktpersona uz WP). Anketas listingiem agent_user_id = publicētājs
+        # vai per-telpas override (Raimonds 2026-06-05); ss.lv listingiem NULL → auto
+        # pēc tipa/darījuma (_agent_id).
+        agent = listing.get("agent_user_id") or _agent_id(sg, price_type)
         _ensure_geo(conn, listing, bp, dry_run=dry_run)  # kartes koordinātes
         meta = _meta(listing, bp)
         meta["fave_agents"] = str(agent)
@@ -453,7 +480,7 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # Yoast SEO auto-fill (v5 plugin atļauj _yoast_wpseo_ meta)
         meta["_yoast_wpseo_focuskw"] = seo_focus_keyphrase(sg, tdata)
         meta["_yoast_wpseo_title"] = seo_title(sg, tdata, title)
-        meta["_yoast_wpseo_metadesc"] = excerpt  # īss konspekts ≤100 z.
+        meta["_yoast_wpseo_metadesc"] = meta_description(body)  # apraksta konspekts ≤155 z.
         # Bilžu ALT teksts (visām bildēm vienāds — veids/rajons/m²/cena)
         alt_txt = image_alt(sg, tdata)
 

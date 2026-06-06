@@ -194,17 +194,37 @@ SPACE_GROUP_TO_LABELS: dict[str, list[str]] = {
 }
 
 
+# Potenciālais lietojums, ko VĒRTS rādīt kā atsevišķu kartiņas label — TIKAI
+# medicīna un pārtika/ēdināšana (Raimonds 2026-06-05). Pārējos potenciālos
+# (ofiss/veikals/salons/studija) NErādām — citādi kartiņa pārpildās ar etiķetēm
+# un lauž lapas izkārtojumu. Vērtības = EKSISTĒJOŠI Houzez label termini.
+_POTENTIAL_LABEL: dict[str, str] = {
+    "Medicīna": "Medicīnai",
+    "Restorans/Cafe": "Ēdināšanai",
+    "PVD": "Ēdināšanai",
+}
+
+
 def labels_for(space_group: Optional[str],
                potential: Optional[list[str]] = None) -> list[str]:
-    """Space_group (+ potential) → Houzez property_label nosaukumu saraksts."""
+    """Space_group (+ potential) → Houzez property_label saraksts, MAX 2:
+      1) galvenā telpas tipa label (viena, ne saraksts);
+      2) viens "potenciāls" label TIKAI med/pārtikai.
+    Klases label (A/B/C) pievieno atsevišķi resolve_taxonomy_terms → kopā max 3.
+    Iemesls: kartiņai pietiek ar klasi + tipu + (med/pārtika); pārējie potenciālie
+    label-i (Ofisam/Veikalam/Salonām/Studija) to pārpilda un lauž lapu. (2026-06-05)"""
     out: list[str] = []
     seen: set[str] = set()
-    groups = [space_group] + list(potential or [])
-    for gr in groups:
-        for lab in SPACE_GROUP_TO_LABELS.get((gr or "").strip(), []):
-            if lab not in seen:
-                seen.add(lab)
-                out.append(lab)
+    # 1) galvenais tips → viena primārā label
+    for lab in SPACE_GROUP_TO_LABELS.get((space_group or "").strip(), [])[:1]:
+        seen.add(lab)
+        out.append(lab)
+    # 2) potenciāls — tikai med/pārtika, un tikai VIENU
+    for gr in (potential or []):
+        lab = _POTENTIAL_LABEL.get((gr or "").strip())
+        if lab and lab not in seen:
+            out.append(lab)
+            break
     return out
 
 

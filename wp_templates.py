@@ -80,6 +80,11 @@ _PIELIET = {  # Potential_space_group → ģenitīvs ("piemērots arī X vajadz�
     "Studija": "studijas", "Autoserviss": "autoservisa", "Sporta zāle": "sporta",
     "PVD": "pārtikas ražošanas",
 }
+# Specializētām telpām (virtuve/ražošana/medicīna/serviss/sports) "Birojs" kā
+# alternatīva NAV reāls — prasa pavisam citu apdari. Tirdzniecību u.c. atstājam.
+# (Raimonds 2026-06-05; AI Potential_space_group mēdz pārģenerēt.)
+_NO_OFFICE_GROUPS = {"Restorans/Cafe", "PVD", "Ražošana", "Noliktava",
+                     "Autoserviss", "Medicīna", "Sporta zāle"}
 _PARK = {"Ir vietas": "autostāvvieta", "Ir vietas bezmaksas": "bezmaksas autostāvvieta",
          "Ir vietas par maksu": "maksas autostāvvieta", "Tikai ielas parking": "stāvvieta ielas malā"}
 _STAVU = {1: "Vienstāva", 2: "Divstāvu", 3: "Trīsstāvu", 4: "Četrstāvu", 5: "Piecstāvu",
@@ -483,7 +488,17 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     area = _num(L.get("area_m2"))
     blocks: list[tuple[str, object]] = []
 
-    # 1. VIRSRAKSTS
+    # Ēkas konteksts (vajadzīgs gan virsrakstam, gan ievadam)
+    addr_nom = _street_nominative(g("street") or gb("full_address"))  # virsraksta adrese
+    bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
+    btype = gb("building_type") or g("building_type")
+    bname = gb("building_name")
+    is_complex = _truthy(bp.get("is_business_complex"))
+    is_tc = (btype or "").strip().lower() == "tirdzniecības centrs"
+
+    # 1. VIRSRAKSTS — veids + lokācija + (nosaukums VAI adrese) + platība.
+    # Adresi/nosaukumu liekam ŠEIT (ne ievada teikumā) — citādi teksts atkārtojas
+    # ("Iznomā X telpas Centra rajonā... Tiek iznomātas X telpas Y ielā"). 2026-06-05.
     if sale:
         inv = g("Investiciju_strategija")
         head = "Pārdod " + veids + (f" ({inv})" if inv else "")
@@ -492,49 +507,31 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
     if dist:
         head += " " + dist
+    place = bname if ((is_complex or is_tc) and bname) else addr_nom
+    if place:
+        head += (f", {place}" if dist else f" {place}")
     if area:
         head += f" – {area} m²"
     blocks.append(("B", head))
 
-    # 2. IEVADS
-    addr = _street_locative(g("street") or gb("full_address"))
-    bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
-    bclass = (gb("building_class") or g("building_class") or "").strip().upper()
-    btype = gb("building_type") or g("building_type")
-    bname = gb("building_name")
-    is_complex = _truthy(bp.get("is_business_complex"))
-    is_tc = (btype or "").strip().lower() == "tirdzniecības centrs"
-    verb = "Tiek pārdotas" if sale else "Tiek iznomātas"
-    intro: list[str] = []
-    if is_tc:
-        # Tirdzniecības centrs → nosaukums adreses vietā (ja ir; citādi adrese — OK)
-        # + vispārīgs t/c teksts; AI Building_description NETIEK lietots (skatlogi u.tml.).
-        kur_tc = bname if bname else addr
-        intro.append(f"{verb} {veids} tirdzniecības centrā {kur_tc}.")
-        intro.append(_TC_STANDARD)
-    elif is_complex:
-        # Nosaukts komplekss → nosaukums adreses vietā ("Barona Kvartāls")
-        kompl = bname if bname else addr
-        intro.append(f"{verb} {veids} modernā un aktīvā biznesa kompleksā {kompl}.")
-    elif bdesc:
-        intro.append(f"{verb} {veids} {addr}.")
-    else:
-        kur = _BTYPE.get(btype, "")
-        adj = "modernā " if bclass == "A" else ""
-        kur_s = f" {adj}{kur}" if kur else ""
-        intro.append(f"{verb} {veids}{kur_s} {addr}.".replace("  ", " "))
-    if bdesc and not is_complex and not is_tc:
-        intro.append(bdesc.strip().rstrip(".") + ".")
-    # ēkas faktu teikums (nosaukums/stāvi/gads/managed)
+    # 2. IEVADS — ēkas raksturs. BEZ "Iznomā {veids} {adrese}" atkārtojuma (jau virsrakstā).
     fy = _num(bp.get("bdg_year"))
     fcount = _num(bp.get("floors_count"))
     managed = _truthy(bp.get("has_managed"))
+    intro: list[str] = []
+    # 2a. Ēkas raksturojuma teikums
     if is_tc:
-        # Nosaukums + "tirdzniecības centrs" jau pateikti ievadā — pievienojam tikai
-        # stāvus/gadu/apsaimniekošanu, neatkārtojot "X ir tirdzniecības centrs".
-        floor_w = ""
-        if fcount and int(float(fcount)) in _STAVU:
-            floor_w = _STAVU[int(float(fcount))].lower()
+        intro.append(_TC_STANDARD)
+    elif is_complex:
+        intro.append(f"{bname} ir moderns un aktīvs biznesa komplekss."
+                     if bname else "Telpas atrodas modernā un aktīvā biznesa kompleksā.")
+    elif bdesc:
+        intro.append(bdesc.strip().rstrip(".") + ".")
+    # 2b. Ēkas fakti (stāvi/gads/apsaimniekošana). Ja ēku JAU apraksta Building_description
+    # vai komplekss/t-c teikums — NEatkārtojam ēkas tipu (citādi "jaukta tipa ēka" 2×).
+    if is_tc:
+        floor_w = (_STAVU[int(float(fcount))].lower()
+                   if fcount and int(float(fcount)) in _STAVU else "")
         if fy:
             intro.append(f"Centrs celts {fy}. gadā.")
         if managed:
@@ -543,15 +540,21 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         elif floor_w:
             intro.append(f"Tas ir {floor_w} tirdzniecības centrs.")
     elif is_complex and bname:
-        # Nosaukums jau pateikts ievadā — neatkārtojam "X ir biznesa ēka"
         if fy:
             intro.append(f"Komplekss celts {fy}. gadā.")
         if managed:
             intro.append("Kompleksu apsaimnieko profesionāla apsaimniekošanas kompānija.")
+    elif bdesc:
+        # Building_description jau apraksta ēku → tikai gads + apsaimniekošana (BEZ tipa).
+        if fy and managed:
+            intro.append(f"Ēka celta {fy}. gadā, un to apsaimnieko profesionāla apsaimniekošanas kompānija.")
+        elif fy:
+            intro.append(f"Ēka celta {fy}. gadā.")
+        elif managed:
+            intro.append("Ēku apsaimnieko profesionāla apsaimniekošanas kompānija.")
     else:
+        # Nav apraksta → ēkas tips ir vienīgais ēkas raksturojums.
         subj = bname or "Ēka"
-        # Ēkas tips no DB (Jaukta tipa ēka / Biroju ēka / Tirdzniecības centrs ...);
-        # ja nav norādīts → "biznesa ēka". (Raimonds 2026-06-02 — ne vienmēr biznesa.)
         btype_phrase = (btype or "").strip().lower() or "biznesa ēka"
         eka_desc = ""
         if fcount and int(float(fcount)) in _STAVU:
@@ -602,21 +605,17 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     ceil = _dec_lv(L.get("Griestu_augstums"))
     if rooms:
         n = int(float(rooms))
-        base_s = f"Kopā ir {n} atsevišķa telpa" if n == 1 else f"Kopā ir {n} atsevišķas telpas"
-        ext = []
-        if logi:
-            ext.append(logi)
-        if ceil:
-            ext.append(f"{ceil} m augstiem griestiem")
-        if ext:
-            base_s += " ar " + _join_lv(ext)
-        tech.append(base_s + ".")
-    elif logi or ceil:
-        ext = []
-        if logi:
-            ext.append(logi)
-        if ceil:
-            ext.append(f"{ceil} m augstiem griestiem")
+        tech.append(f"Kopā ir {n} atsevišķa telpa." if n == 1
+                    else f"Kopā ir {n} atsevišķas telpas.")
+    # Logi + griesti = telpu VISPĀRĪGA īpašība, NE piesaistīta telpu skaitam.
+    # Iepriekš "8 telpas ar lieliem logiem" implicēja, ka visām 8 ir lielie logi,
+    # kas datos nav apgalvots (Logu_type ir viens telpu-līm. lauks). Raimonds 2026-06-06.
+    ext = []
+    if logi:
+        ext.append(logi)
+    if ceil:
+        ext.append(f"{ceil} m augstiem griestiem")
+    if ext:
         tech.append("Telpas ir ar " + _join_lv(ext) + ".")
     # iekšā: virtuve, WC, balkons, izlietne
     inside = []
@@ -686,9 +685,13 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             tech.append("Loģistikai: " + _join_lv(heavy) + ".")
     pot = g("Potential_space_group")
     if pot:
-        gen = _join_lv([_PIELIET.get(p.strip(), p.strip().lower())
-                        for p in pot.split(",") if p.strip()])
-        tech.append(f"Piemērotas arī {gen} vajadzībām.")
+        pots = [p.strip() for p in pot.split(",") if p.strip()]
+        pots = [p for p in pots if p != sg]  # neiekļauj pašu telpas tipu (lieki)
+        if sg in _NO_OFFICE_GROUPS:           # specializētai telpai birojs nav reāls
+            pots = [p for p in pots if p != "Birojs"]
+        if pots:
+            gen = _join_lv([_PIELIET.get(p, p.lower()) for p in pots])
+            tech.append(f"Piemērotas arī {gen} vajadzībām.")
     if tech:
         blocks.append(("S", ("Telpu plānojums un tehniskais stāvoklis:", " ".join(tech))))
 
@@ -809,22 +812,49 @@ def seo_focus_keyphrase(space_group: str, raw: dict) -> str:
 
 
 def seo_title(space_group: str, raw: dict, address: str) -> str:
-    """Yoast SEO title = iela, rajons, tips, platība.
-    BEZ pilsētas (dublētu adresi) un BEZ "RG Commerce" (Yoast sitename pats
-    pieliktu → divreiz). Raimonds 2026-06-02."""
-    g = lambda k: _clean(raw.get(k))
+    """Yoast SEO title = TIKAI iela + tips + platība. BEZ pilsētas/rajona
+    (Rīga/Centrs) un BEZ "RG Commerce" (Yoast sitename pats pieliktu).
+    Raimonds 2026-06-05. `address` jau nāk bez pilsētas (_title nogriež)."""
     veids = _VEIDS.get(space_group, "komerctelpas")
     a = _num(raw.get("area_m2"))
-    district = _cap(g("district"))
     parts = []
     if address and address.strip():
         parts.append(address.strip())
-    if district:
-        parts.append(district)
     parts.append(_cap(veids))
     if a:
         parts.append(f"{a} m²")
     return ", ".join(parts)
+
+
+def meta_description(body_html: str, limit: int = 155) -> str:
+    """Yoast meta description = sludinājuma apraksta KONSPEKTS (ievada prozas
+    teikums(i)), max ~limit zīmes (Google rāda ~155). NE keyword-līnija.
+    Ņem ievada rindkopu no jau-renderētā body HTML (1. <p> bez <strong> =
+    virsraksts/sekciju heading izlaisti) un nogriež pie teikuma/vārda robežas.
+    (Raimonds 2026-06-05)"""
+    if not body_html:
+        return ""
+    text = ""
+    for p in re.findall(r"<p>(.*?)</p>", body_html, flags=re.S):
+        if p.lstrip().startswith("<strong>"):   # virsraksts vai sekcijas heading
+            continue
+        cand = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", p)).strip()
+        if cand and not cand.startswith("Sazinieties"):  # izlaiž noslēguma CTA
+            text = cand
+            break
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    # Teikuma beigas = .?! aiz NE-cipara (LV kārtas skaitļi "3. stāvā" / "2008. gadā"
+    # satur ". " bet NAV teikuma beigas — citādi apraksts nogriežas "...atrodas 3.").
+    ends = [m.start() for m in re.finditer(r"(?<=\D)[.!?](?=\s)", cut)]
+    dot = max(ends) if ends else -1
+    if dot >= int(limit * 0.5):
+        return cut[:dot + 1].strip()
+    sp = cut.rfind(" ")
+    return (cut[:sp] if sp > 0 else cut).rstrip(" ,;:–-") + "…"
 
 
 def image_alt(space_group: str, raw: dict) -> str:

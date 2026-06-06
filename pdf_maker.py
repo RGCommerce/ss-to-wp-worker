@@ -159,6 +159,25 @@ def _yn(v):
 # Galvenie fakti — VISI ne-tukšie AI-analīzes lauki, cilvēciskā valodā
 # ---------------------------------------------------------------------------
 
+# Specializētām telpām "Birojs" kā potenciāls nav reāls (tāpat kā wp_templates).
+# Pašu telpas tipu arī neatkārtojam. (Raimonds 2026-06-05)
+_NO_OFFICE_GROUPS = {"Restorans/Cafe", "PVD", "Ražošana", "Noliktava",
+                     "Autoserviss", "Medicīna", "Sporta zāle"}
+
+
+def _filter_potential(pot, space_group):
+    """Potential_space_group → tīrs saraksts: bez pašu telpas tipa un bez 'Birojs'
+    specializētām telpām (citādi nereāls pielietojums)."""
+    s = _clean(pot)
+    if not s:
+        return None
+    sg = (space_group or "").strip()
+    items = [p.strip() for p in s.split(",") if p.strip() and p.strip() != sg]
+    if sg in _NO_OFFICE_GROUPS:
+        items = [p for p in items if p != "Birojs"]
+    return ", ".join(items) or None
+
+
 def _facts(listing: dict, bp: dict) -> list[tuple[str, str]]:
     """Sakārtots (etiķete, vērtība) saraksts no AI-analīzes. Tukšos /
     'unknown' laukus izlaiž. Raimonds vēlāk pasaka, ko ņemt ārā."""
@@ -225,7 +244,8 @@ def _facts(listing: dict, bp: dict) -> list[tuple[str, str]]:
     add("Treilera pacēlājs", _yn(L.get("Treifelis_Pacelajs")))
 
     # --- Pielietojums / izmaksas ---
-    add("Pielietojuma potenciāls", _clean(L.get("Potential_space_group")))
+    add("Pielietojuma potenciāls", _filter_potential(L.get("Potential_space_group"),
+                                                     L.get("Space_group")))
     add("Investīciju stratēģija", _clean(L.get("Investiciju_strategija")))
     add("Apsaimniekošana", _clean(L.get("Apsaimniekosanas_maksa")))
     add("NĪN", _clean(L.get("NIN")))

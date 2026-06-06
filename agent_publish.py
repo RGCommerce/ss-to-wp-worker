@@ -337,6 +337,13 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
                 return v
         return None
 
+    # Per-telpas kontaktaģents: ja anketā šai telpai izvēlēts cits aģents
+    # (unit.agent_wp_id), lieto to; citādi publicētājs (wp_user_id). (Raimonds 2026-06-05)
+    try:
+        unit_agent = int(unit.get("agent_wp_id") or 0) or wp_user_id
+    except (ValueError, TypeError):
+        unit_agent = wp_user_id
+
     # Galvenie lauki
     cols = {
         "building_profile_id": bp_id,
@@ -344,7 +351,7 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         "city": building.get("city"),
         "district": building.get("district"),
         "source": source,
-        "agent_user_id": wp_user_id,
+        "agent_user_id": unit_agent,
         "agent_locked_fields": locked,
         "Debug_status": debug_status,
         # Aģenta input — pieņem abus kapitalizācijas variantus
