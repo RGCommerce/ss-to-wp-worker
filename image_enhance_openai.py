@@ -141,9 +141,26 @@ _VERIFY = os.getenv("VERIFY_SSL", os.getenv("WP_VERIFY_SSL", "1")) \
     not in ("0", "false", "False")
 
 
-def openai_edit(image_bytes: bytes, filename: str, quality: str) -> bytes | None:
-    """OpenAI gpt-image-1 image edit — pilna pārbūve. Atgriež JPEG/PNG
-    baitus vai None ja kļūda. gpt-image-1 vienmēr atgriež b64_json."""
+class EnhanceError(RuntimeError):
+    """gpt-image-1 neizdevās — nes cilvēcisku iemeslu līdz UI (ne tikai logā)."""
+
+
+def _openai_reason(resp) -> str:
+    """No OpenAI atbildes izvelk cilvēcisku kļūdas iemeslu UI-am."""
+    try:
+        msg = (resp.json().get("error") or {}).get("message")
+        if msg:
+            return f"OpenAI {resp.status_code}: {msg[:200]}"
+    except Exception:
+        pass
+    return f"OpenAI {resp.status_code}: {resp.text[:200]}"
+
+
+def openai_edit(image_bytes: bytes, filename: str, quality: str) -> bytes:
+    """OpenAI gpt-image-1 image edit — pilna pārbūve. Atgriež JPEG/PNG baitus.
+    Met EnhanceError ar konkrētu iemeslu, ja neizdodas (statuss/ziņa līdz UI).
+    gpt-image-1 vienmēr atgriež b64_json."""
+    last = "nezināms iemesls"
     for attempt in range(1, 4):
         try:
             resp = requests.post(
@@ -162,26 +179,29 @@ def openai_edit(image_bytes: bytes, filename: str, quality: str) -> bytes | None
                 verify=_VERIFY,
             )
         except requests.RequestException as e:
-            print(f"      ! OpenAI tīkla kļūda: {str(e)[:160]}")
+            last = f"tīkla kļūda/taimauts: {str(e)[:140]}"
+            print(f"      ! OpenAI {last}")
             if attempt < 3:
                 time.sleep(5 * attempt)
                 continue
-            return None
+            raise EnhanceError(last)
         if resp.status_code == 429:
-            print("      … OpenAI 429 (rate limit), gaidu 20s")
+            last = "OpenAI 429 rate limit"
+            print(f"      … {last}, gaidu 20s")
             time.sleep(20)
             continue
         if resp.status_code != 200:
-            print(f"      ! OpenAI HTTP {resp.status_code}: "
-                  f"{resp.text[:300]}")
-            return None
+            last = _openai_reason(resp)
+            print(f"      ! {last}")
+            raise EnhanceError(last)  # 400 moderācija/formāts u.c. — neretrijot
         try:
             b64 = resp.json()["data"][0]["b64_json"]
             return base64.b64decode(b64)
         except Exception as e:
-            print(f"      ! OpenAI atbildes parse: {str(e)[:160]}")
-            return None
-    return None
+            last = f"OpenAI atbildes parse: {str(e)[:140]}"
+            print(f"      ! {last}")
+            raise EnhanceError(last)
+    raise EnhanceError(last)  # 429 izsmelts pēc 3 mēģinājumiem
 
 
 def enhance_image(src_path: Path, dst_path: Path, quality: str = "medium") -> Path:
@@ -194,9 +214,7 @@ def enhance_image(src_path: Path, dst_path: Path, quality: str = "medium") -> Pa
         raise RuntimeError("OPENAI_API_KEY trūkst")
     src_path = Path(src_path)
     dst_path = Path(dst_path)
-    out = openai_edit(src_path.read_bytes(), src_path.name, quality)
-    if not out:
-        raise RuntimeError("OpenAI gpt-image-1 neatgrieza bildi (sk. worker logus)")
+    out = openai_edit(src_path.read_bytes(), src_path.name, quality)  # met EnhanceError
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     dst_path.write_bytes(out)
     return dst_path
