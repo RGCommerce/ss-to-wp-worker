@@ -1,27 +1,41 @@
-# HANDOFF → Zilā kaste: ss-to-wp-worker deploy (Melnā kaste, 2026-06-07)
+# HANDOFF → 4. kaste / Zilā: ss-to-wp-worker deploy (Melnā kaste, 2026-06-07 #2)
 
 ## ⛔ VIENS SOLIS: merge `melna` → `main` + Railway redeploy
 
-Repo `RGCommerce/ss-to-wp-worker`. Zars `melna` ir **priekšā main par 2 commitiem** (tīrs, kompilējas):
+Repo `RGCommerce/ss-to-wp-worker`. Zars `melna` ir **priekšā main par 1 commitu** (tīrs, `py_compile` OK):
 
 ```
 git checkout main && git pull && git merge melna && git push origin main
 ```
 
-Commiti (`origin/main..origin/melna`):
-- `efcd985` — AI bilžu enhance: OpenAI kļūdas iemesls līdz UI (`EnhanceError`) + skaidrs HTTP statuss/ziņa.
-- `092f75f` — **AI enhance Replicate (Seedream) dzinējs** kā alternatīva OpenAI; `/agent/image-enhance` jauns `engine` param (`openai`|`replicate`).
+Commits (`origin/main..origin/melna`):
+- `a06c7b1` — kartes ģeokods caur pilno adresi (`geocode_address`) + nosacījumu teksts pa rindām.
 
-## Kāpēc tas vajadzīgs TAGAD
+## Kas mainās
 
-Panelis (`melna`→`main`) JAU iemerdžots + dzīvs — anketā ir **2 AI pogas** (✨ OpenAI / 🪄 Replicate). BET worker `main` vēl **NEzina `engine` param** → spiežot 🪄 Replicate, vecais worker lauku ignorē un palaiž **OpenAI**. Tāpēc Replicate dashboard tukšs (0 maksas) un bildes nāk no OpenAI (mēdz halucinēt).
+**1. Karte ("nav Google img" fix).** Worker tagad sūta jaunu top-level lauku
+`geocode_address` = PILNA adrese (iela+pilsēta+Latvija, paplašināti saīsinājumi).
+Plugins **v5.1.3** to ģeokodē ar Houzez Google atslēgu (prioritāte #1), bet
+`fave_property_map_address` paliek tukšs → karte rādās no koordinātēm, garais
+adreses teksts NErādās. Aizstāj neuzticamo Python Nominatim ceļu (worker env nav
+Google atslēgas → bieži krita → karte nerādījās).
 
-Pēc šī merge+redeploy: 🪄 Replicate reāli aizies uz Seedream (tas pats dzinējs kā DB→WP `image_pipeline`).
+**2. Teksts.** Nosacījumu sadaļa: katrs teikums savā rindā (`<br>`). "Citi
+maksājumi" (Papildu_maksas) atsevišķā rindā ar pēdiņām; komatatdalītie katrs savās
+pēdiņās.
+
+## ⚠ Atkarība: plugins v5.1.3
+
+Plugins `rgc-melna-kaste-endpoints-v5` **v5.1.3 jau augšupielādēts WP** (Raimonds,
+2026-06-07). Bez tā worker `geocode_address` netiek izmantots (vecais plugins to
+ignorē). Zip: `../rgc-melna-kaste-endpoints-v5__UPLOAD_5.1.3.zip`.
 
 ## Pārbaude pēc deploya
 
-1. Anketā uz vienas bildes spied 🪄 Replicate → Replicate dashboardā parādās jauns prediction (maksa ~$0.04).
-2. Otrai bildei ✨ OpenAI → salīdzini. Faili paliek blakus: `_enhanced.png` (openai) vs `_enhanced_repl.jpg` (replicate).
-3. Ja AI kļūda — uzbrauc ar peli sarkanajam "Kļūda" → tagad rāda īsto iemeslu (`EnhanceError`).
+1. Re-publicē vienu listingu (piem. Gustava Zemgala gatve 76) → WP single lapā
+   karte parādās ar pareizu pin, BET "Adrese" lauks tukšs (nav garā "..., Rīga,
+   Latvija" teksta).
+2. Apraksta "Nomas nosacījumi" — katrs teikums savā rindā; ja ir Papildu_maksas →
+   "Citi maksājumi kā: „...”." atsevišķā rindā.
 
-ENV: `REPLICATE_API_TOKEN` Railway worker jau ir (lieto `image_pipeline`).
+ENV: nekas jauns. Plugins lieto Houzez Google atslēgu (tā pati, ko admin karte).
