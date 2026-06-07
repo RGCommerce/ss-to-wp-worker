@@ -57,7 +57,7 @@ _COND = {  # Space_condition → pilns teikums
     "Jauns": "Telpas ir jaunas, ar nesen veiktu remontu.",
     "Labs": "Telpu iekšējais stāvoklis ir labs — uzturēts un gatavs lietošanai.",
     "Lietots": "Telpas ir lietotas, taču pilnībā funkcionālas.",
-    "Nepabeigts": "Telpas tiek nodotas pelēkajā apdarē, ļaujot pielāgot apdari savām vajadzībām.",
+    "Nepabeigts": "Telpas tiek nodotas pelēkajā apdarē, ļaujot pielāgot apdari savām vajadzībām. To varat darīt gan Jūs kopā ar profesionāliem meistariem, vai arī īpašnieks pēc atsevišķas vienošanās.",
     "Nepieciešams remonts": "Telpām nepieciešams remonts.",
     "Kapitālais remonts": "Telpām nepieciešams kapitālais remonts.",
 }
@@ -601,6 +601,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
     tech: list[str] = []
     cond = g("Space_condition")
+    is_grey = cond == "Nepabeigts"   # pelēkā apdare → fit-out vēl nav, telpu var pielāgot
     if cond and cond in _COND:
         tech.append(_COND[cond])
     rooms = _num(L.get("Cik_telpas"))
@@ -608,8 +609,13 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     ceil = _dec_lv(L.get("Griestu_augstums"))
     if rooms:
         n = int(float(rooms))
-        tech.append(f"Kopā ir {n} atsevišķa telpa." if n == 1
-                    else f"Kopā ir {n} atsevišķas telpas.")
+        if is_grey and n == 1:
+            # 1 telpa pelēkā apdarē = atvērts plānojums, ko var pielāgot (Raimonds 2026-06-08)
+            tech.append("Kopā ir 1 atvērtā plānojuma telpa (open space), kuru var pielāgot kā vēlaties.")
+        elif n == 1:
+            tech.append("Kopā ir 1 atsevišķa telpa.")
+        else:
+            tech.append(f"Kopā ir {n} atsevišķas telpas.")
     # Logi + griesti = telpu VISPĀRĪGA īpašība, NE piesaistīta telpu skaitam.
     # Iepriekš "8 telpas ar lieliem logiem" implicēja, ka visām 8 ir lielie logi,
     # kas datos nav apgalvots (Logu_type ir viens telpu-līm. lauks). Raimonds 2026-06-06.
@@ -620,14 +626,19 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         ext.append(f"{ceil} m augstiem griestiem")
     if ext:
         tech.append("Telpas ir ar " + _join_lv(ext) + ".")
-    # iekšā: virtuve, WC, balkons, izlietne
-    inside = []
+    # iekšā: virtuve, WC, balkons, izlietne. Pelēkā apdarē fit-out lietas (virtuve,
+    # sanitārie mezgli, izlietne) VĒL nav ierīkotas → "iespēja aprīkot ..." (akuzatīvs),
+    # nevis "Tajā ir aprīkota virtuve" (būtu nepatiesi). Balkons = strukturāls → paliek.
+    inside = []     # esošie/strukturālie: "Tajā ir ..."
+    fitout = []     # pelēkā apdarē iespējamie: "Tajā ir iespēja aprīkot ..." (akuzatīvs)
     if _truthy(L.get("Virtuve_check")):
-        inside.append("aprīkota virtuve")
+        (fitout if is_grey else inside).append("virtuvi" if is_grey else "aprīkota virtuve")
     wc_n, wc_loc = _parse_wc(L.get("cik_WC"))
     shared_wc = None
     if wc_loc == "own" or (wc_n and wc_loc is None):
-        if (wc_n or 1) == 1:
+        if is_grey:
+            fitout.append("sanitāro mezglu" if (wc_n or 1) == 1 else "sanitāros mezglus")
+        elif (wc_n or 1) == 1:
             inside.append("savs sanitārais mezgls" if wc_loc == "own" else "sanitārais mezgls")
         else:
             inside.append(f"{wc_n} sanitārie mezgli")
@@ -636,10 +647,12 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if _truthy(L.get("Balkons_check")):
         inside.append("balkons")
     if _truthy(L.get("Ir_izlietne_telpa_check")):
-        inside.append("sava izlietne")
+        (fitout if is_grey else inside).append("izlietni" if is_grey else "sava izlietne")
+    pron = "Tajā" if (rooms and int(float(rooms)) == 1) else "Tajās"
+    if fitout:
+        tech.append(f"{pron} ir iespēja aprīkot " + _join_lv(fitout) + ".")
     if inside:
-        pron = "Tajā ir" if (rooms and int(float(rooms)) == 1) else "Tajās ir"
-        tech.append(pron + " " + _join_lv(inside) + ".")
+        tech.append(f"{pron} ir " + _join_lv(inside) + ".")
     if shared_wc is not None:
         if shared_wc and shared_wc > 1:
             tech.append(f"Pieejami {shared_wc} koplietošanas sanitārie mezgli.")
