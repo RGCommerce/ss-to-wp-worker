@@ -750,14 +750,22 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     extra = []
     for label, val in [("apsaimniekošana", g("Apsaimniekosanas_maksa")),
                        ("NĪN", g("NIN")),
-                       ("komunālie maksājumi", g("Komunalie")),
-                       ("citi maksājumi", g("Papildu_maksas"))]:
+                       ("komunālie maksājumi", g("Komunalie"))]:
         if _value_like(val):
             extra.append(f"{label} {val}")
     if extra:
         cost.append("Papildus " + _join_lv(extra) + ".")
+    # Citi maksājumi (brīvs teksts, anketā komatatdalīts) — sava rinda, katrs pēdiņās.
+    # Raimonds 2026-06-07: "Citi maksājumi kā: „xxx 50 EUR/mēnesī", „yyy 49 EUR/mēnesī"."
+    papildu = g("Papildu_maksas")
+    if _value_like(papildu):
+        items = [p.strip() for p in papildu.split(",") if p.strip()]
+        if items:
+            cost.append("Citi maksājumi kā: "
+                        + ", ".join(f"„{it}”" for it in items) + ".")
     cost.append("Visām cenām pieskaitāms PVN.")
-    blocks.append(("S", ("Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:", " ".join(cost))))
+    # Katrs nosacījumu teikums savā rindā (Raimonds 2026-06-07) — <br>, ne atstarpe.
+    blocks.append(("S", ("Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:", "<br>".join(cost))))
 
     # 6. NOSLĒGUMS
     blocks.append(("P", "Sazinieties ar mums, lai uzzinātu vairāk vai vienotos par telpu apskati. 🏢"))

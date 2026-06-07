@@ -124,6 +124,7 @@ class WPPublisher:
         featured_media: Optional[int] = None,
         floor_plan_attachment_ids: Optional[list[int]] = None,
         floor_plan_title: Optional[str] = None,
+        geocode_address: Optional[str] = None,
     ) -> dict:
         body: dict[str, Any] = {"title": title, "status": status}
         if content is not None:
@@ -143,6 +144,9 @@ class WPPublisher:
                 int(x) for x in floor_plan_attachment_ids]
         if floor_plan_title:
             body["floor_plan_title"] = floor_plan_title
+        # PILNA ģeokodējamā adrese (tikai plugin koordinātēm; NErādās frontendā).
+        if geocode_address:
+            body["geocode_address"] = geocode_address
         return self._request("POST", "/property/create", json_body=body)
 
     def update_property(
@@ -160,6 +164,7 @@ class WPPublisher:
         floor_plan_attachment_ids: Optional[list[int]] = None,
         floor_plan_title: Optional[str] = None,
         force_text: bool = False,
+        geocode_address: Optional[str] = None,
     ) -> dict:
         body: dict[str, Any] = {}
         if title is not None:
@@ -185,6 +190,9 @@ class WPPublisher:
             body["floor_plan_title"] = floor_plan_title
         if force_text:
             body["force_text"] = True
+        # PILNA ģeokodējamā adrese (tikai plugin koordinātēm; NErādās frontendā).
+        if geocode_address:
+            body["geocode_address"] = geocode_address
         return self._request(
             "POST", f"/property/{int(post_id)}/update", json_body=body
         )

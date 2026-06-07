@@ -597,6 +597,11 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
             featured_media=(gallery_ids[0] if gallery_ids else None),
             floor_plan_attachment_ids=plan_attach_ids,
             floor_plan_title="Telpu plāns",
+            # PILNA adrese (iela+pilsēta+Latvija, paplašināti saīsinājumi) plugin
+            # Google-ģeokodam. fave_property_map_address paliek tukšs → karte rādās
+            # NO koordinātēm, garais adreses teksts NErādās. Mirror manuālajai
+            # "ieraksti adresi → karte → izdzēs adresi" plūsmai. (Raimonds 2026-06-07)
+            geocode_address=_expand_abbr(_geocode_address(listing, bp)),
         )
         if existing_wp_id:
             resp = wp.update_property(int(existing_wp_id), **common)
