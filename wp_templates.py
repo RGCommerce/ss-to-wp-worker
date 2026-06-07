@@ -575,6 +575,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # vairākas ēkas kompleksā (mig 031)
     if _truthy(bp.get("has_multiple_buildings")):
         intro.append("Komplekss sastāv no vairākām ēkām dažādos stāvos.")
+    # BREEAM ilgtspējas sertifikāts (mig 034) — ēkas fakts (Raimonds 2026-06-08)
+    if _truthy(bp.get("has_breeam")):
+        intro.append("Ēkai ir BREEAM ilgtspējas sertifikāts.")
     # stāva teikums
     fn, base = _floor_n(L.get("floor"))
     own_entr = _truthy(L.get("Sava_ieeja_check"))

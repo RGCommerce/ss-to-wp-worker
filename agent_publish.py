@@ -150,6 +150,8 @@ _BP_FIELDS: list[tuple[str, str]] = [
     ("has_multiple_buildings", "bool"),
     # mig 032 — "Saimnieks pielāgo telpas" (matcher: atslēdz sink HARD + PARTIAL caur ēku)
     ("owner_adapts_premises", "bool"),
+    # mig 034 — BREEAM ilgtspējas sertifikāts (ēkas līmenis; WP aprakstā)
+    ("has_breeam", "bool"),
     # Īpašnieks / kontakti (CRM — NEiet uz publisko WP)
     ("owner", "text"), ("responsible", "text"),
     ("primary_phone", "text"), ("secondary_phone", "text"),
