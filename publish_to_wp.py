@@ -369,15 +369,17 @@ def _meta(listing: dict, bp: dict) -> dict:
         "fave_property_land":         land_n or "",
         "fave_property_land_postfix": "m²" if land_n else "",
         "fave_property_address":      _title(listing, bp),
-        # fave_property_map_address — TĪŠI tukšs (sk. zemāk pēc filtra). Karte zīmējas
-        # no koordinātēm; adreses teksts zem virsraksta NErādās. (Raimonds 2026-06-05)
-        # Kartes koordinātes (no bp cache vai _ensure_geo) — bez tām Houzez karti
-        # nerāda. lat/lng kā str; fave_property_location = "lat,lng,zoom". (2026-06-03)
+        # Karte: fave_property_map_address = ĪSĀ adrese (iela+nr; sk. zemāk pēc filtra).
+        # Houzez frontend ar TUKŠU map_address karti NEzīmē pat ar koordinātēm; ar īso
+        # adresi tā zīmē, un teksts ir tīrs (NE garais "..., Rīga, Latvija"). Stored
+        # koordinātes (plugin geokodē geocode_address) dod precīzu pin; ja to nav,
+        # frontend pats geokodē map_address. fave_property_map vienmēr "1" (Parādīt).
+        # (Raimonds 2026-06-08)
         "houzez_geolocation_lat":     str(bp.get("geo_lat") or "") or "",
         "houzez_geolocation_long":    str(bp.get("geo_lng") or "") or "",
         "fave_property_location": (f"{bp.get('geo_lat')},{bp.get('geo_lng')},14"
                                    if bp.get("geo_lat") and bp.get("geo_lng") else ""),
-        "fave_property_map":          "1" if (bp.get("geo_lat") and bp.get("geo_lng")) else "",
+        "fave_property_map":          "1",
         "fave_property_city":         g("city") or "",
         # Houzez Fields-builder SELECT (bucket opcijas). Raimonds 2026-05-18:
         # iepriekš sūtīts kā list → serializēts masīvs → Houzez get_post_meta
@@ -402,12 +404,12 @@ def _meta(listing: dict, bp: dict) -> dict:
     # virtuve"); citādi tukšs. Iepriekš te kļūdaini nokļuva telpu skaits → tīrījām.
     # Explicit, lai pārrakstītu veco vērtību re-publish gadījumā. (Raimonds 2026-06-05)
     out["fave_property_rooms"] = "1" if _truthy(g("Virtuve_check")) else ""
-    # fave_property_map_address — EXPLICIT tukšs. Karte zīmējas no koordinātēm
-    # (fave_property_location), bet garais adreses teksts ("Kr. Barona iela 108,
-    # Rīga, Latvija") zem virsraksta NErādās — paliek tikai property_area
-    # ("Centrs, Labais Krasts"). Explicit "" lai pārrakstītu veco vērtību re-publish
-    # gadījumā (payload noņemšana vien NEdzēš veco meta). Raimonds 2026-06-05.
-    out["fave_property_map_address"] = ""
+    # fave_property_map_address = ĪSĀ adrese (iela+nr, BEZ pilsētas/"Latvija"). Tā ir
+    # pietiekama, lai Houzez frontend uzzīmētu karti (ar TUKŠU lauku karte NErādījās —
+    # 2026-06-08 problēma), bet teksts paliek tīrs (NE garais "..., Rīga, Latvija").
+    # Precīzo pin dod stored koordinātes (plugin geokodē pilno geocode_address). Explicit,
+    # lai pārrakstītu veco (tukšo/garo) vērtību re-publish gadījumā. (Raimonds 2026-06-08)
+    out["fave_property_map_address"] = _title(listing, bp)
     return out
 
 
