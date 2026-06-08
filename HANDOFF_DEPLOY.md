@@ -1,6 +1,31 @@
 # HANDOFF → 4. kaste: ss-to-wp-worker deploy (Melnā kaste, 2026-06-08)
 
-## ⚠ SECĪBA: DB migrācija PIRMS koda, tad merge melna→main
+## 🆕 2026-06-08 (vakars) — StockOfiss publish fix ⛔ GAIDA DEPLOY
+
+Commit `872216a` uz `melna`. **Bez DB migrācijas.** Deploy = tikai merge:
+```
+git checkout main && git pull && git merge melna && git push origin main
+```
+→ Railway auto-deploy → Tvaika 64 (listing 17943) "ss to wp export" strādās.
+
+**Ko labo:** `StockOfiss` (kanoniska AI Space_group — stock-office hibrīds 1. stāvā;
+`test_runner_db` enum + anketas pills + Houzez label map) trūka publish šablonos →
+`_VEIDS` dict (no kura nāk `SUPPORTED_GROUPS`) bija tikai 10 grupas, `publish_to_wp.py`
+guard meta `SystemExit: Space_group 'StockOfiss' nav atbalstīts`.
+- `wp_templates.py`: `_VEIDS["StockOfiss"]="noliktavas-biroja telpas"` + `_PIELIET["StockOfiss"]="noliktavas-biroja"`.
+- `houzez_reverse_map.py`: property_type → `"Noliktavas / ražošana"` (forward-only override) + property_label → `"Stock Ofiss"`.
+- `crm/` dev-kopija sinhronizēta. Render/excerpt/SEO + houzez_type/label verificēts.
+
+**Pārbaude pēc deploya:** re-publicē StockOfiss listingu (Tvaika 64) → izdodas; kartiņā
+tips "Noliktavas / ražošana" + label "Stock Ofiss"; virsraksts "...noliktavas-biroja telpas...".
+
+---
+
+## ✅ 2026-06-08 (diena) — BREEAM + pelēkā apdare + karte (JAU DEPLOYOTS)
+
+> Šis bloks jau deployots 06-08 integratora sesijā (`origin/main`=`5677189`). Atstāts vēsturei.
+
+### ⚠ SECĪBA: DB migrācija PIRMS koda, tad merge melna→main
 
 ### 1. DB migrācija PIRMS visa (citādi publicēšana lūst)
 BREEAM kolonna. Fails: `../rgc-broker-panel-melna/migrations/2026-06-08_building_profiles_breeam.sql`
