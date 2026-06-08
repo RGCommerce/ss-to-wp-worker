@@ -39,6 +39,11 @@ def _invert_type_map() -> dict[str, str]:
 
 
 SPACE_GROUP_TO_HOUZEZ_TYPE: dict[str, str] = _invert_type_map()
+# StockOfiss (stock-office hibrīds 1. stāvā) NAV HOUZEZ_TO_SPACE_GROUP-ā, jo WP
+# importa virzienā Houzez "Noliktavas / ražošana" tips NEdrīkst kļūt StockOfiss.
+# Forward (publish) virzienā tomēr vajag tipu kartiņai — tuvākais ir noliktava/ražošana
+# (precīzo hibrīdu nosauc "Stock Ofiss" property_label, sk. SPACE_GROUP_TO_LABELS).
+SPACE_GROUP_TO_HOUZEZ_TYPE.setdefault("StockOfiss", "Noliktavas / ražošana")
 
 # price_type (DB) -> Houzez property_status term. _scratch_wp_publish_test.py
 # lietoja "Noma". Pienemums (PRECIZET ar DB distinct + Houzez UI):
@@ -191,6 +196,7 @@ SPACE_GROUP_TO_LABELS: dict[str, list[str]] = {
     "Studija":        ["Studijas telpas", "Piemērots Salonām"],
     "Autoserviss":    ["Servisam"],
     "Restorans/Cafe": ["Ēdināšanai"],
+    "StockOfiss":     ["Stock Ofiss"],
 }
 
 

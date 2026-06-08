@@ -43,6 +43,7 @@ _VEIDS = {
     "Medicīna": "medicīnas telpas", "Restorans/Cafe": "ēdināšanas telpas",
     "Studija": "studijas telpas", "Autoserviss": "autoservisa telpas",
     "Sporta zāle": "sporta telpas", "PVD": "pārtikas ražošanas telpas",
+    "StockOfiss": "noliktavas-biroja telpas",  # stock-office hibrīds (1. stāvs)
 }
 _BTYPE = {  # building_type → "kur" frāze (fallback, ja nav Building_description)
     "Biroju ēka": "biroju ēkā", "Tirdzniecības centrs": "tirdzniecības centrā",
@@ -78,7 +79,7 @@ _PIELIET = {  # Potential_space_group → ģenitīvs ("piemērots arī X vajadz�
     "Birojs": "biroja", "Tirdzniecība": "tirdzniecības", "Noliktava": "noliktavas",
     "Ražošana": "ražošanas", "Medicīna": "medicīnas", "Restorans/Cafe": "ēdināšanas",
     "Studija": "studijas", "Autoserviss": "autoservisa", "Sporta zāle": "sporta",
-    "PVD": "pārtikas ražošanas",
+    "PVD": "pārtikas ražošanas", "StockOfiss": "noliktavas-biroja",
 }
 # Specializētām telpām (virtuve/ražošana/medicīna/serviss/sports) "Birojs" kā
 # alternatīva NAV reāls — prasa pavisam citu apdari. Tirdzniecību u.c. atstājam.
