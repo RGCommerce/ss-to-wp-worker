@@ -39,7 +39,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).parent))
 import publish_to_wp  # noqa: E402
-from wp_publisher import WPPublisher  # noqa: E402
+from wp_publisher import WPPublisher, WPPublisherError  # noqa: E402
 
 logger = logging.getLogger("queue_poller")
 
@@ -118,8 +118,9 @@ def _mark_done(queue_id: int, listing_id: int, action: str = "publish") -> None:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         with conn.transaction():
             if action == "delete":
-                # Listinga rindas vairs nav (purgeListing to dzēsa) — nelasām
-                # listings; queue rindā wp_post_id jau ir (panelis to ielika).
+                # _delete_full() jau izdzēsa listings rindu → cascade (FK ON
+                # DELETE CASCADE) notīrīja arī šo queue rindu, tāpēc šis UPDATE
+                # skars 0 rindas = nekaitīgi. Nelasām listings (vairs nav).
                 conn.execute("""
                     UPDATE properties.wp_export_queue
                     SET status = 'done', finished_at = now()
@@ -223,25 +224,36 @@ def _unpublish(listing_id: int) -> None:
 
 def _delete_full(listing_id: int, wp_post_id: Optional[int]) -> None:
     """PILNĪGA dzēšana (action='delete' — paneļa sarkanā "Dzēst sludinājumu").
-    Listinga DB rinda JAU ir dzēsta panelī (purgeListing; matches = cascade) —
-    šeit iztīram to, ko panelis nevar (volume + WP + PDF):
+    Iztīra VISU, ko panelis nevar, un PĒDĒJO izdzēš pašu listings rindu:
 
-      1. WP posts → atkritne (wp_post_id nāk no QUEUE rindas, ne listings).
+      1. WP posts → DZĒŠ NEATGRIEZENISKI (force=True; wp_post_id no QUEUE rindas).
       2. /storage/listings/<id>/  — visas bildes (raw + wp_raw + ai_ready +
          processed) vienā mapē, tāpēc pietiek ar listing_id.
       3. PDF faili + pdf_jobs rindas, kur šis listings ir VIENĪGAIS (legacy
          multi-listing PDF NEdzēšam, lai nesabojātu citu listingu piedāvājumu).
+      4. listings rinda — PĒDĒJĀ. ⚠ wp_export_queue.listing_id FK ir DB līmenī
+         ON DELETE CASCADE (Prisma to nerāda!) → ja panelis dzēstu listingu, tas
+         iznīcinātu pašu delete-rindu pirms worker to redz. Tāpēc listingu dzēš
+         ŠEIT, beigās; cascade tad notīra arī šo queue rindu (_mark_done UPDATE
+         skars 0 rindas = nekaitīgi). matches_listings arī = cascade.
 
-    Idempotents: ja faili/posts jau nav, klusi izlaiž."""
+    Idempotents: soļi 1-3 droši atkārtojas (404/iztrūkstoši faili = izlaiž). Ja
+    kāds solis krīt PIRMS 4., listings paliek → FK apmierināts → retry pēc
+    _recover_stale. Listingu dzēš tikai pēc tam, kad WP+faili tiešām prom."""
     if not DATABASE_URL:
         raise RuntimeError("Trūkst DATABASE_URL")
 
-    # 1) WP posts → DZĒŠ NEATGRIEZENISKI (force=True — apiet atkritni, nav
-    #    atgriežams). Pilnā "Dzēst sludinājumu" = viss prom, arī no WP.
+    # 1) WP posts → neatgriezeniski (force=True). 404 = jau dzēsts (drošs retry).
     if wp_post_id:
-        wp = WPPublisher()
-        wp.delete_property(int(wp_post_id), force=True)
-        print(f"  ✓ WP posts #{wp_post_id} DZĒSTS neatgriezeniski (force)")
+        try:
+            wp = WPPublisher()
+            wp.delete_property(int(wp_post_id), force=True)
+            print(f"  ✓ WP posts #{wp_post_id} DZĒSTS neatgriezeniski (force)")
+        except WPPublisherError as e:
+            if "HTTP 404" in str(e):
+                print(f"  · WP posts #{wp_post_id} jau nav (404) — izlaiž")
+            else:
+                raise
     else:
         print("  · nav wp_post_id — nekas nav jānoņem no WP")
 
@@ -278,6 +290,15 @@ def _delete_full(listing_id: int, wp_post_id: Optional[int]) -> None:
                     (listing_id,),
                 )
             print(f"  ✓ pdf_jobs rindas dzēstas: {len(jobs)}")
+
+    # 4) PĒDĒJAIS — pati listings rinda (cascade: matches_listings +
+    #    wp_export_queue, t.sk. šī delete-rinda).
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.transaction():
+            conn.execute(
+                "DELETE FROM properties.listings WHERE id = %s", (listing_id,)
+            )
+    print(f"  ✓ DB: listings #{listing_id} dzēsts (cascade: matches + queue)")
 
 
 # ---------- Async loop ----------
