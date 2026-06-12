@@ -1,5 +1,34 @@
 # HANDOFF → 4. kaste: ss-to-wp-worker deploy (Melnā kaste, 2026-06-08)
 
+## 🆕 2026-06-12 — Cenas auto-sync (ss.lv → listings → WP) ⛔ GAIDA DEPLOY
+
+Jauns 5. fona pollers `price_sync_poller.py` + iekablis `main.py` (lifespan +
+/health). **Bez DB migrācijas** (lieto esošos `listings.price/price_per_m2` +
+`wp_export_queue.action`). Deploy = tikai merge:
+```
+git checkout main && git pull && git merge melna && git push origin main
+```
+
+**Problēma:** ss.lv īpašnieks pārpublicē ar citu cenu → `scrape_inbox` atjaunojas,
+bet `listings` paliek iesaldēts uz veco cenu (`inbox_to_listings` = `ON CONFLICT
+DO NOTHING`). Panelis/mājaslapa rāda novecojušu cenu. Diagnoze 2026-06-12: 292
+listingi ar novecojušu cenu, 7 no tiem dzīvi mājaslapā (rādīja klientiem nepareizu,
+biežāk par augstu cenu, piem. #888 Brīvības gatve 410: 1125 → 350).
+
+**Risinājums:** pollers (ik 30 min, env `PRICE_SYNC_INTERVAL`) salīdzina
+`listings.price` ar jaunāko `scrape_inbox.price` pa `link`; kur atšķiras un
+darījuma tips sakrīt (noma↔noma / pārdošana↔pārdošana) → `UPDATE listings.price +
+price_per_m2`; ja `on_website` + `wp_post_id` → `wp_export_queue` (action=publish,
+requested_by='price_sync') → queue_poller pārpublicē = `update_property` (atjauno
+ESOŠO WP postu, pārizmanto galeriju → **bez AI izmaksām**). Re-publish cap/cikls =
+env `PRICE_SYNC_MAX_REPUB` (default 25). Pēc deploya 1. cikls salabos visus 292.
+
+**Pārbaude pēc deploya:** `/health` → `price_sync_poller.running=true`; pēc ~1 cikla
+tie 7 dzīvie mājaslapā rāda jauno cenu; `updated_total` aug. Env (neobligāti):
+`PRICE_SYNC_ENABLED=0` izslēdz.
+
+---
+
 ## 🆕 2026-06-08 (vakars) — StockOfiss publish fix ⛔ GAIDA DEPLOY
 
 Commit `872216a` uz `melna`. **Bez DB migrācijas.** Deploy = tikai merge:
