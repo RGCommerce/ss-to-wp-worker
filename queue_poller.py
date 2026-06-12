@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg
+import requests
 from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -48,6 +49,9 @@ POLLER_ENABLED = os.getenv("POLLER_ENABLED", "1") != "0"
 POLLER_INTERVAL = float(os.getenv("POLLER_INTERVAL", "10"))
 # Cik laikā 'processing' ieraksts tiek uzskatīts par stale (worker mira/restart-ēja)
 STALE_PROCESSING_MIN = int(os.getenv("STALE_PROCESSING_MIN", "30"))
+# WP LP auto-pin (#44) — pēc publicēšanas uzliek property_state termu klienta LP-am
+WP_URL = (os.getenv("WP_URL") or "").rstrip("/")
+RGC_MK_TOKEN = os.getenv("RGC_MK_TOKEN")
 
 
 # ---------- DB helpers ----------
@@ -149,6 +153,43 @@ def _mark_done(queue_id: int, listing_id: int, action: str = "publish") -> None:
                     SET on_website = true
                     WHERE id = %s
                 """, (listing_id,))
+
+        # PĒC commit (ārpus txn): #44 LP auto-pin. Ja kāds bija atzīmējis šo listingu
+        # klienta LP-am pirms publicēšanas (broker_pin, ko panelis ieliek pie "Export
+        # to WP" no klienta lapas), uzliek WP property_state termu tagad, kad wp_post_id
+        # eksistē → parādās publiskajā LP. Ārpus txn, lai HTTP neturētu DB lock.
+        if action == "publish" and wp_post_id:
+            _tag_pending_lps(conn, listing_id, int(wp_post_id))
+
+
+def _tag_pending_lps(conn, listing_id: int, wp_post_id: int) -> None:
+    """#44: atrod aktīvos broker_pin šim listingam un uzliek WP property_state termu
+    katra klienta LP slug-am (caur WP /anketa-v2/lp-tag). Best-effort — kļūda WP
+    pusē neapgāž publicēšanu (listings.on_website jau true, broker_pin paliek →
+    nākamā publish/pin mēģinās vēlreiz). lp-tag arī stampo "Jauns" laiku."""
+    if not (WP_URL and RGC_MK_TOKEN):
+        return
+    rows = conn.execute("""
+        SELECT DISTINCT state_slug
+          FROM properties.client_listing_actions
+         WHERE listing_id = %s AND action_type = 'broker_pin' AND active
+    """, (listing_id,)).fetchall()
+    for r in rows:
+        slug = r["state_slug"]
+        if not slug:
+            continue
+        try:
+            resp = requests.post(
+                f"{WP_URL}/wp-json/rgc/v1/anketa-v2/lp-tag/{slug}",
+                headers={"X-RGC-Token": RGC_MK_TOKEN},
+                json={"wp_post_ids": [wp_post_id]},
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                logger.warning("lp-tag fail slug=%s listing=%s → HTTP %s: %s",
+                               slug, listing_id, resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.warning("lp-tag exc slug=%s listing=%s: %s", slug, listing_id, e)
 
 
 def _mark_error(queue_id: int, attempts: int, error_msg: str) -> None:
