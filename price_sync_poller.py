@@ -16,10 +16,20 @@ panelis (un mājaslapa, ja publicēts) rāda novecojušu cenu.
 
 Tikai ss.lv-source listingiem (agent_anketa nav ss.lv link → JOIN tos izlaiž).
 
+Drošības guard-i (lai NEKAD neuzliktu nepareizu cenu uz prod/mājaslapas):
+  1. EKSAKTS periods — sinhronizē tikai monthly→monthly, daily→daily,
+     weekly→weekly, sale→sale. Periodam jābūt ATPAZĪTAM abās pusēs un
+     IDENTISKAM. Nekādu noma↔pārdošana, nekādu monthly↔daily (€/mēn ≠ €/dienā),
+     nekāda fallthrough uz nezināmu/None tipu.
+  2. LĒCIENA ROBEŽA — ja cena mainās vairāk par PRICE_SYNC_MAX_RATIO (def 3×),
+     to uzskatām par scraper kļūdu / vienību glitch → NESINHRONIZĒ, loģē
+     manuālai pārbaudei. (Reālas cenas korekcijas parasti <30%.)
+
 Konfigurējams ar env:
   PRICE_SYNC_ENABLED   (default "1") — "0" izslēdz
   PRICE_SYNC_INTERVAL  (default "1800") — sekundes starp cikliem (30 min)
   PRICE_SYNC_MAX_REPUB (default "25") — maks. WP re-publish rindu vienā ciklā
+  PRICE_SYNC_MAX_RATIO (default "3.0") — virs šīs cenas attiecības = izlaiž (manuāli)
 """
 from __future__ import annotations
 
@@ -38,20 +48,23 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 PRICE_SYNC_ENABLED = os.getenv("PRICE_SYNC_ENABLED", "1") != "0"
 PRICE_SYNC_INTERVAL = float(os.getenv("PRICE_SYNC_INTERVAL", "1800"))
 PRICE_SYNC_MAX_REPUB = int(os.getenv("PRICE_SYNC_MAX_REPUB", "25"))
+PRICE_SYNC_MAX_RATIO = float(os.getenv("PRICE_SYNC_MAX_RATIO", "3.0"))
 
-# Darījuma tipu kanonizācija — sinhronizējam cenu TIKAI ja abās pusēs tas pats
-# darījums (citādi noma↔pārdošana cenu lēciens nav reāla cenas izmaiņa).
-_RENT = {"monthly", "mēneša", "menesa", "mēnesī", "menesi", "daily", "diennakts"}
-_SALE = {"regular", "parastā", "parasta", "pārdošana", "pardosana"}
+# Kanoniskā perioda kategorija — sinhronizē cenu TIKAI ja abās pusēs IDENTISKS
+# periods. monthly/daily/weekly NAV savstarpēji aizvietojami (€/mēn ≠ €/dienā ≠
+# €/ned), pārdošana ≠ noma. Nezināms/None tips → nesinhronizē (drošības guard 1).
+_PERIOD = {
+    "monthly": "rent_month", "mēneša": "rent_month", "menesa": "rent_month",
+    "mēnesī": "rent_month", "menesi": "rent_month",
+    "daily": "rent_day", "diennakts": "rent_day",
+    "weekly": "rent_week", "nedēļas": "rent_week", "nedelas": "rent_week",
+    "regular": "sale", "parastā": "sale", "parasta": "sale",
+    "pārdošana": "sale", "pardosana": "sale",
+}
 
 
-def _deal(price_type: Optional[str]) -> Optional[str]:
-    pt = (price_type or "").strip().lower()
-    if pt in _RENT:
-        return "rent"
-    if pt in _SALE:
-        return "sale"
-    return None
+def _period(price_type: Optional[str]) -> Optional[str]:
+    return _PERIOD.get((price_type or "").strip().lower())
 
 
 def _num(v) -> Optional[int]:
@@ -95,9 +108,20 @@ def _fetch_diffs() -> list[dict]:
         lp, sp = _num(r["l_price"]), _num(r["s_price"])
         if lp is None or sp is None or lp == sp:
             continue
-        # Darījuma tips jāsakrīt (vai inbox tipam jābūt nezināmam → pieņemam).
-        ld, sd = _deal(r["l_pt"]), _deal(r["s_pt"])
-        if ld and sd and ld != sd:
+        # Guard 1: periods JĀBŪT atpazītam ABĀS pusēs un IDENTISKAM.
+        # (monthly→monthly, daily→daily, sale→sale; NE cross-unit, NE None.)
+        lper, sper = _period(r["l_pt"]), _period(r["s_pt"])
+        if lper is None or sper is None or lper != sper:
+            continue
+        # Guard 2: nepamatoti liels lēciens (scraper kļūda / vienību glitch) →
+        # NESINHRONIZĒ, atstāj manuālai pārbaudei.
+        hi, lo = max(lp, sp), min(lp, sp)
+        if lo <= 0 or hi / lo > PRICE_SYNC_MAX_RATIO:
+            logger.warning(
+                "listing#%s cena %s→%s lēciens >%.1f× (tips %s→%s) — IZLAISTS, "
+                "manuāla pārbaude", r["id"], lp, sp, PRICE_SYNC_MAX_RATIO,
+                r["l_pt"], r["s_pt"],
+            )
             continue
         r["_new_price"] = sp
         out.append(r)

@@ -16,16 +16,28 @@ listingi ar novecojušu cenu, 7 no tiem dzīvi mājaslapā (rādīja klientiem n
 biežāk par augstu cenu, piem. #888 Brīvības gatve 410: 1125 → 350).
 
 **Risinājums:** pollers (ik 30 min, env `PRICE_SYNC_INTERVAL`) salīdzina
-`listings.price` ar jaunāko `scrape_inbox.price` pa `link`; kur atšķiras un
-darījuma tips sakrīt (noma↔noma / pārdošana↔pārdošana) → `UPDATE listings.price +
-price_per_m2`; ja `on_website` + `wp_post_id` → `wp_export_queue` (action=publish,
-requested_by='price_sync') → queue_poller pārpublicē = `update_property` (atjauno
-ESOŠO WP postu, pārizmanto galeriju → **bez AI izmaksām**). Re-publish cap/cikls =
-env `PRICE_SYNC_MAX_REPUB` (default 25). Pēc deploya 1. cikls salabos visus 292.
+`listings.price` ar jaunāko `scrape_inbox.price` pa `link`; kur atšķiras →
+`UPDATE listings.price + price_per_m2`; ja `on_website` + `wp_post_id` →
+`wp_export_queue` (action=publish, requested_by='price_sync') → queue_poller
+pārpublicē = `update_property` (atjauno ESOŠO WP postu, pārizmanto galeriju →
+**bez AI izmaksām**). Re-publish cap/cikls = env `PRICE_SYNC_MAX_REPUB` (def 25).
+
+**🛡 Drošības guard-i** (lai NEKAD neuzliktu nepareizu cenu uz prod/mājaslapas):
+1. **Eksakts periods** — sync tikai ja periods atpazīts ABĀS pusēs un IDENTISKS
+   (monthly→monthly, daily→daily, sale→sale). NE noma↔pārdošana, NE monthly↔daily
+   (€/mēn ≠ €/dienā), NE None/weekly fallthrough.
+2. **Lēciena robeža** `PRICE_SYNC_MAX_RATIO` (def 3.0×) — ja cena mainās >3× →
+   NESINHRONIZĒ, loģē `WARNING ... IZLAISTS, manuāla pārbaude` (scraper kļūda /
+   vienību glitch netiek klusi uzlikta klientiem).
+
+Validēts pret prod (read-only): 292 atšķirības → pēc guard-iem **255 droši sync**
+(37 aizdomīgie >3× aizturēti, t.sk. 19×/34× glitch + monthly↔daily); mājaslapā
+**6** drošās korekcijas (#888 1125→350 = 3.2× → pareizi aizturēts pārbaudei).
 
 **Pārbaude pēc deploya:** `/health` → `price_sync_poller.running=true`; pēc ~1 cikla
-tie 7 dzīvie mājaslapā rāda jauno cenu; `updated_total` aug. Env (neobligāti):
-`PRICE_SYNC_ENABLED=0` izslēdz.
+6 dzīvie mājaslapā rāda jauno cenu; `updated_total` aug. WARNING log = aizturētie
+(manuāli jāpārbauda, vai cena reāla). Env: `PRICE_SYNC_ENABLED=0` izslēdz,
+`PRICE_SYNC_MAX_RATIO` regulē jutību.
 
 ---
 
