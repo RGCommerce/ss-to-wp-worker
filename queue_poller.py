@@ -27,6 +27,7 @@ import asyncio
 import io
 import logging
 import os
+import shutil
 import sys
 import traceback
 from contextlib import redirect_stdout
@@ -38,6 +39,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).parent))
 import publish_to_wp  # noqa: E402
+from wp_publisher import WPPublisher, WPPublisherError  # noqa: E402
 
 logger = logging.getLogger("queue_poller")
 
@@ -71,10 +73,13 @@ def _recover_stale() -> int:
 def _claim_next() -> Optional[dict]:
     """Atomāri paņem nākamo pending rindu un atzīmē processing.
 
-    GATE: listings.Debug_status MUST = 'ok'. Tā agent_anketa EASY rindas, kuras
-    vēl gaida uz AI worker (3. plūsma) papildinājumu, NETIEK paķertas, kamēr
-    AI nav uzlicis Debug_status='ok'. publish_to_wp.publish() vienalga atteiktos
-    ar NULL Debug_status — labāk poller pats atliek.
+    GATE: publish rindām listings.Debug_status MUST = 'ok'. Tā agent_anketa EASY
+    rindas, kuras vēl gaida uz AI worker (3. plūsma) papildinājumu, NETIEK
+    paķertas, kamēr AI nav uzlicis Debug_status='ok'. publish_to_wp.publish()
+    vienalga atteiktos ar NULL Debug_status — labāk poller pats atliek.
+    UNPUBLISH/DELETE rindām (action='unpublish'/'delete') gate NAV — noņemšanai
+    Debug_status nav svarīgs. DELETE rindām listinga rinda JAU ir dzēsta panelī
+    (purgeListing) → LEFT JOIN, lai rinda joprojām tiek paķerta.
 
     Atgriež claim-oto rindu vai None. FOR UPDATE SKIP LOCKED — droši paralēli.
     """
@@ -83,11 +88,12 @@ def _claim_next() -> Optional[dict]:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         with conn.transaction():
             cur = conn.execute("""
-                SELECT q.id, q.listing_id, q.attempts
+                SELECT q.id, q.listing_id, q.attempts, q.action, q.wp_post_id
                 FROM properties.wp_export_queue q
-                JOIN properties.listings l ON l.id = q.listing_id
+                LEFT JOIN properties.listings l ON l.id = q.listing_id
                 WHERE q.status = 'pending'
-                  AND l."Debug_status" = 'ok'
+                  AND (q.action IN ('unpublish', 'delete')
+                       OR l."Debug_status" = 'ok')
                 ORDER BY q.priority DESC, q.requested_at ASC
                 LIMIT 1
                 FOR UPDATE OF q SKIP LOCKED
@@ -103,14 +109,27 @@ def _claim_next() -> Optional[dict]:
             return row
 
 
-def _mark_done(queue_id: int, listing_id: int) -> None:
-    """Veiksmīgi pabeigts: status='done', listing on_website=true."""
+def _mark_done(queue_id: int, listing_id: int, action: str = "publish") -> None:
+    """Veiksmīgi pabeigts: status='done'.
+    publish → listing on_website=true; unpublish → on_website jau iestatīts
+    _unpublish() (false + wp_post_id notīrīts), tāpēc to NEpieskaram."""
     if not DATABASE_URL:
         return
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         with conn.transaction():
-            # publish_to_wp.publish() jau atjaunoja listings.wp_post_id
-            # un wp_synced_at — paņemam to reference DB rindas saturam
+            if action == "delete":
+                # _delete_full() jau izdzēsa listings rindu → cascade (FK ON
+                # DELETE CASCADE) notīrīja arī šo queue rindu, tāpēc šis UPDATE
+                # skars 0 rindas = nekaitīgi. Nelasām listings (vairs nav).
+                conn.execute("""
+                    UPDATE properties.wp_export_queue
+                    SET status = 'done', finished_at = now()
+                    WHERE id = %s
+                """, (queue_id,))
+                return
+
+            # publish_to_wp.publish() / _unpublish() jau atjaunoja
+            # listings.wp_post_id — paņemam to reference queue rindas saturam.
             wp_id = conn.execute(
                 "SELECT wp_post_id FROM properties.listings WHERE id = %s",
                 (listing_id,),
@@ -123,12 +142,13 @@ def _mark_done(queue_id: int, listing_id: int) -> None:
                 WHERE id = %s
             """, (wp_post_id, queue_id))
 
-            # Atzīmēt listings.on_website = true (publish_to_wp.py to neatjauno)
-            conn.execute("""
-                UPDATE properties.listings
-                SET on_website = true
-                WHERE id = %s
-            """, (listing_id,))
+            if action == "publish":
+                # Atzīmēt listings.on_website = true (publish_to_wp.py to neatjauno)
+                conn.execute("""
+                    UPDATE properties.listings
+                    SET on_website = true
+                    WHERE id = %s
+                """, (listing_id,))
 
 
 def _mark_error(queue_id: int, attempts: int, error_msg: str) -> None:
@@ -149,18 +169,136 @@ def _mark_error(queue_id: int, attempts: int, error_msg: str) -> None:
 # ---------- Process one ----------
 
 def _process(queue_row: dict) -> tuple[bool, str]:
-    """Palaiž publish_to_wp.publish() vienam listingam. Atgriež (ok, log)."""
+    """Apstrādā vienu rindas ierakstu. action='unpublish' → noņem no WP;
+    citādi publish_to_wp.publish(). Atgriež (ok, log)."""
     listing_id = int(queue_row["listing_id"])
+    action = (queue_row.get("action") or "publish")
     buf = io.StringIO()
     try:
         with redirect_stdout(buf):
-            publish_to_wp.publish(listing_id)
+            if action == "unpublish":
+                _unpublish(listing_id)
+            elif action == "delete":
+                _delete_full(listing_id, queue_row.get("wp_post_id"))
+            else:
+                publish_to_wp.publish(listing_id)
         return True, buf.getvalue()
     except SystemExit as e:
         return False, f"SystemExit: {e}\n{buf.getvalue()}"
     except Exception as e:
         traceback.print_exc(file=buf)
         return False, f"{type(e).__name__}: {e}\n{buf.getvalue()}"
+
+
+def _unpublish(listing_id: int) -> None:
+    """Noņem listingu no mājaslapas (bug #34 — "Aizņemts/Iznomāts").
+    WP posts → Atkritne (delete force=False, atgriežams 30 dienas WP pusē).
+    DB: on_website=false, wp_post_id=NULL (lai vēlāk var publicēt no jauna).
+    Listings paliek DB ar visu info + occupancy_* laukiem (uzliek panelis)."""
+    if not DATABASE_URL:
+        raise RuntimeError("Trūkst DATABASE_URL")
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        row = conn.execute(
+            "SELECT wp_post_id FROM properties.listings WHERE id = %s",
+            (listing_id,),
+        ).fetchone()
+        if not row:
+            raise RuntimeError(f"Listings #{listing_id} nav atrasts")
+        wp_post_id = row["wp_post_id"]
+
+        if wp_post_id:
+            wp = WPPublisher()
+            wp.delete_property(int(wp_post_id), force=False)  # → Atkritne
+            print(f"  ✓ WP posts #{wp_post_id} pārvietots uz Atkritni")
+        else:
+            print("  · nav wp_post_id — nekas nav jānoņem no WP")
+
+        with conn.transaction():
+            conn.execute("""
+                UPDATE properties.listings
+                SET on_website = false, wp_post_id = NULL, wp_synced_at = now()
+                WHERE id = %s
+            """, (listing_id,))
+        print(f"  ✓ DB: listings #{listing_id} on_website=false, wp_post_id=NULL")
+
+
+def _delete_full(listing_id: int, wp_post_id: Optional[int]) -> None:
+    """PILNĪGA dzēšana (action='delete' — paneļa sarkanā "Dzēst sludinājumu").
+    Iztīra VISU, ko panelis nevar, un PĒDĒJO izdzēš pašu listings rindu:
+
+      1. WP posts → DZĒŠ NEATGRIEZENISKI (force=True; wp_post_id no QUEUE rindas).
+      2. /storage/listings/<id>/  — visas bildes (raw + wp_raw + ai_ready +
+         processed) vienā mapē, tāpēc pietiek ar listing_id.
+      3. PDF faili + pdf_jobs rindas, kur šis listings ir VIENĪGAIS (legacy
+         multi-listing PDF NEdzēšam, lai nesabojātu citu listingu piedāvājumu).
+      4. listings rinda — PĒDĒJĀ. ⚠ wp_export_queue.listing_id FK ir DB līmenī
+         ON DELETE CASCADE (Prisma to nerāda!) → ja panelis dzēstu listingu, tas
+         iznīcinātu pašu delete-rindu pirms worker to redz. Tāpēc listingu dzēš
+         ŠEIT, beigās; cascade tad notīra arī šo queue rindu (_mark_done UPDATE
+         skars 0 rindas = nekaitīgi). matches_listings arī = cascade.
+
+    Idempotents: soļi 1-3 droši atkārtojas (404/iztrūkstoši faili = izlaiž). Ja
+    kāds solis krīt PIRMS 4., listings paliek → FK apmierināts → retry pēc
+    _recover_stale. Listingu dzēš tikai pēc tam, kad WP+faili tiešām prom."""
+    if not DATABASE_URL:
+        raise RuntimeError("Trūkst DATABASE_URL")
+
+    # 1) WP posts → neatgriezeniski (force=True). 404 = jau dzēsts (drošs retry).
+    if wp_post_id:
+        try:
+            wp = WPPublisher()
+            wp.delete_property(int(wp_post_id), force=True)
+            print(f"  ✓ WP posts #{wp_post_id} DZĒSTS neatgriezeniski (force)")
+        except WPPublisherError as e:
+            if "HTTP 404" in str(e):
+                print(f"  · WP posts #{wp_post_id} jau nav (404) — izlaiž")
+            else:
+                raise
+    else:
+        print("  · nav wp_post_id — nekas nav jānoņem no WP")
+
+    # 2) Bilžu mape
+    storage_root = os.getenv("STORAGE_ROOT", "/storage")
+    img_dir = Path(storage_root) / "listings" / str(listing_id)
+    if img_dir.exists():
+        shutil.rmtree(img_dir, ignore_errors=True)
+        print(f"  ✓ Bildes dzēstas: {img_dir}")
+    else:
+        print(f"  · nav bilžu mapes ({img_dir})")
+
+    # 3) PDF faili + pdf_jobs rindas (tikai šī listinga vienpošu darbi)
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        jobs = conn.execute(
+            """SELECT id, file_path FROM properties.pdf_jobs
+               WHERE listing_ids = ARRAY[%s]::bigint[]""",
+            (listing_id,),
+        ).fetchall()
+        for j in jobs:
+            fp = j.get("file_path")
+            if fp:
+                pdf_path = Path(storage_root) / fp
+                try:
+                    pdf_path.unlink()
+                    print(f"  ✓ PDF dzēsts: {pdf_path}")
+                except FileNotFoundError:
+                    pass
+        if jobs:
+            with conn.transaction():
+                conn.execute(
+                    """DELETE FROM properties.pdf_jobs
+                       WHERE listing_ids = ARRAY[%s]::bigint[]""",
+                    (listing_id,),
+                )
+            print(f"  ✓ pdf_jobs rindas dzēstas: {len(jobs)}")
+
+    # 4) PĒDĒJAIS — pati listings rinda (cascade: matches_listings +
+    #    wp_export_queue, t.sk. šī delete-rinda).
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.transaction():
+            conn.execute(
+                "DELETE FROM properties.listings WHERE id = %s", (listing_id,)
+            )
+    print(f"  ✓ DB: listings #{listing_id} dzēsts (cascade: matches + queue)")
 
 
 # ---------- Async loop ----------
@@ -228,15 +366,19 @@ async def run_loop(stop_event: asyncio.Event) -> None:
 
             qid = int(row["id"])
             lid = int(row["listing_id"])
+            action = (row.get("action") or "publish")
             attempts = int(row.get("attempts") or 0)
-            logger.info(f"Picked queue#{qid} listing#{lid} (attempts={attempts})")
+            logger.info(
+                f"Picked queue#{qid} listing#{lid} action={action} "
+                f"(attempts={attempts})"
+            )
             _state["last_started"] = {"queue_id": qid, "listing_id": lid}
 
             ok, log_text = await loop.run_in_executor(None, _process, row)
 
             try:
                 if ok:
-                    await loop.run_in_executor(None, _mark_done, qid, lid)
+                    await loop.run_in_executor(None, _mark_done, qid, lid, action)
                     _state["processed_total"] += 1
                     _state["last_result"] = {
                         "queue_id": qid, "listing_id": lid, "status": "done"
