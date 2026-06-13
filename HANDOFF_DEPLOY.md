@@ -1,6 +1,24 @@
 # HANDOFF → 4. kaste: ss-to-wp-worker deploy (Melnā kaste, 2026-06-08)
 
-## 🆕 2026-06-12 — Cenas auto-sync (ss.lv → listings → WP) ⛔ GAIDA DEPLOY
+## 🆕 2026-06-13 — Cenas lock guard 3 + owner_adapts šablons ⛔ GAIDA DEPLOY
+
+2 commiti `melna` virs main (cenas auto-sync 2026-06-12 JAU deployots = `7215e8d`).
+**Bez DB migrācijas.** Deploy = `git checkout main && git merge melna && git push origin main`.
+⚠ **Pāris ar paneļa `melna` `a059087`** (edit save lock+republish) — deployot ABUS.
+
+- `a436302` — **price_sync guard 3**: izlaiž listingus, kur `'price' ∈
+  agent_locked_fields` (brokeris manuāli labojis cenu panelī → manuālā autoritatīva).
+- `990b50a` — **render_body**: `owner_adapts_premises=true` → intro teikums
+  "Īpašnieks ir gatavs pielāgot telpas nomnieka vajadzībām." (panelis to jau prot
+  rediģēt + enqueueWebResync propagē uz visiem ēkas listingiem). Render testēts.
+
+**Pārbaude pēc deploya:** ēkas profilā ieķeksē "Saimnieks pielāgo telpas" → saglabā
+→ ēkas on-site listingi pārpublicējas → aprakstā parādās teikums. Cenas manuāls
+labojums panelī → price_sync to neatgriež.
+
+---
+
+## 🆕 2026-06-12 — Cenas auto-sync (ss.lv → listings → WP) ✅ DEPLOYOTS (7215e8d)
 
 Jauns 5. fona pollers `price_sync_poller.py` + iekablis `main.py` (lifespan +
 /health). **Bez DB migrācijas** (lieto esošos `listings.price/price_per_m2` +
