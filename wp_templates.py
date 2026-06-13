@@ -579,6 +579,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # BREEAM ilgtspējas sertifikāts (mig 034) — ēkas fakts (Raimonds 2026-06-08)
     if _truthy(bp.get("has_breeam")):
         intro.append("Ēkai ir BREEAM ilgtspējas sertifikāts.")
+    # Īpašnieks gatavs pielāgot telpas (ēkas/īpašnieka fakts, Raimonds 2026-06-13)
+    if _truthy(bp.get("owner_adapts_premises")):
+        intro.append("Īpašnieks ir gatavs pielāgot telpas nomnieka vajadzībām.")
     # stāva teikums
     fn, base = _floor_n(L.get("floor"))
     own_entr = _truthy(L.get("Sava_ieeja_check"))
