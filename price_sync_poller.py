@@ -24,6 +24,9 @@ Drošības guard-i (lai NEKAD neuzliktu nepareizu cenu uz prod/mājaslapas):
   2. LĒCIENA ROBEŽA — ja cena mainās vairāk par PRICE_SYNC_MAX_RATIO (def 3×),
      to uzskatām par scraper kļūdu / vienību glitch → NESINHRONIZĒ, loģē
      manuālai pārbaudei. (Reālas cenas korekcijas parasti <30%.)
+  3. MANUĀLAIS LOCK — ja brokeris panelī manuāli labojis cenu ('price' ∈
+     listings.agent_locked_fields), pollers to NEAIZTIEC (manuālā cena
+     autoritatīva pār ss.lv). Panelis uzliek lock pie edit save.
 
 Konfigurējams ar env:
   PRICE_SYNC_ENABLED   (default "1") — "0" izslēdz
@@ -101,6 +104,9 @@ def _fetch_diffs() -> list[dict]:
             ) si ON true
             WHERE l."Debug_status" = 'ok'
               AND l.link IS NOT NULL AND l.link <> ''
+              -- Guard 3: brokeris manuāli labojis cenu panelī → 'price' ∈
+              -- agent_locked_fields → NEAIZTIEC (manuālā cena ir autoritatīva).
+              AND NOT ('price' = ANY(COALESCE(l.agent_locked_fields, '{}')))
         """).fetchall()
 
     out = []
