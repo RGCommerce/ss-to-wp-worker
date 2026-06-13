@@ -53,6 +53,7 @@ import queue_poller  # noqa: E402
 import pdf_poller  # noqa: E402
 import agent_ai_poller  # noqa: E402  # 3. AI plūsma — agent_anketa listings → AI papildina
 import image_download_poller  # noqa: E402  # 4. ss.lv/WP bilžu lejupielāde uz volume (aizstāj image-downloader)
+import price_sync_poller  # noqa: E402  # 5. ss.lv cenas izmaiņa → listings + WP re-publish
 import agent_api  # noqa: E402  # Ceļš B: anketa-par-eku endpoints (Etaps 6)
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -75,17 +76,20 @@ async def lifespan(app: FastAPI):
                       (respect agent_locked_fields)
     image_download_poller — ss.lv/WP bildes (images_downloaded_at NULL) → volume
                       (aizstāj atsevišķo image-downloader servisu, kam nav volume)
+    price_sync_poller — ss.lv cenas izmaiņa (scrape_inbox) → UPDATE listings.price
+                      + ja mājaslapā → wp_export_queue re-publish (update_property)
     """
     stop_event = asyncio.Event()
     wp_task = asyncio.create_task(queue_poller.run_loop(stop_event))
     pdf_task = asyncio.create_task(pdf_poller.run_loop(stop_event))
     ai_task = asyncio.create_task(agent_ai_poller.run_loop(stop_event))
     img_task = asyncio.create_task(image_download_poller.run_loop(stop_event))
+    price_task = asyncio.create_task(price_sync_poller.run_loop(stop_event))
     try:
         yield
     finally:
         stop_event.set()
-        for t in (wp_task, pdf_task, ai_task, img_task):
+        for t in (wp_task, pdf_task, ai_task, img_task, price_task):
             try:
                 await asyncio.wait_for(t, timeout=5)
             except asyncio.TimeoutError:
@@ -190,6 +194,7 @@ def health():
         "pdf_poller": pdf_poller.get_status(),
         "agent_ai_poller": agent_ai_poller.get_status(),
         "image_download_poller": image_download_poller.get_status(),
+        "price_sync_poller": price_sync_poller.get_status(),
     }
 
 
