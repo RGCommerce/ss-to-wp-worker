@@ -86,6 +86,8 @@ _PIELIET = {  # Potential_space_group → ģenitīvs ("piemērots arī X vajadz�
 # (Raimonds 2026-06-05; AI Potential_space_group mēdz pārģenerēt.)
 _NO_OFFICE_GROUPS = {"Restorans/Cafe", "PVD", "Ražošana", "Noliktava",
                      "Autoserviss", "Medicīna", "Sporta zāle"}
+# Loģistikas/ražošanas telpas — 1. stāva teikums bez "klientu plūsmas" (Raimonds 2026-06-19)
+_LOGISTICS_GROUPS = {"Noliktava", "Ražošana", "Autoserviss", "StockOfiss"}
 _PARK = {"Ir vietas": "autostāvvieta", "Ir vietas bezmaksas": "bezmaksas autostāvvieta",
          "Ir vietas par maksu": "maksas autostāvvieta", "Tikai ielas parking": "stāvvieta ielas malā"}
 _STAVU = {1: "Vienstāva", 2: "Divstāvu", 3: "Trīsstāvu", 4: "Četrstāvu", 5: "Piecstāvu",
@@ -589,7 +591,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if base:
         intro.append("Telpas atrodas cokolstāvā, kas labi piemērots saimnieciskām un noliktavas vajadzībām.")
     elif fn == 1:
-        if own_entr:
+        if sg in _LOGISTICS_GROUPS:
+            intro.append("Telpas atrodas 1. stāvā.")
+        elif own_entr:
             intro.append("Telpas atrodas 1. stāvā, kas nodrošina ērtu klientu plūsmu un labu redzamību.")
         else:
             intro.append("Telpas atrodas ērti pieejamā 1. stāvā.")
@@ -616,6 +620,8 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         if is_grey and n == 1:
             # 1 telpa pelēkā apdarē = atvērts plānojums, ko var pielāgot (Raimonds 2026-06-08)
             tech.append("Kopā ir 1 atvērtā plānojuma telpa (open space), kuru var pielāgot kā vēlaties.")
+        elif n == 1 and sg in _LOGISTICS_GROUPS:
+            tech.append("Šobrīd telpās ir viena plaša open space telpa.")
         elif n == 1:
             tech.append("Kopā ir 1 atsevišķa telpa.")
         else:
