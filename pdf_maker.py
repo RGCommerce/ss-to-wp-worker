@@ -246,7 +246,8 @@ def _facts(listing: dict, bp: dict) -> list[tuple[str, str]]:
     # --- Pielietojums / izmaksas ---
     add("Pielietojuma potenciāls", _filter_potential(L.get("Potential_space_group"),
                                                      L.get("Space_group")))
-    add("Investīciju stratēģija", _clean(L.get("Investiciju_strategija")))
+    # Investiciju_strategija = IEKŠĒJA klasifikācija (mums), NE klienta brošūrai.
+    # Raimonds 2026-06-25 — izņemts gan no sludinājuma virsraksta, gan no PDF.
     add("Apsaimniekošana", _clean(L.get("Apsaimniekosanas_maksa")))
     add("NĪN", _clean(L.get("NIN")))
     add("Komunālie maksājumi", _clean(L.get("Komunalie")))
