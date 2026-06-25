@@ -426,6 +426,20 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         if building.get("building_type"):
             cols["building_type"] = building["building_type"]
 
+    # #34: papildu telpas tipi no anketas ("der arī kā") → Potential_space_group
+    # (primārais + izvēlētie papildu, dedup, secībā). Lockojam, lai AI worker tos
+    # neaizvieto. Ja agents nav izvēlējies papildu → atstājam AI (EASY) aprēķinam.
+    _extra_types = unit.get("potential_space_groups") or []
+    if _extra_types:
+        _primary = uget("Space_group", "space_group")
+        _pot: list[str] = []
+        for _t in ([_primary] + list(_extra_types)):
+            if _t and _t not in _pot:
+                _pot.append(_t)
+        if _pot:
+            cols["Potential_space_group"] = ", ".join(_pot)
+            locked.append("Potential_space_group")
+
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)
     val_list = ", ".join(["%s"] * len(cols))
