@@ -510,8 +510,10 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # Adresi/nosaukumu liekam ŠEIT (ne ievada teikumā) — citādi teksts atkārtojas
     # ("Iznomā X telpas Centra rajonā... Tiek iznomātas X telpas Y ielā"). 2026-06-05.
     if sale:
-        inv = g("Investiciju_strategija")
-        head = "Pārdod " + veids + (f" ({inv})" if inv else "")
+        # Investiciju_strategija ir IEKŠĒJS lauks (mums, ne sludinājumam) — NEKAD
+        # neliekam virsrakstā. Raimonds 2026-06-25 ("Nav investīciju objekts"
+        # parādījās publiskajā tekstā). Pārdod/Iznomā tiek tikai veids + lokācija.
+        head = "Pārdod " + veids
     else:
         head = "Iznomā " + veids
     dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
