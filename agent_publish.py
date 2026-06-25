@@ -34,7 +34,7 @@ STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(Path(__file__).parent / "stora
 
 # Lauki, ko aģents tieši ievada caur anketu — AI worker tos NEDRĪKST pārrakstīt
 EASY_LOCKED_FIELDS = ["Space_group", "area_m2", "floor",
-                      "price", "price_type", "Agent_comment",
+                      "price", "price_type", "price_per_m2", "Agent_comment",
                       # Izdevumi — aģents ievada; AI tos NEDRĪKST uzminēt (tukši → klusē)
                       "Apsaimniekosanas_maksa", "Papildu_maksas"]
 # NB: Cik_telpas / cik_WC TĪŠI nav fiksētajā sarakstā — tie tiek lockoti dinamiski
@@ -364,6 +364,9 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         "cik_WC": uget("cik_WC", "cik_wc"),
         "price": uget("price"),
         "price_type": uget("price_type"),
+        # #20: glabā PRECĪZO €/m² (6.05) tieši, lai netiek zaudēta precizitāte,
+        # pārrēķinot no noapaļotas kopcenas downstream. wp_templates lieto šo pirmo.
+        "price_per_m2": uget("price_per_m2", "price_per_m2"),
         "Agent_comment": uget("Agent_comment", "agent_comment"),
         # Izdevumi — aģents ievada manuāli (AI tos nezina)
         "Apsaimniekosanas_maksa": uget("Apsaimniekosanas_maksa", "apsaimniekosanas_maksa"),
