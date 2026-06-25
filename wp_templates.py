@@ -391,6 +391,13 @@ def _value_like(s) -> bool:
     return s.strip().lower().rstrip(".") in _VALUE_OK
 
 
+def _bare_number(s) -> bool:
+    """True, ja vērtība ir TIKAI skaitlis (bez valūtas/vienības teksta), piem.
+    '1.50', '1,50', '120'. Lieto #35 — apsaimniekošanai bez vienības pieliek EUR/m²."""
+    s = _clean(s)
+    return bool(s) and bool(re.fullmatch(r"[\d.,\s]+", s))
+
+
 def _parse_wc(v) -> tuple[Optional[int], Optional[str]]:
     """cik_WC = brīvteksts → (skaits|None, 'own'|'shared'|None)."""
     s = _clean(v)
@@ -774,11 +781,16 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             cost.append(f"Nomas maksa ir {_money_lv(price)} EUR mēnesī.")
     # Izmaksu lauki: TIKAI ja reāla vērtība (cipars / zināma frāze).
     extra = []
-    for label, val in [("apsaimniekošana", g("Apsaimniekosanas_maksa")),
-                       ("NĪN", g("NIN")),
-                       ("komunālie maksājumi", g("Komunalie"))]:
+    for label, val, unit in [("apsaimniekošana", g("Apsaimniekosanas_maksa"), "EUR/m²"),
+                             ("NĪN", g("NIN"), None),
+                             ("komunālie maksājumi", g("Komunalie"), None)]:
         if _value_like(val):
-            extra.append(f"{label} {val}")
+            # #35 (Raimonds): ja apsaimniekošana ievadīta kā plikns skaitlis (bez
+            # vienības) → pieliek EUR/m² automātiski; ja jau ar vienību — atstāj.
+            if unit and _bare_number(val):
+                extra.append(f"{label} {_money_lv(val)} {unit}")
+            else:
+                extra.append(f"{label} {val}")
     if extra:
         cost.append("Papildus " + _join_lv(extra) + ".")
     # Citi maksājumi (brīvs teksts, anketā komatatdalīts) — sava rinda, katrs pēdiņās.
