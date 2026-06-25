@@ -95,6 +95,33 @@ def _strip_city(addr: str, city: str) -> str:
     return ", ".join(kept) or str(addr).strip()
 
 
+# LV adreses sufiksi — ja adrese nesatur kādu no šiem, default 'iela' (#11).
+_STREET_SUFFIXES = (
+    "iela", "gatve", "bulvāris", "bulvaris", "prospekts", "šoseja", "soseja",
+    "ceļš", "cels", "laukums", "aleja", "krastmala", "līnija", "linija",
+    "tilts", "pasāža", "pasaza", "dambis",
+)
+
+
+def _ensure_street_suffix(s: str) -> str:
+    """#11 (Raimonds): SS→WP virsraksts izlaida 'iela' ("Kr. Barona 30" → jābūt
+    "Kr. Barona iela 30"). Ja adresē jau ir ielas-tipa vārds — atstāj; citādi
+    iesprauž 'iela' pirms māju numura. (Tāda pati loģika kā agent_publish.py.)"""
+    s = (s or "").strip()
+    if not s:
+        return s
+    lower = s.lower()
+    for sfx in _STREET_SUFFIXES:
+        if f" {sfx} " in f" {lower} " or lower.endswith(f" {sfx}"):
+            return s  # jau ir ielas-tips
+    parts = s.rsplit(None, 1)
+    if len(parts) == 2:
+        name, number = parts
+        if any(ch.isdigit() for ch in number):
+            return f"{name} iela {number}"
+    return s  # bez numura — neminam (var nebūt iela, piem. tirgus/centrs)
+
+
 def _title(listing: dict, bp: dict) -> str:
     """Title = TIKAI iela + nr, BEZ pilsētas (Raimonds 2026-06-05): "Rīga" nost no
     H1/adreses lauka. Rajonu/krastu rāda property_area taksonomija, ne virsraksts."""
@@ -103,7 +130,7 @@ def _title(listing: dict, bp: dict) -> str:
     base = full or (listing.get("street") or "").strip()
     if not base:
         return f"Komercīpašums (listing {listing['id']})"
-    return _strip_city(base, city)
+    return _ensure_street_suffix(_strip_city(base, city))
 
 
 def _geocode_address(listing: dict, bp: dict) -> str:
