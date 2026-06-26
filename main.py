@@ -54,6 +54,7 @@ import pdf_poller  # noqa: E402
 import agent_ai_poller  # noqa: E402  # 3. AI plūsma — agent_anketa listings → AI papildina
 import image_download_poller  # noqa: E402  # 4. ss.lv/WP bilžu lejupielāde uz volume (aizstāj image-downloader)
 import price_sync_poller  # noqa: E402  # 5. ss.lv cenas izmaiņa → listings + WP re-publish
+import auto_publish_poller  # noqa: E402  # 6. ok+auto_publish ēka, nepubl., verificēts → wp_export_queue
 import agent_api  # noqa: E402  # Ceļš B: anketa-par-eku endpoints (Etaps 6)
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -85,11 +86,12 @@ async def lifespan(app: FastAPI):
     ai_task = asyncio.create_task(agent_ai_poller.run_loop(stop_event))
     img_task = asyncio.create_task(image_download_poller.run_loop(stop_event))
     price_task = asyncio.create_task(price_sync_poller.run_loop(stop_event))
+    autopub_task = asyncio.create_task(auto_publish_poller.run_loop(stop_event))
     try:
         yield
     finally:
         stop_event.set()
-        for t in (wp_task, pdf_task, ai_task, img_task, price_task):
+        for t in (wp_task, pdf_task, ai_task, img_task, price_task, autopub_task):
             try:
                 await asyncio.wait_for(t, timeout=5)
             except asyncio.TimeoutError:
@@ -195,6 +197,7 @@ def health():
         "agent_ai_poller": agent_ai_poller.get_status(),
         "image_download_poller": image_download_poller.get_status(),
         "price_sync_poller": price_sync_poller.get_status(),
+        "auto_publish_poller": auto_publish_poller.get_status(),
     }
 
 
