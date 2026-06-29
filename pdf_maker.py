@@ -634,11 +634,22 @@ def render_pdf_bulk(listing_ids: list[int]) -> bytes:
     return out.getvalue()
 
 
+def saved_pdf_path(listing_id: int) -> Path:
+    """Saglabātā vienas-listinga PDF ceļš uz volume.
+
+    Panelis to var lejupielādēt uzreiz (bez atkārtota rendera). Jauns render
+    pārraksta veco failu (Raimonds: jauns → vecais izdzēšas)."""
+    return STORAGE_ROOT / "listings" / str(listing_id) / "offer.pdf"
+
+
 def render_pdf(listing_id: int) -> bytes:
     """Galvenā API — atgriež PDF baitus.
 
     PIRMS render — VIENMĒR nodrošina AI bildes (image_pipeline + classify), ja
     ai_ready/ trūkst. Tā PDF nekad nedabū tukšu galeriju.
+
+    PĒC render — saglabā kopiju uz volume (`listings/<id>/offer.pdf`), pārrakstot
+    veco, lai panelis to var lejupielādēt uzreiz.
     """
     if not DATABASE_URL:
         raise SystemExit("DATABASE_URL nav .env failā.")
@@ -647,7 +658,16 @@ def render_pdf(listing_id: int) -> bytes:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         listing, bp = _fetch(conn, listing_id)
     html_doc, base_url = build_html(listing, bp, listing_id)
-    return HTML(string=html_doc, base_url=base_url).write_pdf()
+    pdf_bytes = HTML(string=html_doc, base_url=base_url).write_pdf()
+    # Saglabā/pārraksta saglabāto kopiju (nekritiski — ja neizdodas, PDF tāpat
+    # atgriežas pārlūkam). write_bytes pārraksta esošo → vecais izdzēšas.
+    try:
+        dest = saved_pdf_path(listing_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(pdf_bytes)
+    except Exception as e:
+        print(f"[pdf_maker] PDF saglabāšana neizdevās (nekritiski): {e}")
+    return pdf_bytes
 
 
 def main():
