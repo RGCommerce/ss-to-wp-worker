@@ -95,7 +95,7 @@ _STAVU = {1: "Vienstāva", 2: "Divstāvu", 3: "Trīsstāvu", 4: "Četrstāvu", 5
 
 # Priekšrocības — dzīvākas frāzes (ne tikai lietvārds)
 _PRIEK = {
-    "has_lift": "lifts ērtai piekļuvei augšējiem stāviem",
+    "has_lift": "lifts",
     "has_freight_lift": "kravas lifts smagumu pārvietošanai",
     "has_gym": "sporta zāle aktīvai atpūtai un treniņiem",
     "has_conference_room": "koplietošanas konferenču zāle, ko iespējams rezervēt tikšanām un prezentācijām",
@@ -596,7 +596,6 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # stāva teikums
     fn, base = _floor_n(L.get("floor"))
     own_entr = _truthy(L.get("Sava_ieeja_check"))
-    has_lift = _truthy(bp.get("has_lift"))
     if base:
         intro.append("Telpas atrodas cokolstāvā, kas labi piemērots saimnieciskām un noliktavas vajadzībām.")
     elif fn == 1:
@@ -607,12 +606,13 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         else:
             intro.append("Telpas atrodas ērti pieejamā 1. stāvā.")
     elif fn and fn >= 2:
-        lift = ", ēkā ar liftu" if has_lift else ""
         # "tirdzniecības vidē" tikai t/c telpai t/c ēkā; birojam u.c. t/c ēkā → "darba vidē".
+        # Liftu piemin TIKAI "Priekšrocības" sadaļā ("Ēkā ir lifts") — ne šeit (Raimonds:
+        # bez dublēta lifta teikuma).
         vide = ("reprezentablā tirdzniecības vidē"
                 if (is_tc and sg == "Tirdzniecība")
                 else "klusā un reprezentablā darba vidē")
-        intro.append(f"Telpas atrodas {fn}. stāvā{lift}, {vide}.")
+        intro.append(f"Telpas atrodas {fn}. stāvā, {vide}.")
     blocks.append(("P", " ".join(intro)))
 
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
