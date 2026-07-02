@@ -61,52 +61,95 @@ def _tails(s) -> set[str]:
 
 # ---------- DB ----------
 
+def _load_vip_tails() -> set[str]:
+    """VIP numuri ar auto_publish=true → {pēdējo-8-ciparu kopa}.
+
+    VIP = numurs, kura sludinājumus publicē JEBKURĀ ēkā (arī bez ēkas auto_publish
+    karodziņa) un kas skaitās verificēts pēc definīcijas. Drošs, ja tabulas nav."""
+    if not DATABASE_URL:
+        return set()
+    try:
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+            rows = conn.execute(
+                "SELECT phone FROM properties.vip_owner_numbers WHERE auto_publish IS TRUE"
+            ).fetchall()
+        out: set[str] = set()
+        for r in rows:
+            out |= _tails(r["phone"])
+        return out
+    except Exception as e:
+        logger.warning("VIP numuru ielāde neizdevās (%s) — bez VIP auto-publish", e)
+        return set()
+
+
 def _fetch_eligible() -> list[dict]:
     """Listingi, kas gatavi auto-publicēšanai, bet vēl nav rindā/uz web.
 
-    Heavy filtri SQL pusē (ok + auto_publish + wp_post_id null + nav rindā/kļūdā +
-    unikāls). Numura-verifikācija Python pusē (robusts pret vairāku numuru lauku)."""
+    Divi ceļi:
+      A) parastais — ēka ar auto_publish=true UN listinga numurs ∈ ēkas primary/secondary.
+      B) VIP — listinga numurs ∈ VIP sarakstā → publicē JEBKURĀ ēkā (arī bez ēkas
+         karodziņa), numurs = verificēts pēc definīcijas (apiet primary/secondary vārtus).
+    Abiem PALIEK: ok + wp_post_id null + nav rindā/kļūdā + unikāls (area+floor+price_type)."""
     if not DATABASE_URL:
         return []
+    vip_tails = _load_vip_tails()
+    vip_pats = [f"%{t}%" for t in vip_tails]
+
+    # auto_publish nosacījums: ēkas karodziņš VAI (ja ir VIP) listinga numurs ∈ VIP.
+    if vip_pats:
+        auto_cond = ("(b.auto_publish IS TRUE OR regexp_replace("
+                     "coalesce(l.phone_numbers,''), '[^0-9]', '', 'g') LIKE ANY(%s))")
+        params: tuple = (vip_pats,)
+    else:
+        auto_cond = "b.auto_publish IS TRUE"
+        params = ()
+
+    query = f"""
+        SELECT l.id, l.street, l.phone_numbers,
+               b.primary_phone, b.secondary_phone, b.auto_publish
+        FROM properties.listings l
+        JOIN properties.building_profiles b ON b.id = l.building_profile_id
+        WHERE l."Debug_status" = 'ok'
+          AND {auto_cond}
+          AND l.wp_post_id IS NULL
+          AND l.link IS NOT NULL AND l.link <> ''
+          -- nav jau rindā vai kļūdā publicēšanai (loop drošība)
+          AND NOT EXISTS (
+                SELECT 1 FROM properties.wp_export_queue q
+                WHERE q.listing_id = l.id
+                  AND q.action = 'publish'
+                  AND q.status IN ('pending', 'processing', 'error')
+          )
+          -- unikāls: nav cita JAU publicēta tās pašas ēkas listinga ar to pašu
+          -- telpas atslēgu (area + floor + price_type) → nepublicē dublikātu
+          AND NOT EXISTS (
+                SELECT 1 FROM properties.listings l2
+                WHERE l2.building_profile_id = l.building_profile_id
+                  AND l2.id <> l.id
+                  AND l2.wp_post_id IS NOT NULL
+                  AND coalesce(btrim(l2.area_m2), '') = coalesce(btrim(l.area_m2), '')
+                  AND coalesce(btrim(l2.floor), '')  = coalesce(btrim(l.floor), '')
+                  AND coalesce(l2.price_type, '')    = coalesce(l.price_type, '')
+          )
+        ORDER BY l.id
+    """
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        rows = conn.execute("""
-            SELECT l.id, l.street, l.phone_numbers,
-                   b.primary_phone, b.secondary_phone
-            FROM properties.listings l
-            JOIN properties.building_profiles b ON b.id = l.building_profile_id
-            WHERE l."Debug_status" = 'ok'
-              AND b.auto_publish IS TRUE
-              AND l.wp_post_id IS NULL
-              AND l.link IS NOT NULL AND l.link <> ''
-              -- nav jau rindā vai kļūdā publicēšanai (loop drošība)
-              AND NOT EXISTS (
-                    SELECT 1 FROM properties.wp_export_queue q
-                    WHERE q.listing_id = l.id
-                      AND q.action = 'publish'
-                      AND q.status IN ('pending', 'processing', 'error')
-              )
-              -- unikāls: nav cita JAU publicēta tās pašas ēkas listinga ar to pašu
-              -- telpas atslēgu (area + floor + price_type) → nepublicē dublikātu
-              AND NOT EXISTS (
-                    SELECT 1 FROM properties.listings l2
-                    WHERE l2.building_profile_id = l.building_profile_id
-                      AND l2.id <> l.id
-                      AND l2.wp_post_id IS NOT NULL
-                      AND coalesce(btrim(l2.area_m2), '') = coalesce(btrim(l.area_m2), '')
-                      AND coalesce(btrim(l2.floor), '')  = coalesce(btrim(l.floor), '')
-                      AND coalesce(l2.price_type, '')    = coalesce(l.price_type, '')
-              )
-            ORDER BY l.id
-        """).fetchall()
+        rows = conn.execute(query, params).fetchall()
 
     out = []
     for r in rows:
-        # Drošības vārti: listinga numuram JĀSAKRĪT ar ēkas primary/secondary.
-        owner = _tails(r["primary_phone"]) | _tails(r["secondary_phone"])
         listing_tails = _tails(r["phone_numbers"])
-        if not listing_tails or not (listing_tails & owner):
-            continue  # nepārbaudīts numurs → NEKAD nepublicē (bez-numura mantojums)
-        out.append(r)
+        if not listing_tails:
+            continue  # bez numura → NEKAD nepublicē
+        # B) VIP numurs → verificēts pēc definīcijas, publicē jebkurā ēkā.
+        if vip_tails and (listing_tails & vip_tails):
+            out.append(r)
+            continue
+        # A) Parastais: ēka auto_publish + numurs ∈ ēkas primary/secondary.
+        if r["auto_publish"]:
+            owner = _tails(r["primary_phone"]) | _tails(r["secondary_phone"])
+            if listing_tails & owner:
+                out.append(r)
     return out
 
 
