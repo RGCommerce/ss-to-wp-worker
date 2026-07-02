@@ -365,3 +365,21 @@ def pdf(listing_id: int):
         headers={"Content-Disposition":
                  f'inline; filename="listing_{listing_id}.pdf"'},
     )
+
+
+@app.get("/pdf/{listing_id}/saved", dependencies=[Depends(require_token)])
+def pdf_saved(listing_id: int):
+    """Atgriež JAU SAGLABĀTO vienas-listinga PDF (bez atkārtota rendera).
+
+    Ātrs ceļš panelim: ja `listings/<id>/offer.pdf` eksistē (izveidots pēdējā
+    `render_pdf` reizē), atdod to uzreiz. Ja nav — 404 (panelis aicina nospiest
+    "Izveidot PDF")."""
+    path = pdf_maker.saved_pdf_path(listing_id)
+    if not path.is_file():
+        raise HTTPException(404, f"Listingam {listing_id} nav saglabāta PDF")
+    return Response(
+        content=path.read_bytes(),
+        media_type="application/pdf",
+        headers={"Content-Disposition":
+                 f'inline; filename="listing_{listing_id}.pdf"'},
+    )

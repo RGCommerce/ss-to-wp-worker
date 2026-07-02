@@ -51,7 +51,13 @@ _SYSTEM = (
     "Raksti gramatiski nevainojamu, plūstošu, profesionālu un viegli lasāmu "
     "sludinājuma aprakstu. Izmanto TIKAI dotos faktus — NEKO neizdomā un "
     "nepievieno faktus, kuru nav. Ja kāda lauka nav, vienkārši izlaid to. "
-    "Saglabā mēru — bez pārspīlētiem superlatīviem."
+    "Saglabā mēru — bez pārspīlētiem superlatīviem.\n"
+    "STINGRI AIZLIEGTS pievienot ēkai apzīmējumus, kuru NAV dotajos faktos: "
+    "vecuma minējumi ('vecāka', 'vecā', 'jauna ēka'), atrašanās/kategorijas vārdi "
+    "('pilsētas', 'centra'), vai labuma apgalvojumi ('nodrošina klientu plūsmu', "
+    "'laba redzamība'). building_type lieto PRECĪZI tā, kā dots (piem. 'Jaukta tipa "
+    "ēka') — to NEpārfrāzē un NEpapildina ar saviem īpašības vārdiem. "
+    "Building_description lieto, kā dots, neizgrezno."
 )
 
 _FORMAT = """Izveido aprakstu PRECĪZI šādā 3-daļu struktūrā (HTML):
@@ -69,7 +75,7 @@ _FORMAT = """Izveido aprakstu PRECĪZI šādā 3-daļu struktūrā (HTML):
 Noteikumi:
 - Ja īpašums tiek PĀRDOTS (price_type regular/parastā/sale), lieto "Pārdošanā" un "Cena:" nevis "Noma mēnesī:".
 - Daļu "Par telpām:" un "Par ēku:" raksti kā 1-3 dabiskus teikumus (NE sausu sarakstu ar semikoliem).
-- Ja stāvs nezināms — izlaid otro rindu.
+- Ja stāvs nezināms — izlaid otro rindu. Stāva rinda ir TIKAI "Telpas atrodas {stāvs}. stāvā." — NEKO nepievieno (ne "kas nodrošina...", ne par redzamību/klientu plūsmu).
 - Ja m² cena nav dota, aprēķini: cena / platība (noapaļo līdz 2 cipariem).
 - Atgriez TIKAI HTML (<p>, <strong>), bez papildu komentāriem, bez markdown.
 """

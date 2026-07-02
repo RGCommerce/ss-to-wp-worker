@@ -71,7 +71,12 @@ DEFAULT_PROMPT = (
     "in the top-left and bottom-right corners. Preserve every detail "
     "identically: walls, floor, ceiling, windows, doors, fixtures, lighting, "
     "and overall composition. Output a clean, professional listing photo "
-    "with slightly sharper details and natural colors."
+    "with slightly sharper details and natural colors. "
+    "Brighten the image for a bright, airy, well-lit look like professional "
+    "real estate photography — especially if the original is dark or "
+    "underexposed: lift the shadows and raise the overall exposure and "
+    "brightness. Keep colors natural and realistic, and avoid overexposure "
+    "or blown-out highlights."
 )
 PROMPT = os.getenv("SEEDREAM_PROMPT", DEFAULT_PROMPT)
 
