@@ -230,17 +230,19 @@ def _update_listing_with_ai(
     listing_id: int,
     locked_fields: List[str],
     ai_result: Dict[str, Any],
+    output_fields: Optional[List[str]] = None,
 ) -> None:
     """UPDATE listings ar AI rezultātiem, IZŅEMOT agent_locked_fields kolonnas.
 
     Plus uzliek Debug_status='ok' (vai cita statusu, ja AI atgrieza problēmu).
+    output_fields = kuras kolonnas AI ģenerē (komerc=AI_OUTPUT_FIELDS, zeme=LAND_OUTPUT_FIELDS).
     """
     if not DATABASE_URL:
         return
     locked = set(locked_fields or [])
     updates: Dict[str, Any] = {}
 
-    for k in AI_OUTPUT_FIELDS:
+    for k in (output_fields or AI_OUTPUT_FIELDS):
         if k in locked:
             continue  # aģenta ievadi nepārraksta
         if k not in ai_result:
@@ -279,24 +281,38 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
     except Exception as e:
         return False, f"ai_text_helpers nepieejams: {e}"
 
+    import land_ai  # zemes AI (šablons + zonējums)
+    land = land_ai.is_land_row(row)
+
     text = _build_text_from_listing(row)
     image_urls = _build_image_urls_for_openai(row)
-    if not image_urls:
+    # Zemei bildes NAV obligātas (teksts galvenais); komerctelpām — obligātas.
+    if not image_urls and not land:
         return False, "Nav piejamu bilžu (local_image_paths_processed tukšs vai nav RGC_MK_TOKEN)"
 
     listing_url_for_prompt = f"agent_anketa://listings/{listing_id}"
+    locked = row.get("agent_locked_fields") or []
     try:
-        result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
+        if land:
+            # ZEME — atsevišķs zemes prompts + šablons (kā ss.lv ceļā). Pielietojums
+            # (land_use) nāk no anketas, ne AI. land_description saliek mūsu kods.
+            result = land_ai.analyze_land(helpers.client, helpers.MODEL, listing_url_for_prompt, text, image_urls)
+            if str(result.get("Debug_status") or "").strip() == "ok":
+                result["land_description"] = land_ai.build_land_description(row, result)
+        else:
+            result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
     except Exception as e:
         return False, f"OpenAI kļūda: {type(e).__name__}: {str(e)[:300]}"
 
-    locked = row.get("agent_locked_fields") or []
     try:
-        _update_listing_with_ai(listing_id, locked, result)
+        _update_listing_with_ai(
+            listing_id, locked, result,
+            output_fields=land_ai.LAND_OUTPUT_FIELDS if land else None,
+        )
     except Exception as e:
         return False, f"DB update kļūda: {type(e).__name__}: {str(e)[:300]}"
 
-    return True, f"AI papildināja, locked fields respektēti ({len(locked)})"
+    return True, f"AI papildināja ({'zeme' if land else 'komerc'}), locked respektēti ({len(locked)})"
 
 
 # ---------- Async loop ----------
