@@ -440,6 +440,25 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
             cols["Potential_space_group"] = ", ".join(_pot)
             locked.append("Potential_space_group")
 
+    # ZEME (Raimonds 2026-07-04) — anketā ievadīts zemes gabals. Iestatām group/
+    # listing_type, lai downstream (composite dedup, agent_ai_poller is_land, match,
+    # WP render) to atpazīst kā zemi. Pielietojums (land_use) no anketas → lockojam
+    # (AI to nepārraksta). Platību mirror uz Zemes_gabals_m2 (match pēc zemes platības).
+    if uget("Space_group", "space_group") == "Zeme":
+        cols["group"] = "zeme"
+        cols["listing_type"] = "plot"
+        # Zemi VIENMĒR laižam caur zemes AI (arī FULL režīmā), lai izvelk komunikācijas/
+        # zonējumu/aprakstu no bildēm+teksta — aģents ievada tikai pielietojumu+platību.
+        cols["Debug_status"] = None
+        _lu = uget("land_use", "land_use")
+        if _lu:
+            cols["land_use"] = _lu
+            locked.append("land_use")
+        if not cols.get("Zemes_gabals_m2"):
+            _a = uget("area_m2")
+            if _a:
+                cols["Zemes_gabals_m2"] = _a
+
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)
     val_list = ", ".join(["%s"] * len(cols))
