@@ -225,6 +225,21 @@ def render(L, bp):
     area = num(L.get("area_m2"))
     blocks = []
 
+    # ZEME (Raimonds 2026-07-03) — atsevišķs, vienkāršs render no gatavā zemes
+    # apraksta (land_description, ko salicis test-runner-db zemes ceļš). NElaižam
+    # zemi caur komerc-teksta ģeneratoru (telpas/stāvi/griesti tai nav).
+    if sg == "Zeme":
+        zg = num(L.get("Zemes_gabals_m2")) or num(L.get("area_m2"))
+        head_z = ("Pārdod" if sale else "Iznomā") + " zemes gabalu"
+        if zg:
+            head_z += f" – {zg} m²"
+        blocks.append(("B", head_z))
+        desc = c(L.get("land_description"))
+        if desc:
+            blocks.append(("P", desc))
+        blocks.append(("P", "Sazinieties ar mums, lai uzzinātu vairāk par šo zemes gabalu. 🌳"))
+        return blocks
+
     # 1. VIRSRAKSTS
     if sale:
         inv = g("Investiciju_strategija")
