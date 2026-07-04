@@ -465,6 +465,17 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         if isinstance(_comms, list) and _comms:
             cols["communications"] = _comms
             locked.append("communications")
+        # Ēka uz gabala — dažiem zemes gabaliem ir ēka. Aģents norāda pats
+        # (building_on_plot: nav/ir_eka/ir_pamati) + ēkas platību. Lockē, lai AI
+        # nepārraksta; ieiet aprakstā (build_land_description).
+        _bop = uget("building_on_plot")
+        if _bop:
+            cols["building_on_plot"] = _bop
+            locked.append("building_on_plot")
+        _bam = uget("building_area_m2")
+        if _bam:
+            cols["building_area_m2"] = _bam
+            locked.append("building_area_m2")
 
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)

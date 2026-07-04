@@ -166,8 +166,10 @@ def build_land_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> 
     if zs:
         parts.append(" " + zs)
 
-    if str(result.get("building_on_plot") or "").strip().lower() == "ir_eka":
-        ba = re.sub(r"[^0-9]", "", _clean(result.get("building_area_m2")))
+    # Aģenta ievadītais (anketa, lockots row_data) uzvar pār AI.
+    bop = str(row_data.get("building_on_plot") or result.get("building_on_plot") or "").strip().lower()
+    if bop == "ir_eka":
+        ba = re.sub(r"[^0-9]", "", _clean(row_data.get("building_area_m2")) or _clean(result.get("building_area_m2")))
         parts.append(f" Uz gabala ir ēka (~{ba} m²)." if ba else " Uz gabala ir ēka.")
 
     extra = _clean(result.get("extra_info"))
