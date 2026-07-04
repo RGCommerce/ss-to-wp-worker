@@ -458,6 +458,13 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
             _a = uget("area_m2")
             if _a:
                 cols["Zemes_gabals_m2"] = _a
+        # Komunikācijas — aģents atzīmē pats (AI no bildēm tās bieži neredz).
+        # Aizpildīts → lockē (zemes AI nepārraksta + build_land_description lieto);
+        # tukšs → atstāj AI. communications = text[] (psycopg adaptē list).
+        _comms = unit.get("communications")
+        if isinstance(_comms, list) and _comms:
+            cols["communications"] = _comms
+            locked.append("communications")
 
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)

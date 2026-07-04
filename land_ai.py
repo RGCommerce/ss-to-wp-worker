@@ -151,7 +151,9 @@ def build_land_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> 
     if lu:
         parts.append(f" Pielietojums — {lu[0].lower() + lu[1:]}.")
 
-    comms = [c for c in (result.get("communications") or []) if c]
+    # Aģenta ievadītās komunikācijas (anketa, lockotas row_data) uzvar pār AI;
+    # ja aģents tās neatzīmēja → AI rezultāts.
+    comms = [c for c in (row_data.get("communications") or result.get("communications") or []) if c]
     if comms:
         core = ["elektrība", "ūdens", "kanalizācija", "gāze"]
         if all(c in comms for c in core):
