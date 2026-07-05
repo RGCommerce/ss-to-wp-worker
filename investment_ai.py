@@ -120,65 +120,75 @@ def _num(v: Any) -> str:
 
 
 def build_investment_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> str:
-    """Saliek investīciju objekta tekstu: intro + ēku saraksts + finanšu skaitļi
-    (aģenta, verbatim) + AI investīciju kopsavilkums + highlights. BEZ adreses."""
+    """Saliek investīciju objekta tekstu. BEZ virsraksta (WP tituls = adrese).
+    Bloki atdalīti ar '\\n\\n' (render_body → atsevišķas rindkopas); ēku saraksts
+    ar '\\n' (katra ēka sava rindiņā). Identiskas ēkas apvieno ar skaitu."""
     pt = str(row_data.get("price_type") or "").strip().lower()
     deal = "iznomāts" if pt in ("monthly", "mēneša") else "pārdots"
 
     area = _num(row_data.get("area_m2"))
     area_txt = f" ar kopējo platību {area} m²" if area else ""
-    parts = [f"Tiek {deal} investīciju objekts{area_txt}."]
 
-    # Ēku saraksts (buildings jsonb; katra tips – platība (piezīme)).
+    # Ēku saraksts ar dedup (identiskas tips+platība+piezīme → viena rinda + skaits).
     blds = row_data.get("buildings") or []
     if isinstance(blds, str):
         try:
             blds = json.loads(blds)
         except Exception:
             blds = []
-    lines: List[str] = []
+    grouped: List[Dict[str, Any]] = []  # [{key:(t,a,note), count}]
     for b in (blds or []):
         if not isinstance(b, dict):
             continue
         t = _clean(b.get("type"))
         if not t:
             continue
-        a = _num(b.get("area_m2"))
-        note = _clean(b.get("note"))
-        line = t + (f" – {a} m²" if a else "")
-        if note:
-            line += f" ({note})"
-        lines.append(line)
-    if lines:
-        parts.append(" Īpašumā ietilpst: " + "; ".join(lines) + ".")
+        key = (t, _num(b.get("area_m2")), _clean(b.get("note")))
+        hit = next((g for g in grouped if g["key"] == key), None)
+        if hit:
+            hit["count"] += 1
+        else:
+            grouped.append({"key": key, "count": 1})
 
-    # Finanšu skaitļi — aģenta ievadītie, verbatim.
+    _WORDS = {2: "divas", 3: "trīs", 4: "četras", 5: "piecas", 6: "sešas"}
+    list_lines: List[str] = []
+    for g in grouped:
+        t, a, note = g["key"]
+        line = t + (f" – {a} m²" if a else "")
+        extras: List[str] = []
+        if note:
+            extras.append(note)
+        if g["count"] > 1:
+            cnt = _WORDS.get(g["count"], str(g["count"]))
+            extras.append(f"šādas ēkas ir {cnt}")
+        if extras:
+            line += " (" + "; ".join(extras) + ")"
+        list_lines.append(line)
+
+    blocks: List[str] = []
+    intro = f"Tiek {deal} investīciju objekts{area_txt}."
+    if list_lines:
+        blocks.append(intro + "\nĪpašumā ietilpst:")
+        n = len(list_lines)
+        numbered = [f"{i}) {ln}{'.' if i == n else ';'}" for i, ln in enumerate(list_lines, 1)]
+        blocks.append("\n".join(numbered))
+    else:
+        blocks.append(intro)
+
+    # Finanšu skaitļi — aģenta ievadītie, verbatim (sava rindkopa).
     income = _clean(row_data.get("investment_income"))
     yld = _clean(row_data.get("investment_yield"))
     if income:
-        fin = f" Īres ienākumi: {income}."
-        if yld:
-            fin = f" Īres ienākumi: {income}; atdeve: {yld}."
-        parts.append(fin)
+        blocks.append(f"Īres ienākumi: {income}; atdeve: {yld}." if yld else f"Īres ienākumi: {income}.")
     elif yld:
-        parts.append(f" Prognozētā atdeve: {yld}.")
+        blocks.append(f"Prognozētā atdeve: {yld}.")
 
-    # AI investīciju kopsavilkums.
+    # AI investīciju kopsavilkums (sava rindkopa).
     summary = _clean(result.get("asset_summary"))
     if summary:
-        parts.append(" " + summary)
+        blocks.append(summary)
 
-    # AI kvalitātes piezīme (ja atsevišķa no summary).
-    qn = _clean(result.get("quality_note"))
-    if qn and qn not in summary:
-        parts.append(" " + qn)
-
-    # Highlights (īsi plusi).
-    hl = [_clean(h) for h in (result.get("highlights") or []) if _clean(h)]
-    if hl:
-        parts.append(" Priekšrocības: " + ", ".join(hl) + ".")
-
-    return "".join(parts)
+    return "\n\n".join(blocks)
 
 
 def _build_messages(url: str, text: str, image_urls: List[str], income_present: bool) -> List[Dict[str, Any]]:

@@ -522,17 +522,18 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # kopsavilkums + highlights; salika investment_ai.build_investment_description).
     # Plus aģenta apraksts (Agent_comment) papildu kontekstam. ──
     if sg == "Investīciju objekts":
-        head_i = ("Pārdod" if sale else "Iznomā") + " investīciju objektu"
-        dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
-        if dist:
-            head_i += " " + dist
-        ihtml = [f"<p>{_b(head_i)}</p>"]
-        desc = g("investment_description")
-        if desc:
-            ihtml.append(f"<p>{desc}</p>")
-        ac = g("Agent_comment")
-        if ac:
-            ihtml.append(f"<p>{ac}</p>")
+        # BEZ bold virsraksta (Raimonds 2026-07-05) — teksts sākas tieši ar
+        # "Tiek pārdots...". Rindkopas atdala "\n\n"; rindas "\n" → <br>.
+        def _paras(txt: str) -> list[str]:
+            out = []
+            for para in str(txt or "").split("\n\n"):
+                para = para.strip()
+                if para:
+                    out.append("<p>" + para.replace("\n", "<br>") + "</p>")
+            return out
+        ihtml: list[str] = []
+        ihtml += _paras(g("investment_description"))
+        ihtml += _paras(g("Agent_comment"))
         ihtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢</p>")
         return "".join(ihtml)
 
