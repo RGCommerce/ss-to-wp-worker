@@ -44,6 +44,9 @@ SPACE_GROUP_TO_HOUZEZ_TYPE: dict[str, str] = _invert_type_map()
 # Forward (publish) virzienā tomēr vajag tipu kartiņai — tuvākais ir noliktava/ražošana
 # (precīzo hibrīdu nosauc "Stock Ofiss" property_label, sk. SPACE_GROUP_TO_LABELS).
 SPACE_GROUP_TO_HOUZEZ_TYPE.setdefault("StockOfiss", "Noliktavas / ražošana")
+# ZEME — Houzez "Zemesgabali" tips ir SKIP_HOUZEZ_TYPES (import virzienā nekļūst
+# Space_group), bet PUBLISH virzienā zemei vajag property_type = Zemesgabali.
+SPACE_GROUP_TO_HOUZEZ_TYPE.setdefault("Zeme", "Zemesgabali")
 
 # price_type (DB) -> Houzez property_status term. _scratch_wp_publish_test.py
 # lietoja "Noma". Pienemums (PRECIZET ar DB distinct + Houzez UI):

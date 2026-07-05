@@ -44,6 +44,7 @@ _VEIDS = {
     "Studija": "studijas telpas", "Autoserviss": "autoservisa telpas",
     "Sporta zāle": "sporta telpas", "PVD": "pārtikas ražošanas telpas",
     "StockOfiss": "noliktavas-biroja telpas",  # stock-office hibrīds (1. stāvs)
+    "Zeme": "zemes gabalu",  # ZEME — render_body to apstrādā atsevišķi (land_description)
 }
 _BTYPE = {  # building_type → "kur" frāze (fallback, ja nav Building_description)
     "Biroju ēka": "biroju ēkā", "Tirdzniecības centrs": "tirdzniecības centrā",
@@ -497,6 +498,24 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     sale = _is_sale(L.get("price_type"))
     area = _num(L.get("area_m2"))
     blocks: list[tuple[str, object]] = []
+
+    # ── ZEME (Raimonds 2026-07) — atsevišķs, vienkāršs render no gatavā zemes
+    # apraksta (land_description, ko salika zemes AI ceļš). NElaižam zemi caur
+    # komerc-teksta ģeneratoru (telpas/stāvi/griesti/nosacījumi tai nav). ──
+    if sg == "Zeme":
+        zg = _num(L.get("Zemes_gabals_m2")) or _num(L.get("area_m2"))
+        head_z = ("Pārdod" if sale else "Iznomā") + " zemes gabalu"
+        dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
+        if dist:
+            head_z += " " + dist
+        if zg:
+            head_z += f" – {zg} m²"
+        zhtml = [f"<p>{_b(head_z)}</p>"]
+        desc = g("land_description")
+        if desc:
+            zhtml.append(f"<p>{desc}</p>")
+        zhtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo zemes gabalu. 🌳</p>")
+        return "".join(zhtml)
 
     # Ēkas konteksts (vajadzīgs gan virsrakstam, gan ievadam)
     addr_nom = _street_nominative(g("street") or gb("full_address"))  # virsraksta adrese
