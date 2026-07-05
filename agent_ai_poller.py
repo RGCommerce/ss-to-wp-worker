@@ -297,8 +297,12 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             # ZEME — atsevišķs zemes prompts + šablons (kā ss.lv ceļā). Pielietojums
             # (land_use) nāk no anketas, ne AI. land_description saliek mūsu kods.
             result = land_ai.analyze_land(helpers.client, helpers.MODEL, listing_url_for_prompt, text, image_urls)
-            if str(result.get("Debug_status") or "").strip() == "ok":
-                result["land_description"] = land_ai.build_land_description(row, result)
+            # ANKETAS zeme = aģents pats to izveidoja PUBLICĒŠANAI. AI 'agent_detected'/
+            # 'wanted_ad'/'low_evidence' klasifikācija te ir nepareiza (tā domāta ss.lv
+            # skrāpera filtram — svešas brokeru ūdenszīmes / "Pērku zemi") un bloķētu
+            # publish (queue_poller gaida 'ok'). Anketai vienmēr 'ok' + saliec aprakstu.
+            result["Debug_status"] = "ok"
+            result["land_description"] = land_ai.build_land_description(row, result)
         else:
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
     except Exception as e:
