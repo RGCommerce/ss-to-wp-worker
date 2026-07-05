@@ -45,7 +45,8 @@ _VEIDS = {
     "Sporta zāle": "sporta telpas", "PVD": "pārtikas ražošanas telpas",
     "StockOfiss": "noliktavas-biroja telpas",  # stock-office hibrīds (1. stāvs)
     "Zeme": "zemes gabalu",  # ZEME — render_body to apstrādā atsevišķi (land_description)
-    "Daudzēku īpašums": "daudzēku īpašumu",  # render_body atsevišķi (ēku saraksts)
+    "Daudzēku īpašums": "daudzēku īpašumu",  # (novecojis — aizstāts ar Investīciju objekts)
+    "Investīciju objekts": "investīciju objektu",  # render_body atsevišķi (investment_description)
 }
 _BTYPE = {  # building_type → "kur" frāze (fallback, ja nav Building_description)
     "Biroju ēka": "biroju ēkā", "Tirdzniecības centrs": "tirdzniecības centrā",
@@ -517,47 +518,24 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         zhtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo zemes gabalu. 🌳</p>")
         return "".join(zhtml)
 
-    # ── DAUDZĒKU ĪPAŠUMS (Raimonds 2026-07-05) — standartizēts teksts no ēku
-    # saraksta (listings.buildings jsonb). Katra ēka: tips – platība (piezīme).
+    # ── INVESTĪCIJU OBJEKTS (Raimonds 2026-07-05) — teksts no AI uzrakstītā
+    # investment_description (intro + ēku saraksts + finanšu skaitļi + investīciju
+    # kopsavilkums + highlights; salika investment_ai.build_investment_description).
     # Plus aģenta apraksts (Agent_comment) papildu kontekstam. ──
-    if sg == "Daudzēku īpašums":
-        total = _num(L.get("area_m2"))
-        head_m = ("Pārdod" if sale else "Iznomā") + " daudzēku īpašumu"
+    if sg == "Investīciju objekts":
+        head_i = ("Pārdod" if sale else "Iznomā") + " investīciju objektu"
         dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
         if dist:
-            head_m += " " + dist
-        if total:
-            head_m += f" – kopā {total} m²"
-        mhtml = [f"<p>{_b(head_m)}</p>"]
-        blds = L.get("buildings") or []
-        if isinstance(blds, str):
-            import json as _json
-            try:
-                blds = _json.loads(blds)
-            except Exception:
-                blds = []
-        lines: list[str] = []
-        for b in (blds or []):
-            if not isinstance(b, dict):
-                continue
-            t = _clean(b.get("type"))
-            if not t:
-                continue
-            a = _num(b.get("area_m2"))
-            note = _clean(b.get("note"))
-            line = "• " + t
-            if a:
-                line += f" – {a} m²"
-            if note:
-                line += f" ({note})"
-            lines.append(line)
-        if lines:
-            mhtml.append("<p>" + _b("Īpašumā ietilpst:") + "<br>" + "<br>".join(lines) + "</p>")
+            head_i += " " + dist
+        ihtml = [f"<p>{_b(head_i)}</p>"]
+        desc = g("investment_description")
+        if desc:
+            ihtml.append(f"<p>{desc}</p>")
         ac = g("Agent_comment")
         if ac:
-            mhtml.append(f"<p>{ac}</p>")
-        mhtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo īpašumu. 🏢</p>")
-        return "".join(mhtml)
+            ihtml.append(f"<p>{ac}</p>")
+        ihtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢</p>")
+        return "".join(ihtml)
 
     # Ēkas konteksts (vajadzīgs gan virsrakstam, gan ievadam)
     addr_nom = _street_nominative(g("street") or gb("full_address"))  # virsraksta adrese

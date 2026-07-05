@@ -47,6 +47,8 @@ SPACE_GROUP_TO_HOUZEZ_TYPE.setdefault("StockOfiss", "Noliktavas / ražošana")
 # ZEME — Houzez "Zemesgabali" tips ir SKIP_HOUZEZ_TYPES (import virzienā nekļūst
 # Space_group), bet PUBLISH virzienā zemei vajag property_type = Zemesgabali.
 SPACE_GROUP_TO_HOUZEZ_TYPE.setdefault("Zeme", "Zemesgabali")
+# INVESTĪCIJU OBJEKTS — publish virzienā property_type = "Investīciju objekti".
+SPACE_GROUP_TO_HOUZEZ_TYPE.setdefault("Investīciju objekts", "Investīciju objekti")
 
 # price_type (DB) -> Houzez property_status term. _scratch_wp_publish_test.py
 # lietoja "Noma". Pienemums (PRECIZET ar DB distinct + Houzez UI):

@@ -478,19 +478,17 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
             cols["building_area_m2"] = _bam
             locked.append("building_area_m2")
 
-    # DAUDZĒKU ĪPAŠUMS (Raimonds 2026-07-05) — īpašums ar N ēkām (viesnīcas komplekss
-    # u.c.). Saglabā ēku sarakstu (buildings jsonb); teksts ģenerējas standartizēti no
-    # tā (wp_templates), tāpēc AI NAV vajadzīgs → Debug_status='ok' uzreiz. Ēku komerc-
-    # tipi → Potential_space_group (match: der biroja UN ražošanas u.c. meklētājiem).
-    if uget("Space_group", "space_group") == "Daudzēku īpašums":
+    # INVESTĪCIJU OBJEKTS (Raimonds 2026-07-05) — īpašums ar N ēkām / ienākumu aktīvs.
+    # Aģents ievada ēkas + SKAITĻUS (īres ienākumi, atdeve); AI VIENMĒR iziet cauri
+    # bildēm (Debug_status=NULL → investment_ai): nosaka kvalitāti + Investiciju_strategija
+    # + uzraksta investīciju tekstu. Ēku komerc-tipi → Potential_space_group (match).
+    if uget("Space_group", "space_group") == "Investīciju objekts":
         _blds = unit.get("buildings")
         clean = [b for b in (_blds or [])
                  if isinstance(b, dict) and str(b.get("type") or "").strip()]
         if clean:
             cols["buildings"] = Jsonb(clean)
             locked.append("buildings")
-            # Komerc-tipi (derīgi space_group) → Potential_space_group. Dzīvojamos/
-            # palīg-tipus izlaiž (komerc-klients tos nemeklē). Angārs→Ražošana.
             _COMM = {"Birojs", "Tirdzniecība", "Noliktava", "Ražošana", "Medicīna",
                      "Restorans/Cafe", "Autoserviss", "StockOfiss"}
             _types: list[str] = []
@@ -502,8 +500,17 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
             if _types:
                 cols["Potential_space_group"] = ", ".join(_types)
                 locked.append("Potential_space_group")
-        # Standartizēts teksts no ēku saraksta → AI nav vajadzīgs.
-        cols["Debug_status"] = "ok"
+        # Finanšu skaitļi — aģents ievada, AI neizdomā. Lockē.
+        _inc = uget("investment_income")
+        if _inc:
+            cols["investment_income"] = _inc
+            locked.append("investment_income")
+        _yld = uget("investment_yield")
+        if _yld:
+            cols["investment_yield"] = _yld
+            locked.append("investment_yield")
+        # AI VIENMĒR iet cauri (Raimonds: bez AI neko likt nedrīkst) → Debug_status=NULL.
+        cols["Debug_status"] = None
 
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)

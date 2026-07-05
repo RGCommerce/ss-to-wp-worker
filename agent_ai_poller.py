@@ -282,11 +282,13 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
         return False, f"ai_text_helpers nepieejams: {e}"
 
     import land_ai  # zemes AI (šablons + zonējums)
+    import investment_ai  # investīciju objekta AI (stratēģija + teksts)
     land = land_ai.is_land_row(row)
+    inv = investment_ai.is_investment_row(row)
 
     text = _build_text_from_listing(row)
     image_urls = _build_image_urls_for_openai(row)
-    # Zemei bildes NAV obligātas (teksts galvenais); komerctelpām — obligātas.
+    # Zemei bildes NAV obligātas (teksts galvenais); investīcijai/komerctelpām — svarīgas.
     if not image_urls and not land:
         return False, "Nav piejamu bilžu (local_image_paths_processed tukšs vai nav RGC_MK_TOKEN)"
 
@@ -303,20 +305,31 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             # publish (queue_poller gaida 'ok'). Anketai vienmēr 'ok' + saliec aprakstu.
             result["Debug_status"] = "ok"
             result["land_description"] = land_ai.build_land_description(row, result)
+        elif inv:
+            # INVESTĪCIJU OBJEKTS — AI iziet cauri bildēm+datiem, nosaka kvalitāti +
+            # stratēģiju + uzraksta investīciju tekstu. Finanšu skaitļi (aģenta) → teksts.
+            income_present = investment_ai.has_income(row)
+            result = investment_ai.analyze_investment(
+                helpers.client, helpers.MODEL, listing_url_for_prompt, text, image_urls, income_present)
+            # AI stratēģija → Investiciju_strategija (match + WP kategorija).
+            result["Investiciju_strategija"] = result.get("investment_strategy") or "Value-Add"
+            result["investment_description"] = investment_ai.build_investment_description(row, result)
+            # Aģents to izveidoja publicēšanai → vienmēr 'ok' (low_evidence nebloķē).
+            result["Debug_status"] = "ok"
         else:
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
     except Exception as e:
         return False, f"OpenAI kļūda: {type(e).__name__}: {str(e)[:300]}"
 
     try:
-        _update_listing_with_ai(
-            listing_id, locked, result,
-            output_fields=land_ai.LAND_OUTPUT_FIELDS if land else None,
-        )
+        _output_fields = (land_ai.LAND_OUTPUT_FIELDS if land
+                          else investment_ai.INVESTMENT_OUTPUT_FIELDS if inv else None)
+        _update_listing_with_ai(listing_id, locked, result, output_fields=_output_fields)
     except Exception as e:
         return False, f"DB update kļūda: {type(e).__name__}: {str(e)[:300]}"
 
-    return True, f"AI papildināja ({'zeme' if land else 'komerc'}), locked respektēti ({len(locked)})"
+    kind = "zeme" if land else "investīcija" if inv else "komerc"
+    return True, f"AI papildināja ({kind}), locked respektēti ({len(locked)})"
 
 
 # ---------- Async loop ----------
