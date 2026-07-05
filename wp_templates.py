@@ -45,7 +45,6 @@ _VEIDS = {
     "Sporta zāle": "sporta telpas", "PVD": "pārtikas ražošanas telpas",
     "StockOfiss": "noliktavas-biroja telpas",  # stock-office hibrīds (1. stāvs)
     "Zeme": "zemes gabalu",  # ZEME — render_body to apstrādā atsevišķi (land_description)
-    "Daudzēku īpašums": "daudzēku īpašumu",  # (novecojis — aizstāts ar Investīciju objekts)
     "Investīciju objekts": "investīciju objektu",  # render_body atsevišķi (investment_description)
 }
 _BTYPE = {  # building_type → "kur" frāze (fallback, ja nav Building_description)
