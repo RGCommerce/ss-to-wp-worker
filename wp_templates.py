@@ -531,9 +531,10 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
                 if para:
                     out.append("<p>" + para.replace("\n", "<br>") + "</p>")
             return out
+        # investment_description JAU iepin aģenta aprakstu (AI naratīvs vai fallback),
+        # tāpēc Agent_comment atsevišķi NErenderē — teksts saplūst vienā.
         ihtml: list[str] = []
         ihtml += _paras(g("investment_description"))
-        ihtml += _paras(g("Agent_comment"))
         ihtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢</p>")
         return "".join(ihtml)
 

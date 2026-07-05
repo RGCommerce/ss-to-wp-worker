@@ -315,8 +315,12 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
             income_present = investment_ai.has_income(row)
             try:
+                # Pilns konteksts: bāzes teksts (adrese/apraksts) + ēkas/skaitļi/zeme,
+                # lai AI naratīvs SAPLŪST ar anketas info (ne izolēts kopsavilkums).
+                _ctx = investment_ai.context_text(row)
+                inv_text = text + ("\n\n" + _ctx if _ctx else "")
                 inv_res = investment_ai.analyze_investment(
-                    helpers.client, helpers.MODEL, listing_url_for_prompt, text, image_urls, income_present)
+                    helpers.client, helpers.MODEL, listing_url_for_prompt, inv_text, image_urls, income_present)
                 result["asset_summary"] = inv_res.get("asset_summary")
                 # Ja komerc-AI stratēģiju nenoteica (Nav investīciju objekts/unknown/tukšs)
                 # → lieto investīciju AI stratēģiju (šis IR investīciju objekts).

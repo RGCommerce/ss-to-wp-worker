@@ -56,15 +56,21 @@ fields + a short investment-angle summary in LATVIAN. You are a robot: no fluff.
 - quality_note — ONE short factual sentence on the physical quality/condition you
   SEE (e.g. "Ēkas ir tehniski funkcionālas, ar betonētām grīdām un paceļamiem vārtiem.").
   Only visible facts, no age/location guesses.
-- asset_summary — 2-3 short LATVIAN sentences framing this as an INVESTMENT.
-  * If INCOME_PRESENT = yes → emphasize stabilu naudas plūsmu, esošos nomniekus,
-    atdevi, gatavību ienākumam. Do NOT state the number (added separately).
-  * If INCOME_PRESENT = no → emphasize POTENCIĀLU: vairākas ēkas komercdarbībai,
+- asset_summary — the MAIN descriptive narrative in LATVIAN: 1-2 cohesive paragraphs
+  (~3-6 sentences) that BLEND together: (a) the property composition (the buildings,
+  their functions/potential — given in context), (b) the investment framing, (c) your
+  image-based quality/condition observations, AND (d) ALL concrete facts the agent
+  provided in their notes (context "Aģenta apraksts" / "Ēkas īpašumā" / financials).
+  It must read as ONE flowing description, not a list.
+  * PRESERVE every concrete agent-provided fact (piem. atsevišķa elektroapakšstacija,
+    piebraukšana, divējāda izmantošana, komunikācijas). Do NOT drop or contradict them.
+  * If INCOME_PRESENT = yes → weave in stabilu naudas plūsmu / nomniekus / atdevi
+    (do NOT state the exact number — added separately as a fact line).
+  * If INCOME_PRESENT = no → weave in POTENCIĀLU: vairākas ēkas komercdarbībai,
     tūlītēju izmantošanu, attīstības/pārprofilēšanas iespējas.
-  No marketing clichés, no invented facts.
-- highlights — up to 4 short LATVIAN bullet phrases with concrete investment plus-
-  points visible in evidence (piem. "Iežogota teritorija", "8 m griestu augstums",
-  "Atsevišķa iebraukšana smagajam transportam"). [] if none.
+  Do NOT invent facts not in text/agent notes/images. No marketing clichés. This is
+  the paragraph that goes UNDER the numbered building list — make it feel connected.
+- highlights — [] (nelietojam; atstāj tukšu).
 
 ## FIELDS (schema)
 - investment_strategy, quality_note, asset_summary, highlights,
@@ -117,6 +123,36 @@ def _clean(v: Any) -> str:
 
 def _num(v: Any) -> str:
     return re.sub(r"[^0-9]", "", str(v or ""))
+
+
+def context_text(row_data: Dict[str, Any]) -> str:
+    """Strukturētais anketas konteksts investīciju AI ievadei — lai naratīvs
+    saplūst ar ēkām/skaitļiem/zemi (ne izolēts). Pievieno bāzes tekstam."""
+    lines: List[str] = []
+    blds = row_data.get("buildings") or []
+    if isinstance(blds, str):
+        try:
+            blds = json.loads(blds)
+        except Exception:
+            blds = []
+    b_lines = []
+    for b in (blds or []):
+        if isinstance(b, dict) and _clean(b.get("type")):
+            a = _num(b.get("area_m2"))
+            note = _clean(b.get("note"))
+            b_lines.append(f"- {b['type']}" + (f" {a} m²" if a else "") + (f" ({note})" if note else ""))
+    if b_lines:
+        lines.append("Ēkas īpašumā (aģents ievadījis):\n" + "\n".join(b_lines))
+    zg = _num(row_data.get("Zemes_gabals_m2"))
+    if zg:
+        lines.append(f"Zemes platība: {zg} m²")
+    inc = _clean(row_data.get("investment_income"))
+    if inc:
+        lines.append(f"Īres ienākumi (aģents): {inc}")
+    yl = _clean(row_data.get("investment_yield"))
+    if yl:
+        lines.append(f"Atdeve (aģents): {yl}")
+    return "\n\n".join(lines)
 
 
 def build_investment_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> str:
@@ -188,8 +224,11 @@ def build_investment_description(row_data: Dict[str, Any], result: Dict[str, Any
     elif yld:
         blocks.append(f"Prognozētā atdeve: {yld}.")
 
-    # AI investīciju kopsavilkums (sava rindkopa).
+    # AI investīciju naratīvs (iepin ēkas+skaitļus+aģenta faktus). Fallback uz
+    # aģenta aprakstu, ja AI neizdevās (lai teksts nepaliek bez prozas).
     summary = _clean(result.get("asset_summary"))
+    if not summary:
+        summary = _clean(row_data.get("Agent_comment"))
     if summary:
         blocks.append(summary)
 
