@@ -25,6 +25,7 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 sys.path.insert(0, str(Path(__file__).parent))
 import publish_to_wp  # publish(listing_id, dry_run, force, skip_ai)
@@ -476,6 +477,33 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         if _bam:
             cols["building_area_m2"] = _bam
             locked.append("building_area_m2")
+
+    # DAUDZĒKU ĪPAŠUMS (Raimonds 2026-07-05) — īpašums ar N ēkām (viesnīcas komplekss
+    # u.c.). Saglabā ēku sarakstu (buildings jsonb); teksts ģenerējas standartizēti no
+    # tā (wp_templates), tāpēc AI NAV vajadzīgs → Debug_status='ok' uzreiz. Ēku komerc-
+    # tipi → Potential_space_group (match: der biroja UN ražošanas u.c. meklētājiem).
+    if uget("Space_group", "space_group") == "Daudzēku īpašums":
+        _blds = unit.get("buildings")
+        clean = [b for b in (_blds or [])
+                 if isinstance(b, dict) and str(b.get("type") or "").strip()]
+        if clean:
+            cols["buildings"] = Jsonb(clean)
+            locked.append("buildings")
+            # Komerc-tipi (derīgi space_group) → Potential_space_group. Dzīvojamos/
+            # palīg-tipus izlaiž (komerc-klients tos nemeklē). Angārs→Ražošana.
+            _COMM = {"Birojs", "Tirdzniecība", "Noliktava", "Ražošana", "Medicīna",
+                     "Restorans/Cafe", "Autoserviss", "StockOfiss"}
+            _types: list[str] = []
+            for b in clean:
+                t = str(b.get("type") or "").strip()
+                t = "Ražošana" if t == "Angārs" else t
+                if t in _COMM and t not in _types:
+                    _types.append(t)
+            if _types:
+                cols["Potential_space_group"] = ", ".join(_types)
+                locked.append("Potential_space_group")
+        # Standartizēts teksts no ēku saraksta → AI nav vajadzīgs.
+        cols["Debug_status"] = "ok"
 
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)
