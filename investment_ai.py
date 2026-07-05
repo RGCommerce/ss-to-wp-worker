@@ -175,6 +175,11 @@ def build_investment_description(row_data: Dict[str, Any], result: Dict[str, Any
     else:
         blocks.append(intro)
 
+    # Zemes platība (ja ievadīta) — sava rindkopa.
+    zg = _num(row_data.get("Zemes_gabals_m2"))
+    if zg:
+        blocks.append(f"Zemes platība: {zg} m².")
+
     # Finanšu skaitļi — aģenta ievadītie, verbatim (sava rindkopa).
     income = _clean(row_data.get("investment_income"))
     yld = _clean(row_data.get("investment_yield"))

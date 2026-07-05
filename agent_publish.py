@@ -509,6 +509,12 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         if _yld:
             cols["investment_yield"] = _yld
             locked.append("investment_yield")
+        # Zemes platība — aģents ievada (EASY režīmā to citādi neuzstādītu). Lockē.
+        _zg = uget("Zemes_gabals_m2", "zemes_gabals_m2")
+        if _zg and not cols.get("Zemes_gabals_m2"):
+            cols["Zemes_gabals_m2"] = _zg
+            if "Zemes_gabals_m2" not in locked:
+                locked.append("Zemes_gabals_m2")
         # AI VIENMĒR iet cauri (Raimonds: bez AI neko likt nedrīkst) → Debug_status=NULL.
         cols["Debug_status"] = None
 
