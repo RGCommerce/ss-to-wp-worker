@@ -306,29 +306,15 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             result["Debug_status"] = "ok"
             result["land_description"] = land_ai.build_land_description(row, result)
         elif inv:
-            # INVESTĪCIJU OBJEKTS — AI iziet cauri VISĀM bildēm. (1) Komerc-AI aizpilda
-            # VISUS standarta laukus (Space_condition, Apkure, tips, fīčas, kvalitāte,
-            # Building_description, Investiciju_strategija) — kā jebkuram listingam
-            # (respektē agent_locked_fields: ja aģents kādu ievadījis, AI nepārraksta).
-            # (2) Investīciju AI uzraksta investīciju kopsavilkumu; teksts = ēkas +
-            # finanšu skaitļi (aģenta) + kopsavilkums.
+            # INVESTĪCIJU OBJEKTS — komerc-AI aizpilda VISUS standarta laukus no bildēm
+            # (Space_condition, Apkure, tips, fīčas, Building_description, Investiciju_
+            # strategija; respektē agent_locked). Investīciju TEKSTS = ŠABLONS (nevis
+            # brīva AI proza): ēkas+zeme+finanšu skaitļi (aģents) + stratēģijas teikums
+            # + aģenta apraksts verbatim — sk. build_investment_description.
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
-            income_present = investment_ai.has_income(row)
-            try:
-                # Pilns konteksts: bāzes teksts (adrese/apraksts) + ēkas/skaitļi/zeme,
-                # lai AI naratīvs SAPLŪST ar anketas info (ne izolēts kopsavilkums).
-                _ctx = investment_ai.context_text(row)
-                inv_text = text + ("\n\n" + _ctx if _ctx else "")
-                inv_res = investment_ai.analyze_investment(
-                    helpers.client, helpers.MODEL, listing_url_for_prompt, inv_text, image_urls, income_present)
-                result["asset_summary"] = inv_res.get("asset_summary")
-                # Ja komerc-AI stratēģiju nenoteica (Nav investīciju objekts/unknown/tukšs)
-                # → lieto investīciju AI stratēģiju (šis IR investīciju objekts).
-                _cur = str(result.get("Investiciju_strategija") or "").strip()
-                if _cur in ("", "Nav investīciju objekts", "unknown"):
-                    result["Investiciju_strategija"] = inv_res.get("investment_strategy") or "Value-Add"
-            except Exception:
-                result.setdefault("Investiciju_strategija", "Value-Add")
+            _cur = str(result.get("Investiciju_strategija") or "").strip()
+            if _cur in ("", "Nav investīciju objekts", "unknown"):
+                result["Investiciju_strategija"] = "Value-Add"
             result["investment_description"] = investment_ai.build_investment_description(row, result)
             # Aģents to izveidoja publicēšanai → vienmēr 'ok' (low_evidence nebloķē).
             result["Debug_status"] = "ok"

@@ -224,13 +224,22 @@ def build_investment_description(row_data: Dict[str, Any], result: Dict[str, Any
     elif yld:
         blocks.append(f"Prognozētā atdeve: {yld}.")
 
-    # AI investīciju naratīvs (iepin ēkas+skaitļus+aģenta faktus). Fallback uz
-    # aģenta aprakstu, ja AI neizdevās (lai teksts nepaliek bez prozas).
-    summary = _clean(result.get("asset_summary"))
-    if not summary:
-        summary = _clean(row_data.get("Agent_comment"))
-    if summary:
-        blocks.append(summary)
+    # Stratēģijas teikums — ŠABLONS (konkrēts teikums konkrētam gadījumam, kā
+    # zoning_sentence). NAV brīva AI proza. Izvēlas pēc ienākumiem + stratēģijas.
+    strat = str((result or {}).get("Investiciju_strategija")
+                or (result or {}).get("investment_strategy") or "").strip()
+    income = bool(_clean(row_data.get("investment_income")))
+    if income:
+        blocks.append("Īpašums ir ienākumus nesošs komercaktīvs ar esošu īres plūsmu.")
+    elif strat == "Distressed":
+        blocks.append("Īpašums ir attīstāms komercaktīvs, kam tā potenciāla realizēšanai nepieciešami ieguldījumi.")
+    else:  # Value-Add / Core / nezināms bez ienākumiem
+        blocks.append("Īpašums ir daudzfunkcionāls komercaktīvs bez esošas ienākumu plūsmas, ar tūlītēju izmantošanas un attīstības potenciālu.")
+
+    # Aģenta apraksts — VERBATIM (aģenta konkrētie fakti, ne AI proza).
+    ac = _clean(row_data.get("Agent_comment"))
+    if ac:
+        blocks.append(ac)
 
     return "\n\n".join(blocks)
 
