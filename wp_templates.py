@@ -503,13 +503,12 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # apraksta (land_description, ko salika zemes AI ceļš). NElaižam zemi caur
     # komerc-teksta ģeneratoru (telpas/stāvi/griesti/nosacījumi tai nav). ──
     if sg == "Zeme":
-        zg = _num(L.get("Zemes_gabals_m2")) or _num(L.get("area_m2"))
+        # Virsraksts TIKAI "Pārdod/Iznomā zemes gabalu [rajonā]" — BEZ m²
+        # (Raimonds 2026-07-05: platība tikai aprakstā zemāk, ne virsrakstā).
         head_z = ("Pārdod" if sale else "Iznomā") + " zemes gabalu"
         dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
         if dist:
             head_z += " " + dist
-        if zg:
-            head_z += f" – {zg} m²"
         zhtml = [f"<p>{_b(head_z)}</p>"]
         desc = g("land_description")
         if desc:

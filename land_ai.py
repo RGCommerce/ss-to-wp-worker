@@ -173,6 +173,11 @@ def build_land_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> 
         parts.append(f" Uz gabala ir ēka (~{ba} m²)." if ba else " Uz gabala ir ēka.")
 
     extra = _clean(result.get("extra_info"))
+    # NEatkārto platību: AI reizēm ieliek extra_info tikai zemes platību
+    # ("Zemesgabala platība 4044 m²"), kas jau ir 1. teikumā → izlaiž.
+    # (Raimonds 2026-07-05.) Ja extra satur ko vairāk par platību — patur.
+    if extra and area and re.sub(r"[^0-9]", "", extra) == area and re.search(r"platīb|m²|m2", extra, re.I):
+        extra = ""
     if extra:
         parts.append(f" {extra.rstrip('.')}.")
 
