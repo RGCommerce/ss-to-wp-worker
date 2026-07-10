@@ -55,6 +55,7 @@ except Exception:
 # Local imports
 sys.path.insert(0, str(Path(__file__).parent))
 import download_images  # noqa: E402
+import watermark_check  # noqa: E402
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -153,6 +154,52 @@ def seedream_predict(image_url: str) -> str | None:
             return None
     print("      ! Seedream timeout")
     return None
+
+
+def _seedream_bytes(image_bytes: bytes, filename: str) -> bytes | None:
+    """Bilde (baiti) → Seedream → apstrādātās bildes baiti (vai None ja kļūda)."""
+    image_url = replicate_upload(image_bytes, filename)
+    out_url = seedream_predict(image_url)
+    if not out_url:
+        return None
+    r = requests.get(out_url, timeout=120, verify=_VERIFY)
+    r.raise_for_status()
+    return r.content
+
+
+def process_bytes_checked(image_bytes: bytes, filename: str) -> bytes | None:
+    """Seedream + ss.com ūdenszīmes drošības pārbaude (watermark_check).
+
+    Ja pārbaude saka, ka ūdenszīme PALIKUSI (Seedream to reizēm uzzīmē no
+    jauna) — mēģina VĒLREIZ. Atgriež TĪRUS baitus vai None, ja neizdevās
+    dabūt tīru bildi. Pārbaudes kļūda (None) = fail-open (baitus atdod).
+    """
+    for attempt in (1, 2):
+        out = _seedream_bytes(image_bytes, filename)
+        if out is None:
+            return None
+        wm = watermark_check.has_watermark_bytes(out)
+        if wm is not True:
+            return out  # tīra vai pārbaude neizdevās (fail-open)
+        print(f"      ! ūdenszīme PALIKUSI pēc Seedream "
+              f"(mēģinājums {attempt}/2) — {filename}")
+    return None
+
+
+def clean_single_file(path: Path) -> bool:
+    """Notīra VIENU jau esošu ai_ready failu uz vietas (Seedream + pārbaude).
+    Lieto publish_to_wp drošības vārts, ja gatavā bildē pamanīta ūdenszīme
+    (piem., aģenta anketas bilde, kas nāk no ss.lv). Atgriež True = fails
+    pārrakstīts ar tīru versiju."""
+    try:
+        out = process_bytes_checked(path.read_bytes(), path.name)
+    except Exception as e:
+        print(f"      ! clean_single_file {path.name}: {str(e)[:160]}")
+        return False
+    if out is None:
+        return False
+    path.write_bytes(out)
+    return True
 
 
 # ---------- DB helpers ----------
@@ -283,16 +330,16 @@ def process_listing(conn, listing_id: int, force: bool = False, dry_run: bool = 
         try:
             with open(raw_path, "rb") as f:
                 image_bytes = f.read()
-            image_url = replicate_upload(image_bytes, filename)
-            out_url = seedream_predict(image_url)
-            if not out_url:
+            # Seedream + ūdenszīmes drošības pārbaude (retry, ja palikusi).
+            # Ja tīru bildi dabūt neizdodas — bilde NEnonāk processed sarakstā
+            # (labāk 1 bilde mazāk nekā ss.com logo uz mājaslapas).
+            out_bytes = process_bytes_checked(image_bytes, filename)
+            if out_bytes is None:
                 failed.append(filename)
                 continue
-            r = requests.get(out_url, timeout=120, verify=_VERIFY)
-            r.raise_for_status()
-            out_path.write_bytes(r.content)
+            out_path.write_bytes(out_bytes)
             processed_paths.append(relative_ai_path(listing_id, filename))
-            print(f"      OK {time.time() - t0:.1f}s | {len(r.content) // 1024} KB")
+            print(f"      OK {time.time() - t0:.1f}s | {len(out_bytes) // 1024} KB")
         except Exception as e:
             print(f"      ! ERROR: {str(e)[:200]}")
             failed.append(filename)

@@ -372,12 +372,18 @@ _SALE_PRICE_TYPES = {"regular", "pārdošana", "pardosana", "sale", "pārdod", "
 
 
 def _copy_listing_images_to_draft(listing_id: int, draft_id: int, target: str) -> list[dict]:
-    """Kopē listinga raw (vai ai_ready) bildes uz draft mapi → ImageRef[] paths,
-    lai dublētā telpa tās rāda kā parastas augšuplādētas bildes."""
+    """Kopē listinga bildes uz draft mapi → ImageRef[] paths, lai dublētā
+    telpa tās rāda kā parastas augšuplādētas bildes.
+
+    PRIORITĀTE ai_ready (TĪRAS, bez ss.com ūdenszīmes)! Agrāk kopēja raw →
+    ūdenszīmju bildes iegāja anketas draftā un no turienes TIEŠI uz WP
+    (agent_publish ai_ready kopē bez Seedream) — tā #109581 dzīvē nonāca
+    ss.com logo. raw = tikai fallback, ja ai_ready vēl nav; tad ūdenszīmi
+    pie publicēšanas noķer publish_to_wp _watermark_gate."""
     base = STORAGE_ROOT / "listings" / str(listing_id)
-    src_dir = base / "raw"
+    src_dir = base / "ai_ready"
     if not src_dir.is_dir():
-        src_dir = base / "ai_ready"
+        src_dir = base / "raw"
     if not src_dir.is_dir():
         return []
     dst = STORAGE_ROOT / "agent_drafts" / str(draft_id) / target

@@ -40,6 +40,7 @@ from wp_templates import _floor as _clean_floor, _trim_dec, _truthy  # stāvs/de
 import houzez_reverse_map as hrm
 import image_pipeline  # Zilās kastes AI bilžu skaistināšana (Seedream)
 import image_classify  # Bilžu klasifikators (fasade/plans/interjers/cits)
+import watermark_check  # ss.com ūdenszīmes drošības pārbaude (gala vārts)
 import ai_text  # AI-ģenerēts apraksts (OpenAI), fallback uz wp_templates
 
 try:
@@ -248,6 +249,56 @@ def _image_paths(listing: dict) -> list[Path]:
         return []
     paths = [STORAGE_ROOT / r for r in rel]
     return [p for p in paths if p.is_file()]
+
+
+def _watermark_gate(listing_id: int, img_paths: list[Path]) -> bool:
+    """GALA DROŠĪBAS VĀRTS: pirms augšuplādes pārbauda VISAS publicējamās
+    bildes ar watermark_check (gpt-4o-mini, kešots — atkārtots publish = $0).
+
+    ss.com ūdenszīme var būt palikusi 2 ceļos: (a) Seedream to nenoņēma,
+    (b) aģenta anketas bilde no ss.lv nonāca ai_ready BEZ Seedream
+    (agent_publish kopē tieši; duplicate-listing agrāk kopēja pat raw).
+
+    Atrastās mēģina notīrīt uz vietas (image_pipeline.clean_single_file =
+    Seedream + atkārtota pārbaude). Ja tīru dabūt neizdodas → SystemExit —
+    publicēšana ATCELTA (redzams wp_export_queue error panelī).
+    Pārbaudes kļūda (None, piem. nav OPENAI_API_KEY) = fail-open ar warning.
+
+    Atgriež True, ja kāds fails tika pārrakstīts → izsaucējam jāpiespiež
+    bilžu RE-UPLOAD (citādi WP paliktu vecie, netīrītie attachment).
+    """
+    if not img_paths:
+        return False
+    cache_dir = STORAGE_ROOT / "listings" / str(listing_id)
+    verdicts = watermark_check.check_files(cache_dir, img_paths)
+    dirty = [p for p in img_paths if verdicts.get(p.name) is True]
+    unknown = [p.name for p in img_paths if verdicts.get(p.name) is None]
+    if unknown:
+        print(f"  ! ūdenszīmes pārbaude neizdevās {len(unknown)} bildēm "
+              f"({', '.join(unknown[:5])}) — laižam cauri (fail-open)")
+    if not dirty:
+        return False
+
+    print(f"  !! ss.com ŪDENSZĪME atrasta {len(dirty)} publicējamās bildēs: "
+          f"{[p.name for p in dirty]} — tīru ar Seedream...")
+    for p in dirty:
+        if not image_pipeline.clean_single_file(p):
+            raise SystemExit(
+                f"ATCELTS: listing {listing_id} bildē {p.name} ir ss.com "
+                f"ūdenszīme, un to neizdevās notīrīt (Seedream). "
+                f"ss.com ūdenszīmes uz WP ir AIZLIEGTAS — izlabo bildi "
+                f"manuāli (panelī nomaini/izdzēs) un publicē vēlreiz."
+            )
+        # clean_single_file pārrakstīja failu (cits izmērs) → keša atslēga
+        # vairs nesakrīt → pārbaudam vēlreiz svaigi.
+        recheck = watermark_check.check_files(cache_dir, [p])
+        if recheck.get(p.name) is True:
+            raise SystemExit(
+                f"ATCELTS: listing {listing_id} bildē {p.name} ss.com "
+                f"ūdenszīme PALIKUSI arī pēc tīrīšanas. Izlabo bildi manuāli."
+            )
+        print(f"    ✓ {p.name} notīrīta (Seedream) un pārbaudīta")
+    return True
 
 
 # Bilžu secības prioritātes (task #16): mazāks skaitlis = augstāka galerijā
@@ -517,6 +568,13 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         existing_att = listing.get("wp_attachment_ids") or []
         existing_plan_att = listing.get("wp_floor_plan_attachment_ids") or []
         img_paths = _image_paths(listing)
+
+        # GALA DROŠĪBAS VĀRTS: neviena bilde ar ss.com ūdenszīmi uz WP.
+        # Kešots (atkārtots publish = $0). Ja kāda tika notīrīta uz vietas →
+        # force bilžu re-upload (WP paliktu vecie attachment ar ūdenszīmi).
+        if not dry_run:
+            if _watermark_gate(listing_id, img_paths):
+                force = True
 
         # Task #16: klasificē raw bildes un sadali galerijas / plānos.
         # ensure_classified ir KEŠOTS — atkārtota palaišana = $0.
