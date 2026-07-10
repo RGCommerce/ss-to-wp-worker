@@ -39,6 +39,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent))
 import agent_publish  # noqa: E402
 import image_enhance_openai  # noqa: E402
+import image_classify  # noqa: E402  (manifesta I/O — plāns/fasāde)
+import watermark_check  # noqa: E402  (ss.com pārbaude pēc in-place enhance)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(Path(__file__).parent / "storage")))
@@ -574,15 +576,22 @@ def draft_image_proxy(
 # 8) REPUBLISH — esoša listing-a (ne agent_anketa) publicēšana uz WP
 # ---------------------------------------------------------------------------
 
+class RepublishReq(BaseModel):
+    force: bool = False  # True → pāraugšuplādē bildes (pēc in-place enhance)
+
+
 @router.post("/republish/{listing_id}")
-def republish(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+def republish(listing_id: int, req: Optional[RepublishReq] = None,
+              _auth: None = Depends(require_token)) -> dict:
     """Izsauc publish_to_wp.publish() priekš jau eksistējoša listing-a (kas
     DB-ā ir, bet wp_post_id=NULL). Lieto, kad aģents anketā autocomplete
     ielādē esošu building_profile ar sslv-listings un grib tos arī uzlikt
-    uz WP bez datu pārievades."""
+    uz WP bez datu pārievades. force=True → bilžu re-upload (bilžu editors
+    pēc in-place enhance, lai WP dabū jauno bildes saturu, ne veco cache)."""
     import publish_to_wp
+    force = bool(req.force) if req else False
     try:
-        publish_to_wp.publish(listing_id, dry_run=False, force=False, skip_ai=False)
+        publish_to_wp.publish(listing_id, dry_run=False, force=force, skip_ai=False)
     except SystemExit as e:
         return {"wp_post_id": None, "warning": str(e)[:300]}
     except Exception as e:
@@ -597,6 +606,169 @@ def republish(listing_id: int, _auth: None = Depends(require_token)) -> dict:
         "wp_post_id": wp_post_id,
         "url": (f"https://rgcommerce.lv/?p={wp_post_id}" if wp_post_id else None),
     }
+
+
+# ---------------------------------------------------------------------------
+# 9) LISTINGA BILŽU EDITORS (Broker Panel) — in-place AI enhance + manifests
+#    (galvenā bilde / plāns). Operē ar DZĪVĀ listinga ai_ready mapi + manifestu
+#    /storage/listings/<id>/_image_manifest.json. Panelis pēc tam republicē.
+# ---------------------------------------------------------------------------
+
+_EDITOR_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _ai_ready_files(listing_id: int) -> list[Path]:
+    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
+    if not ai_dir.is_dir():
+        return []
+    return sorted(p for p in ai_dir.glob("img_*.*")
+                  if p.suffix.lower() in _EDITOR_IMG_EXTS)
+
+
+def _manifest_map(listing_id: int) -> dict[str, str]:
+    """Atgriež {filename: type} VISĀM ai_ready bildēm. Manifestā trūkstošajām
+    liek default (pirmā = fasade, pārējās = interjers) — spoguļo agent_publish
+    _write_image_manifest, lai galvenā bilde ir noteikta arī bez manifesta."""
+    files = _ai_ready_files(listing_id)
+    existing = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+    out: dict[str, str] = {}
+    for i, p in enumerate(files):
+        info = existing.get(p.name) if isinstance(existing, dict) else None
+        t = (info or {}).get("type") if isinstance(info, dict) else None
+        if t not in ("fasade", "interjers", "plans", "cits"):
+            t = "fasade" if i == 0 else "interjers"
+        out[p.name] = t
+    return out
+
+
+def _write_manifest_map(listing_id: int, types: dict[str, str]) -> None:
+    """Saglabā {filename: type} manifestā (wrapped {"images": {...}} formātā,
+    ko lasa image_classify.load_manifest un publish_to_wp._split_by_manifest).
+    Saglabā esošo quality/reason, ja bija."""
+    existing = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+    images: dict[str, dict] = {}
+    for name, t in types.items():
+        prev = existing.get(name) if isinstance(existing, dict) else None
+        prev = prev if isinstance(prev, dict) else {}
+        images[name] = {**prev, "type": t,
+                        "quality": prev.get("quality", "good_for_website"),
+                        "filename": name}
+    image_classify.save_manifest(STORAGE_ROOT, listing_id, images)
+
+
+def _featured_of(types: dict[str, str]) -> Optional[str]:
+    """Galvenā bilde = pirmā fasade (kā publish_to_wp._split_by_manifest sorto);
+    ja fasade nav — pirmā ne-plāna bilde."""
+    for name, t in types.items():
+        if t == "fasade":
+            return name
+    for name, t in types.items():
+        if t != "plans":
+            return name
+    return None
+
+
+@router.get("/listing-manifest/{listing_id}")
+def listing_manifest(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    """Bilžu editora sākumstāvoklis: katras ai_ready bildes tips + galvenā."""
+    types = _manifest_map(listing_id)
+    return {
+        "images": types,
+        "featured": _featured_of(types),
+        "plans": [n for n, t in types.items() if t == "plans"],
+    }
+
+
+class ClassifyReq(BaseModel):
+    op: str            # "featured" | "plan"
+    filename: str      # ai_ready bildes fails (img_...)
+    on: bool = True    # plan: True=atzīmē, False=noņem
+
+
+@router.post("/listing-image-classify/{listing_id}")
+def listing_image_classify(listing_id: int, req: ClassifyReq,
+                           _auth: None = Depends(require_token)) -> dict:
+    """Atzīmē galveno bildi (featured→fasade, pārējās ne-plāni→interjers) vai
+    plānu (type=plans / atpakaļ interjers). Raksta manifestu; publicēšanu
+    (republish) izsauc panelis, lai izmaiņa uzreiz aiziet mājaslapā."""
+    types = _manifest_map(listing_id)
+    if req.filename not in types:
+        raise HTTPException(404, f"Bilde nav ai_ready: {req.filename}")
+
+    if req.op == "featured":
+        # Tieši viena fasade → tā kļūst galvenā (sorto pirmā). Pārējās, kas nav
+        # plāni, → interjers. Plānus neaiztiek.
+        for name in types:
+            if name == req.filename:
+                types[name] = "fasade"
+            elif types[name] != "plans":
+                types[name] = "interjers"
+    elif req.op == "plan":
+        types[req.filename] = "plans" if req.on else "interjers"
+    else:
+        raise HTTPException(400, f"Nezināma op: {req.op}")
+
+    _write_manifest_map(listing_id, types)
+    return {
+        "ok": True,
+        "images": types,
+        "featured": _featured_of(types),
+        "plans": [n for n, t in types.items() if t == "plans"],
+    }
+
+
+class EditorEnhanceReq(BaseModel):
+    filename: str                 # ai_ready bildes fails
+    engine: str = "replicate"     # replicate (lētais) | openai (dārgais)
+    quality: str = "medium"       # tikai openai
+
+
+@router.post("/listing-image-enhance/{listing_id}")
+def listing_image_enhance(listing_id: int, req: EditorEnhanceReq,
+                          _auth: None = Depends(require_token)) -> dict:
+    """AI uzlabo VIENU dzīvā listinga ai_ready bildi UZ VIETAS (pārraksta to
+    pašu failu, lai DB ceļš/secība/manifests nemainās). Pēc tam ss.com
+    ūdenszīmes pārbaude. Panelis pēc tam republicē (force) → WP dabū jauno."""
+    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
+    src = ai_dir / req.filename
+    if req.filename.startswith(".") or "/" in req.filename \
+            or "\\" in req.filename or ".." in req.filename:
+        raise HTTPException(400, "Nederīgs filename")
+    if not src.is_file():
+        raise HTTPException(404, f"Bilde nav ai_ready: {req.filename}")
+
+    engine = (req.engine or "replicate").strip().lower()
+    tmp = src.with_name(src.stem + "__enh_tmp" + src.suffix)
+    try:
+        if engine == "openai":
+            image_enhance_openai.enhance_image(
+                src_path=src, dst_path=tmp, quality=req.quality)
+        else:
+            image_enhance_openai.enhance_image_replicate(
+                src_path=src, dst_path=tmp)
+    except Exception as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(500, f"AI uzlabošana neizdevās: {str(e)[:200]}")
+
+    # Drošība: ja AI dzinējs atstāja ss.com ūdenszīmi — neapstiprinām.
+    try:
+        wm = watermark_check.has_watermark_bytes(tmp.read_bytes())
+    except Exception:
+        wm = None
+    if wm is True:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(
+            422, "Pēc AI ūdenszīme joprojām redzama — mēģini otru dzinēju.")
+
+    # Pārraksta oriģinālo failu ar uzlaboto saturu (tas pats filename → DB nav
+    # jāmaina). Manifestā uzlabotā bilde vairs nav plāns pēc noklusējuma? Nē —
+    # tipu neaiztiekam, tikai saturu.
+    tmp.replace(src)
+    return {"ok": True, "filename": req.filename,
+            "size": src.stat().st_size, "engine": engine}
 
 
 @router.post("/publish")

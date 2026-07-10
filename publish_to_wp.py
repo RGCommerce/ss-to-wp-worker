@@ -586,6 +586,16 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
             print(f"  ! klasifikators izlaists ({e}) — visi gallery")
         except Exception as e:
             print(f"  ! klasifikators kļūda ({e!s:.120}) — visi gallery")
+        # Bilžu editors (Broker Panel) raksta ai_ready manifestu TIEŠI (galvenā
+        # bilde=fasade / plāns=plans). Tas ir autoritāte — merdžējam pa virsu
+        # raw-klasifikatoram (kešs var būt keyed pēc raw failiem; editora izmaiņa
+        # jāsaglabā arī ja raw mapes vairs nav).
+        try:
+            disk = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+            if isinstance(disk, dict) and disk:
+                manifest = {**manifest, **disk}
+        except Exception:
+            pass
         gallery_paths, plan_paths = _split_by_manifest(img_paths, manifest)
 
         print(f"=== Listing {listing_id} → WP publish ===")
