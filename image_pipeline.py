@@ -239,6 +239,20 @@ def raw_dir(listing_id: int) -> Path:
     return STORAGE_ROOT / "listings" / str(listing_id) / "raw"
 
 
+# Raw bilžu paplašinājumi: ss.lv lejupielādes ir .jpg, bet paneļa manuālās
+# augšupielādes (listing-file-write) var būt .jpeg/.png/.webp un img_user_*
+# vārdi. Agrāk glob "img_*.jpg" tās KLUSI izlaida → pipeline apstrādāja tikai
+# vecās ss.lv bildes (Raiskuma ziemas-bilžu gadījums).
+_RAW_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _raw_files_local(out_dir: Path) -> list[Path]:
+    if not out_dir.exists():
+        return []
+    return sorted(p for p in out_dir.glob("img_*.*")
+                  if p.suffix.lower() in _RAW_EXTS)
+
+
 def relative_ai_path(listing_id: int, filename: str) -> str:
     return f"listings/{listing_id}/ai_ready/{filename}"
 
@@ -251,8 +265,8 @@ def ensure_raw_local(conn, listing: dict) -> list[Path]:
     listing_id = listing["id"]
     out_dir = raw_dir(listing_id)
 
-    # Skenē kas jau ir lokāli
-    existing = sorted(out_dir.glob("img_*.jpg")) if out_dir.exists() else []
+    # Skenē kas jau ir lokāli (visi bilžu paplašinājumi, ne tikai .jpg)
+    existing = _raw_files_local(out_dir)
 
     expected_count = 0
     if listing["jpg_field"]:
@@ -270,7 +284,7 @@ def ensure_raw_local(conn, listing: dict) -> list[Path]:
     print(f"    saved={len(result['saved_paths'])} missing={result['missing']}")
     # Reģistrē DB-ā arī raw paths
     download_images.update_listing_paths(conn, listing_id, result["saved_paths"])
-    return sorted(out_dir.glob("img_*.jpg"))
+    return _raw_files_local(out_dir)
 
 
 # ---------- Main pipeline ----------
