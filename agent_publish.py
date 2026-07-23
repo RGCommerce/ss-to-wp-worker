@@ -37,7 +37,9 @@ STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(Path(__file__).parent / "stora
 EASY_LOCKED_FIELDS = ["Space_group", "area_m2", "floor",
                       "price", "price_type", "price_per_m2", "Agent_comment",
                       # Izdevumi — aģents ievada; AI tos NEDRĪKST uzminēt (tukši → klusē)
-                      "Apsaimniekosanas_maksa", "Papildu_maksas"]
+                      "Apsaimniekosanas_maksa", "Papildu_maksas",
+                      # Cenā ietilpst — aģents atzīmē; AI to nezina
+                      "price_includes"]
 # NB: Cik_telpas / cik_WC TĪŠI nav fiksētajā sarakstā — tie tiek lockoti dinamiski
 # _insert_listing-ā TIKAI ja aģents pats tos ievada (citādi AI uzmin no bildēm).
 FULL_LOCKED_FIELDS = EASY_LOCKED_FIELDS + [
@@ -51,6 +53,18 @@ FULL_LOCKED_FIELDS = EASY_LOCKED_FIELDS + [
     "Pacelamie_varti_check", "Rampa_logistikai_check", "Auto_pacelajs_check",
     "Treifelis_Pacelajs", "Pacelamie_varti_count", "Rampa_logistikai_count",
 ]
+
+
+def _join_price_includes(v) -> str | None:
+    """UI sūta price_includes kā list (["Apsaimniekošana","Apkure"]); vecs drafts
+    var būt jau string. Atgriež komatatdalītu string vai None (tukšs → NULL)."""
+    if v is None:
+        return None
+    if isinstance(v, (list, tuple)):
+        items = [str(x).strip() for x in v if str(x).strip()]
+        return ", ".join(items) if items else None
+    s = str(v).strip()
+    return s or None
 
 
 def _composite_key(street: str, city: str, area_m2: str, space_group: str) -> str:
@@ -372,6 +386,9 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         # Izdevumi — aģents ievada manuāli (AI tos nezina)
         "Apsaimniekosanas_maksa": uget("Apsaimniekosanas_maksa", "apsaimniekosanas_maksa"),
         "Papildu_maksas": uget("Papildu_maksas", "papildu_maksas"),
+        # Cenā ietilpst — aģents atzīmē čipus (UI sūta list, drafts var būt str).
+        # Glabā komatatdalītu LV labelu string; tukšs → NULL. wp_templates renderē.
+        "price_includes": _join_price_includes(uget("price_includes", "price_includes")),
     }
 
     # FULL režīma papildlauki — visi pieņem abus kapitalizācijas variantus

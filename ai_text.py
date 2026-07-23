@@ -40,7 +40,8 @@ _FIELDS = [
     "Rampa_logistikai_check", "Pacelamie_varti_check", "Auto_pacelajs_check",
     "Apsargajama_teritorija_check", "Nozogota_teritorija_check",
     "Sava_eka_check", "price", "price_type", "price_per_m2",
-    "Apsaimniekosanas_maksa", "Komunalie", "Papildu_maksas", "Agent_comment",
+    "Apsaimniekosanas_maksa", "Komunalie", "Papildu_maksas", "price_includes",
+    "Agent_comment",
 ]
 
 _MISSING = {"", "unknown", "nezināms", "nav", "none", "null", "n/a", "-",
@@ -69,7 +70,7 @@ _FORMAT = """Izveido aprakstu PRECĪZI šādā 3-daļu struktūrā (HTML):
 <p><strong>Par ēku:</strong></p>
 <p>{plūstošs apraksts par ēku — tips, klase, ēkas apraksts, apkure, ventilācija, elektrojauda, drošība/rampa/vārti, autostāvvieta}</p>
 <p><strong>Izmaksas:</strong></p>
-<p><strong>Noma mēnesī: {cena} EUR.</strong> <strong>Cena par m²: {m2cena} EUR/m².</strong> (un apsaimniekošana/komunālie, ja ir)</p>
+<p><strong>Noma mēnesī: {cena} EUR.</strong> <strong>Cena par m²: {m2cena} EUR/m².</strong> (un apsaimniekošana/komunālie, ja ir; ja price_includes dots — pievieno teikumu "Cenā ietilpst {saraksts mazajiem burtiem}.")</p>
 <p>Sazinieties ar mums, lai uzzinātu vairāk vai vienotos par apskati. 🏢</p>
 
 Noteikumi:
