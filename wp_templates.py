@@ -575,13 +575,11 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         head += f" – {area} m²"
     blocks.append(("B", head))
 
-    # PROJEKTA BRĪDINĀJUMS tūlīt zem virsraksta (Raimonds 2026-07-23).
+    # PROJEKTA BRĪDINĀJUMS tūlīt zem virsraksta (Raimonds 2026-07-23). Īss karogs;
+    # detalizētais "tiek būvētas ... gatavas {datums}" teikums iet Telpu plānojuma
+    # sadaļā (zemāk). "pabeigtas", ne "uzceltas" (Raimonds 2026-07-23).
     if proj:
-        if proj_date:
-            notice = f"Šīs telpas vēl nav uzceltas un būs gatavas {proj_date}."
-        else:
-            notice = "Šīs telpas vēl nav uzceltas — tās šobrīd top."
-        blocks.append(("B", notice))
+        blocks.append(("B", "Šīs telpas vēl nav pabeigtas."))
         # Vizualizācijas atruna — lai skatītājs saprot, ka bildes ir renderi.
         blocks.append(("P", "Attēlos redzamas telpu vizualizācijas — "
                             "tās atspoguļo plānoto izskatu pēc būvniecības pabeigšanas."))
@@ -680,7 +678,14 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     tech: list[str] = []
     cond = g("Space_condition")
     is_grey = cond == "Nepabeigts"   # pelēkā apdare → fit-out vēl nav, telpu var pielāgot
-    if cond and cond in _COND:
+    # PROJEKTS: stāvokļa vietā — "šobrīd tiek būvētas ... gatavas {datums}"
+    # (Raimonds 2026-07-23: projekta info Telpu plānojuma sadaļā).
+    if proj:
+        if proj_date:
+            tech.append(f"Telpas šobrīd tiek būvētas un būs pieejamas un gatavas {proj_date}.")
+        else:
+            tech.append("Telpas šobrīd tiek būvētas un būs drīzumā pieejamas.")
+    elif cond and cond in _COND:
         tech.append(_COND[cond])
     rooms = _num(L.get("Cik_telpas"))
     logi = _LOGI.get(g("Logu_type") or "")
