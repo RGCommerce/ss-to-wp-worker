@@ -39,7 +39,9 @@ EASY_LOCKED_FIELDS = ["Space_group", "area_m2", "floor",
                       # Izdevumi — aģents ievada; AI tos NEDRĪKST uzminēt (tukši → klusē)
                       "Apsaimniekosanas_maksa", "Papildu_maksas",
                       # Cenā ietilpst — aģents atzīmē; AI to nezina
-                      "price_includes"]
+                      "price_includes",
+                      # Projekts (telpas vēl nav uzceltas) + nodošanas datums — aģents atzīmē
+                      "is_project", "project_completion"]
 # NB: Cik_telpas / cik_WC TĪŠI nav fiksētajā sarakstā — tie tiek lockoti dinamiski
 # _insert_listing-ā TIKAI ja aģents pats tos ievada (citādi AI uzmin no bildēm).
 FULL_LOCKED_FIELDS = EASY_LOCKED_FIELDS + [
@@ -389,6 +391,10 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         # Cenā ietilpst — aģents atzīmē čipus (UI sūta list, drafts var būt str).
         # Glabā komatatdalītu LV labelu string; tukšs → NULL. wp_templates renderē.
         "price_includes": _join_price_includes(uget("price_includes", "price_includes")),
+        # Projekts — telpas vēl nav uzceltas (bildes = vizualizācijas) + nodošanas datums.
+        # UI sūta bool + str; teksts skan nākotnē, ja True.
+        "is_project": bool(unit.get("is_project")),
+        "project_completion": uget("project_completion", "project_completion"),
     }
 
     # FULL režīma papildlauki — visi pieņem abus kapitalizācijas variantus

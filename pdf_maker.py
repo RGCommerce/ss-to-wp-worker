@@ -254,6 +254,11 @@ def _facts(listing: dict, bp: dict) -> list[tuple[str, str]]:
     add("Papildu maksas", _clean(L.get("Papildu_maksas")))
     # #35: kas ietilpst cenā (aģenta atzīmēts) — komatatdalīts LV labelu string.
     add("Cenā ietilpst", _clean(L.get("price_includes")))
+    # #36: projekts — telpas vēl nav uzceltas (bildes = vizualizācijas).
+    if L.get("is_project"):
+        _pc = _clean(L.get("project_completion"))
+        add("Projekts", f"Telpas vēl nav uzceltas — būs gatavas {_pc}" if _pc
+            else "Telpas vēl nav uzceltas (vizualizācijas)")
 
     return out
 
