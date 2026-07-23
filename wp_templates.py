@@ -835,6 +835,15 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
                 extra.append(f"{label} {val}")
     if extra:
         cost.append("Papildus " + _join_lv(extra) + ".")
+    # #35 (Raimonds): "Cenā ietilpst ..." — aģents anketā/panelī atzīmē, kas iekļauts
+    # (apsaimniekošana/uzkopšana/apkure/ūdens/elektrība/autostāvvieta). Komatatdalīts
+    # LV labelu string; mazie burti teikumā. AI to nezina → tikai manuāls ievads.
+    # Raimonds 2026-07-23: liek TŪLĪT pēc "Papildus ..." rindas, pirms PVN.
+    incl = g("price_includes")
+    if incl and incl.strip():
+        parts = [p.strip().lower() for p in incl.split(",") if p.strip()]
+        if parts:
+            cost.append("Cenā ietilpst " + _join_lv(parts) + ".")
     # Citi maksājumi (brīvs teksts, anketā komatatdalīts) — sava rinda, katrs pēdiņās.
     # Raimonds 2026-06-07: "Citi maksājumi kā: „xxx 50 EUR/mēnesī", „yyy 49 EUR/mēnesī"."
     papildu = g("Papildu_maksas")
@@ -843,14 +852,6 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         if items:
             cost.append("Citi maksājumi kā: "
                         + ", ".join(f"„{it}”" for it in items) + ".")
-    # #35 (Raimonds): "Cenā ietilpst ..." — aģents anketā/panelī atzīmē, kas iekļauts
-    # (apsaimniekošana/uzkopšana/apkure/ūdens/elektrība/autostāvvieta). Komatatdalīts
-    # LV labelu string; mazie burti teikumā. AI to nezina → tikai manuāls ievads.
-    incl = g("price_includes")
-    if incl and incl.strip():
-        parts = [p.strip().lower() for p in incl.split(",") if p.strip()]
-        if parts:
-            cost.append("Cenā ietilpst " + _join_lv(parts) + ".")
     cost.append("Visām cenām pieskaitāms PVN.")
     # Katrs nosacījumu teikums savā rindā (Raimonds 2026-06-07) — <br>, ne atstarpe.
     blocks.append(("S", ("Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:", "<br>".join(cost))))
