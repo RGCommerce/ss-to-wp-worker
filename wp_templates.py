@@ -507,7 +507,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     proj = _truthy(L.get("is_project"))
     proj_date = _clean(L.get("project_completion"))
     # Verbs palīgs — nākotnē, ja projekts; citādi tagadnē.
-    fv = lambda present, future: (future if proj else present)
+    # NB: nosaukums _fut (NE fv) — 'fv' jau lieto grīdas materiālu kods zemāk
+    # (fv = "ieklāts"/"ieklātas"), kas to pārrakstītu ar string → 'str' not callable.
+    _fut = lambda present, future: (future if proj else present)
 
     # ── ZEME (Raimonds 2026-07) — atsevišķs, vienkāršs render no gatavā zemes
     # apraksta (land_description, ko salika zemes AI ceļš). NElaižam zemi caur
@@ -654,7 +656,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     # stāva teikums — projektā "atradīsies" (nākotnē).
     fn, base = _floor_n(L.get("floor"))
     own_entr = _truthy(L.get("Sava_ieeja_check"))
-    atr = fv("atrodas", "atradīsies")
+    atr = _fut("atrodas", "atradīsies")
     if base:
         intro.append(f"Telpas {atr} cokolstāvā, kas labi piemērots saimnieciskām un noliktavas vajadzībām.")
     elif fn == 1:
@@ -690,14 +692,14 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     rooms = _num(L.get("Cik_telpas"))
     logi = _LOGI.get(g("Logu_type") or "")
     ceil = _dec_lv(L.get("Griestu_augstums"))
-    kopa = fv("Kopā ir", "Kopā būs")
+    kopa = _fut("Kopā ir", "Kopā būs")
     if rooms:
         n = int(float(rooms))
         if is_grey and n == 1:
             # 1 telpa pelēkā apdarē = atvērts plānojums, ko var pielāgot (Raimonds 2026-06-08)
             tech.append(f"{kopa} 1 atvērtā plānojuma telpa (open space), kuru var pielāgot kā vēlaties.")
         elif n == 1 and sg in _LOGISTICS_GROUPS:
-            tech.append(fv("Šobrīd telpās ir viena plaša open space telpa.",
+            tech.append(_fut("Šobrīd telpās ir viena plaša open space telpa.",
                            "Telpās būs viena plaša open space telpa."))
         elif n == 1:
             tech.append(f"{kopa} 1 atsevišķa telpa.")
@@ -712,7 +714,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if ceil:
         ext.append(f"{ceil} m augstiem griestiem")
     if ext:
-        tech.append(fv("Telpas ir ar ", "Telpas būs ar ") + _join_lv(ext) + ".")
+        tech.append(_fut("Telpas ir ar ", "Telpas būs ar ") + _join_lv(ext) + ".")
     # iekšā: virtuve, WC, balkons, izlietne. Pelēkā apdarē fit-out lietas (virtuve,
     # sanitārie mezgli, izlietne) VĒL nav ierīkotas → "iespēja aprīkot ..." (akuzatīvs),
     # nevis "Tajā ir aprīkota virtuve" (būtu nepatiesi). Balkons = strukturāls → paliek.
@@ -736,7 +738,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if _truthy(L.get("Ir_izlietne_telpa_check")):
         (fitout if is_grey else inside).append("izlietni" if is_grey else "sava izlietne")
     pron = "Tajā" if (rooms and int(float(rooms)) == 1) else "Tajās"
-    ir_bus = fv("ir", "būs")
+    ir_bus = _fut("ir", "būs")
     if fitout:
         tech.append(f"{pron} {ir_bus} iespēja aprīkot " + _join_lv(fitout) + ".")
     if inside:
@@ -825,7 +827,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         bld.append((park + " darbiniekiem un klientiem") if "autostāvvieta" in park else park)
     if real_amen >= 1 and bld:
         blocks.append(("S", ("Priekšrocības:",
-                             fv("Ēkā ir ", "Ēkā būs ") + _join_lv(bld) + ".")))
+                             _fut("Ēkā ir ", "Ēkā būs ") + _join_lv(bld) + ".")))
 
     # 5. NOSACĪJUMI
     ppm2 = g("price_per_m2")
