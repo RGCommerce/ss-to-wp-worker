@@ -1186,6 +1186,15 @@ Allowed values: "ir", "nav", "unknown"
 - If the text calls it fixed / guaranteed, append " (fiksēta)" to the value.
 - Copy as written. Do NOT compute yield from price and income yourself.
 - If there is no explicit yield in the text -> "" (empty string).
+- We deliberately do NOT compute a yield from price and income, because we cannot tell
+  whether the stated income is from full or only partial occupancy.
+
+### nomas_platiba_m2  (leased area, from text)
+- Extract ONLY if the text states how much area is currently leased / rented out
+  (e.g. "iznomāti 1200 m²", "daļēji iznomāts 500 m2", "leased 800 m²").
+- Copy the number as written (keep m²). Do NOT compute, do NOT infer from the total area,
+  do NOT assume full occupancy.
+- If the text does not state a leased area -> "" (empty string).
 
 NOTE: "der nomas tirgum" (fit for the rental market) is NOT a separate field — it is
 already captured by Investiciju_strategija (anything other than "Nav investīciju
@@ -1527,6 +1536,7 @@ JSON_SCHEMA = {
         },
         "investment_income": {"type": "string"},
         "investment_yield": {"type": "string"},
+        "nomas_platiba_m2": {"type": "string"},
         "Confidence": {"type": "string"},
         "Debug_status": {
             "type": "string",
@@ -1594,6 +1604,7 @@ JSON_SCHEMA = {
         "ir_nomnieki",
         "investment_income",
         "investment_yield",
+        "nomas_platiba_m2",
         "Confidence",
         "Debug_status",
         "Debug_note",
@@ -1648,6 +1659,7 @@ DEFAULT_OUTPUT = {
     "ir_nomnieki": "unknown",
     "investment_income": "",
     "investment_yield": "",
+    "nomas_platiba_m2": "",
     "Confidence": "0.00",
     "Debug_status": "lookup_failed",
     "Debug_note": "fallback",

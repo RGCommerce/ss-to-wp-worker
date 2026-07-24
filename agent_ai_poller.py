@@ -223,13 +223,13 @@ AI_OUTPUT_FIELDS = [
     "Pacelamie_varti_count", "Auto_pacelajs_check", "Sava_ieeja_check",
     "Ir_izlietne_telpa_check", "Sava_eka_check", "Nozogota_teritorija_check",
     "Zemes_gabals_m2", "Investiciju_strategija",
-    "ir_nomnieki", "investment_income", "investment_yield", "Confidence",
+    "ir_nomnieki", "investment_income", "investment_yield", "nomas_platiba_m2", "Confidence",
 ]
 
 # Ekstrakcijas lauki (izvilkti TIKAI no teksta). Ja AI neatrada (tukšs/"unknown"),
 # tos NErakstām — lai re-analyze NEPĀRRAKSTA agrāk atrastu vai manuāli ievadītu
 # vērtību uz tukšu, kad jaunais avots (ss.lv teksts) pazudis (§5b partial-update).
-EXTRACTION_SKIP_IF_EMPTY = {"ir_nomnieki", "investment_income", "investment_yield"}
+EXTRACTION_SKIP_IF_EMPTY = {"ir_nomnieki", "investment_income", "investment_yield", "nomas_platiba_m2"}
 
 
 def _update_listing_with_ai(
