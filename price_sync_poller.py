@@ -83,6 +83,20 @@ def _num(v) -> Optional[int]:
         return None
 
 
+def _area_num(v) -> Optional[float]:
+    """Platības teksts ('27', '27.5', '27 m²') → float. None, ja nav cipara.
+    NB: NE _num (tas '27.5' pārvērstu par 275) — platībai jāsaglabā decimāldaļa."""
+    if v is None:
+        return None
+    cleaned = re.sub(r"[^0-9.]", "", str(v))
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 # ---------- DB ----------
 
 def _fetch_diffs() -> list[dict]:
@@ -93,10 +107,11 @@ def _fetch_diffs() -> list[dict]:
         rows = conn.execute("""
             SELECT l.id, l.price AS l_price, l.price_type AS l_pt,
                    l.area_m2 AS area, l.on_website, l.wp_post_id,
-                   si.price AS s_price, si.price_type AS s_pt
+                   si.price AS s_price, si.price_type AS s_pt,
+                   si.area_m2 AS s_area
             FROM properties.listings l
             JOIN LATERAL (
-                SELECT price, price_type
+                SELECT price, price_type, area_m2
                 FROM properties.scrape_inbox si2
                 WHERE si2.link = l.link
                 ORDER BY si2.date_posted DESC NULLS LAST, si2.id DESC
@@ -129,6 +144,22 @@ def _fetch_diffs() -> list[dict]:
                 r["l_pt"], r["s_pt"],
             )
             continue
+        # Guard 4 (Raimonds 2026-07-24): PLATĪBA. ss.lv īpašnieks mēdz uz TĀ PAŠA
+        # URL vēlāk ielikt CITU telpu (cita platība). Tad cenu sinhronizēt būtu
+        # nepareizi (€/m² sanāktu aplams — sk. Duntes 23a: mūsu 50 m² vs ss.lv 27).
+        # Ja platība atšķiras >2 m² UN >5% → uzskatām, ka NAV tā pati telpa →
+        # cenu NESINHRONIZĒJAM (neko DB nemainām, viss pārējais paliek). Izlaišana
+        # neko neieraksta → nav loop (tāpat kā lēciena guard). ss.lv platība tukša/
+        # neparsējama → nevaram salīdzināt → sinhronizējam kā agrāk.
+        la, sa = _area_num(r["area"]), _area_num(r["s_area"])
+        if la and sa and la > 0 and sa > 0:
+            hi_a, lo_a = max(la, sa), min(la, sa)
+            if (hi_a - lo_a) > 2 and hi_a / lo_a > 1.05:
+                logger.warning(
+                    "listing#%s platība mūsu %s ≠ ss.lv %s — cenu NESINHRONIZĒ "
+                    "(iespējams cita telpa uz tā paša URL)", r["id"], la, sa,
+                )
+                continue
         r["_new_price"] = sp
         out.append(r)
     return out
