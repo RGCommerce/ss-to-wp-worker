@@ -222,8 +222,14 @@ AI_OUTPUT_FIELDS = [
     "Rampa_logistikai_check", "Rampa_logistikai_count", "Pacelamie_varti_check",
     "Pacelamie_varti_count", "Auto_pacelajs_check", "Sava_ieeja_check",
     "Ir_izlietne_telpa_check", "Sava_eka_check", "Nozogota_teritorija_check",
-    "Zemes_gabals_m2", "Investiciju_strategija", "Confidence",
+    "Zemes_gabals_m2", "Investiciju_strategija",
+    "ir_nomnieki", "investment_income", "investment_yield", "Confidence",
 ]
+
+# Ekstrakcijas lauki (izvilkti TIKAI no teksta). Ja AI neatrada (tukšs/"unknown"),
+# tos NErakstām — lai re-analyze NEPĀRRAKSTA agrāk atrastu vai manuāli ievadītu
+# vērtību uz tukšu, kad jaunais avots (ss.lv teksts) pazudis (§5b partial-update).
+EXTRACTION_SKIP_IF_EMPTY = {"ir_nomnieki", "investment_income", "investment_yield"}
 
 
 def _update_listing_with_ai(
@@ -248,6 +254,8 @@ def _update_listing_with_ai(
         if k not in ai_result:
             continue
         v = ai_result[k]
+        if k in EXTRACTION_SKIP_IF_EMPTY and str(v).strip().lower() in ("", "unknown"):
+            continue  # neuzstādām uz tukšu — saglabā agrāko/manuālo vērtību (§5b)
         if k == "Potential_space_group" and str(v) == "unknown":
             v = None
         updates[k] = v

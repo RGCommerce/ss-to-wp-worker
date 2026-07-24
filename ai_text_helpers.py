@@ -1153,6 +1153,44 @@ Additional logic:
 - if the building itself is high-quality and professionally commercial, prefer Core/Core+
 - if the advertised unit is inside a premium office complex / business center, judge by the building/complex, not only by one small room
 - if the space is inside a residential / mixed-use non-investment-style building and functions more like a user premises than institutional asset, prefer Nav investīciju objekts or Value-Add
+
+## NOMAS / IENĀKUMU EKSTRAKCIJA (TEXT-ONLY, STRICT)
+
+These three fields are extracted STRICTLY from the listing TEXT (and any agent notes),
+NEVER from photos and NEVER computed. A photo cannot prove that a lease exists or that
+a number is true. If the text does not clearly state it, return the empty / unknown
+value. Do NOT guess, do NOT infer from the price, do NOT estimate.
+
+### ir_nomnieki  (are there existing tenants)
+Allowed values: "ir", "nav", "unknown"
+- "ir"  = the text CLEARLY states the property is currently leased / has an existing
+  tenant (e.g. "iznomāts", "izīrēts", "ar esošu nomnieku", "spēkā esošs nomas līgums",
+  "ar īrniekiem", "tenant in place").
+- "nav" = the text CLEARLY states it is vacant / free / without tenants
+  (e.g. "brīvs", "tukšs", "bez nomniekiem", "atbrīvots").
+- "unknown" = the text says nothing clear about tenancy. This is the DEFAULT and the
+  common case — most listings will be "unknown".
+- Do NOT derive "ir" from the mere existence of a rental price. A "for rent" ad or an
+  asking price is NOT proof of an existing tenant.
+
+### investment_income  (existing rental income, from text)
+- Extract ONLY if the text states a concrete rental income figure
+  (e.g. "īres ienākumi 2000 EUR/mēnesī", "nomas maksa 1500 EUR").
+- Copy the figure as written (keep the currency / period). Do NOT convert or compute.
+- If there is no explicit income figure in the text -> "" (empty string).
+- Never derive income from the sale price or the area.
+
+### investment_yield  (yield / return %, from text)
+- Extract ONLY if the text states a yield / return percentage
+  (e.g. "atdeve 7%", "yield 8%", "ROI 6%", "fiksēta atdeve 6.5%").
+- If the text calls it fixed / guaranteed, append " (fiksēta)" to the value.
+- Copy as written. Do NOT compute yield from price and income yourself.
+- If there is no explicit yield in the text -> "" (empty string).
+
+NOTE: "der nomas tirgum" (fit for the rental market) is NOT a separate field — it is
+already captured by Investiciju_strategija (anything other than "Nav investīciju
+objekts" means a rentable commercial asset).
+
 ## Confidence
 Return a string between 0.00 and 1.00
 
@@ -1483,6 +1521,12 @@ JSON_SCHEMA = {
             "type": "string",
             "enum": ["Core/Core+", "Value-Add", "Distressed", "Nav investīciju objekts", "unknown"]
         },
+        "ir_nomnieki": {
+            "type": "string",
+            "enum": ["ir", "nav", "unknown"]
+        },
+        "investment_income": {"type": "string"},
+        "investment_yield": {"type": "string"},
         "Confidence": {"type": "string"},
         "Debug_status": {
             "type": "string",
@@ -1547,6 +1591,9 @@ JSON_SCHEMA = {
         "Has_conference_room",
         "Zemes_gabals_m2",
         "Investiciju_strategija",
+        "ir_nomnieki",
+        "investment_income",
+        "investment_yield",
         "Confidence",
         "Debug_status",
         "Debug_note",
@@ -1598,6 +1645,9 @@ DEFAULT_OUTPUT = {
     "Has_conference_room": "unknown",
     "Zemes_gabals_m2": "Nav minēts",
     "Investiciju_strategija": "unknown",
+    "ir_nomnieki": "unknown",
+    "investment_income": "",
+    "investment_yield": "",
     "Confidence": "0.00",
     "Debug_status": "lookup_failed",
     "Debug_note": "fallback",
