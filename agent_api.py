@@ -771,6 +771,104 @@ def listing_image_enhance(listing_id: int, req: EditorEnhanceReq,
             "size": src.stat().st_size, "engine": engine}
 
 
+class ListingImageCropReq(BaseModel):
+    filename: str                 # bildes fails folderī
+    folder: str = "ai_ready"      # raw | ai_ready | wp_raw
+    action: str = "crop"          # crop | restore | status
+    # Crop kaste [left, top, width, height] px — koordinātas PĒC exif-transpose
+    # + rotate (t.i., tādā orientācijā, kādā lietotājs bildi redz pārlūkā).
+    box: Optional[list[int]] = None
+    rotate: int = 0               # 0/90/180/270 grādi pulksteņrādītāja virzienā
+
+
+def _crop_backup_path(listing_id: int, folder: str, filename: str) -> Path:
+    """Oriģināla rezerves kopija pirms pirmā crop — lai «Atjaunot oriģinālu»
+    strādā arī pēc vairākiem secīgiem crop (backup taisa tikai vienreiz)."""
+    return (STORAGE_ROOT / "listings" / str(listing_id) / "edit_backup"
+            / f"{folder}__{filename}")
+
+
+@router.post("/listing-image-crop/{listing_id}")
+def listing_image_crop(listing_id: int, req: ListingImageCropReq,
+                       _auth: None = Depends(require_token)) -> dict:
+    """Apgriež (crop) / pagriež VIENU listinga bildi UZ VIETAS — jaunā bilde
+    aizvieto veco (tas pats filename → DB ceļš/secība/manifests nemainās, kā
+    enhance). Pirmajā reizē oriģinālu noliek edit_backup/ → action=restore to
+    atliek atpakaļ. action=status tikai pasaka, vai backup ir."""
+    if req.folder not in _EDIT_FOLDERS:
+        raise HTTPException(400, f"folder jābūt {_EDIT_FOLDERS}")
+    if req.filename.startswith(".") or "/" in req.filename \
+            or "\\" in req.filename or ".." in req.filename:
+        raise HTTPException(400, "Nederīgs filename")
+    src = STORAGE_ROOT / "listings" / str(listing_id) / req.folder / req.filename
+    backup = _crop_backup_path(listing_id, req.folder, req.filename)
+
+    if req.action == "status":
+        return {"ok": True, "has_backup": backup.is_file()}
+
+    if req.action == "restore":
+        if not backup.is_file():
+            raise HTTPException(404, "Nav saglabāta oriģināla, ko atjaunot")
+        shutil.copyfile(backup, src)  # backup paliek — var atjaunot atkārtoti
+        return {"ok": True, "restored": True, "filename": req.filename}
+
+    if req.action != "crop":
+        raise HTTPException(400, f"Nezināma action: {req.action}")
+    if not src.is_file():
+        raise HTTPException(404, f"Bilde nav atrasta: {req.folder}/{req.filename}")
+    rotate = req.rotate % 360
+    if rotate not in {0, 90, 180, 270}:
+        raise HTTPException(400, "rotate jābūt 0/90/180/270")
+    if req.box is None and rotate == 0:
+        raise HTTPException(400, "Nav ne crop kastes, ne rotācijas")
+
+    from PIL import Image, ImageOps  # lokāli — neaiztur worker startu
+
+    try:
+        img = Image.open(src)
+        img = ImageOps.exif_transpose(img)  # pārlūks rāda transposed — sakrītam
+        if rotate:
+            img = img.rotate(-rotate, expand=True)  # PIL + = CCW, mums CW
+        if req.box is not None:
+            if len(req.box) != 4:
+                raise HTTPException(400, "box jābūt [left, top, width, height]")
+            left, top, w, h = (int(v) for v in req.box)
+            if w < 20 or h < 20:
+                raise HTTPException(400, "Crop kaste par mazu (min 20px)")
+            if left < 0 or top < 0 or left + w > img.width or top + h > img.height:
+                raise HTTPException(
+                    400, f"Crop kaste ārpus bildes ({img.width}x{img.height})")
+            img = img.crop((left, top, left + w, top + h))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Bildes apstrāde neizdevās: {str(e)[:200]}")
+
+    # Backup TIKAI pirmajā reizē — tas vienmēr ir īstais oriģināls.
+    if not backup.is_file():
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, backup)
+
+    ext = src.suffix.lower()
+    tmp = src.with_name(src.stem + "__crop_tmp" + src.suffix)
+    try:
+        if ext in {".jpg", ".jpeg"}:
+            img.convert("RGB").save(tmp, "JPEG", quality=92)
+        else:
+            img.save(tmp)  # png/webp — formātu nosaka paplašinājums
+        tmp.replace(src)
+    except Exception as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(500, f"Saglabāšana neizdevās: {str(e)[:200]}")
+
+    return {"ok": True, "filename": req.filename, "width": img.width,
+            "height": img.height, "has_backup": True,
+            "size": src.stat().st_size}
+
+
 @router.post("/publish")
 def publish_anketa(req: PublishReq, _auth: None = Depends(require_token)) -> dict:
     """Galvenais endpoint:
