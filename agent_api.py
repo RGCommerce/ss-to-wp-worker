@@ -139,6 +139,48 @@ def autoload(bp_id: int, _auth: None = Depends(require_token)) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 2.5) TEKSTA BŪVĒTĀJS — sludinājuma teksts sadalīts pa teikumiem + dzīvs preview
+# ---------------------------------------------------------------------------
+
+class BodySegmentsReq(BaseModel):
+    # Draft papildinājumi (aģents vēl nav saglabājis) — preview lieto tos, DB neaiztiek.
+    segments: Optional[list[dict]] = None
+
+
+@router.post("/listing-body-segments/{listing_id}")
+def listing_body_segments(
+    listing_id: int,
+    req: Optional[BodySegmentsReq] = None,
+    _auth: None = Depends(require_token),
+) -> dict:
+    """Teksta būvētājam: atgriež ģenerētā sludinājuma pieliekamās sekcijas ar to
+    teikumiem (`sections`) + dzīvo preview HTML. Ja `segments` padots — preview lieto
+    tos (nesaglabā), citādi listinga saglabātos. Lokācija no building_profile (kā publish)."""
+    import wp_templates  # noqa: PLC0415
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM properties.listings WHERE id = %s", (listing_id,))
+        L = cur.fetchone()
+        if not L:
+            raise HTTPException(404, f"Listing {listing_id} nav atrasts")
+        bp = None
+        if L.get("building_profile_id"):
+            cur.execute("SELECT * FROM properties.building_profiles WHERE id = %s",
+                        (L["building_profile_id"],))
+            bp = cur.fetchone()
+    sg = (str(L.get("Space_group") or "")).strip()
+    Lp = dict(L)
+    if bp:
+        for loc in ("city", "district", "street"):
+            if bp.get(loc):
+                Lp[loc] = bp[loc]
+    sections = wp_templates.body_segments(sg, Lp, bp)
+    if req is not None and req.segments is not None:
+        Lp["Agent_text_segments"] = req.segments
+    preview_html = wp_templates.render_body(sg, Lp, bp)
+    return {"sections": sections, "preview_html": preview_html}
+
+
+# ---------------------------------------------------------------------------
 # 3) DRAFT SAVE / LOAD / DELETE — autosave priekš anketas state-a
 # ---------------------------------------------------------------------------
 
