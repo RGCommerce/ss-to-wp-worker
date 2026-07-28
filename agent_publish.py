@@ -96,6 +96,10 @@ _STREET_SUFFIXES = (
     "iela", "gatve", "bulvāris", "bulvaris", "prospekts", "šoseja", "soseja",
     "ceļš", "cels", "laukums", "aleja", "krastmala", "līnija", "linija",
     "tilts", "pasāža", "pasaza",
+    # Saīsinājumi — bez šiem "Aspazijas bulv. 20" → "Aspazijas bulv. iela 20"
+    # (atpazina tikai pilnos vārdus, ne "bulv."/"gat.").
+    "bulv.", "bulv", "gatv.", "gat.", "prosp.", "prosp", "šos.", "sos.",
+    "iel.", "lauk.", "al.", "līn.", "lin.", "krastm.",
 )
 
 
