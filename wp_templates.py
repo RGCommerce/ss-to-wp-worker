@@ -23,6 +23,7 @@ Lietošana:
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from typing import Optional
@@ -484,7 +485,112 @@ def _street_locative(s) -> str:
 
 
 # ─── Galvenais: render_body ────────────────────────────────────────────────
-def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> str:
+# ─── TEKSTA BŪVĒTĀJS (Raimonds 2026-07-28) ──────────────────────────────────
+# Per-teikuma manuālie papildinājumi (listings.Agent_text_segments JSONB). Aģents
+# panelī pieraksta tekstu pie konkrēta teikuma; šablons to ievij TIEŠI aiz tā.
+# NEKAD nezaudē: ja teikums pazūd (dati mainīti) → papildinājums krīt daļas beigās;
+# ja visa daļa pazūd → <p> pirms cenas. Sekciju id: eka/telpa/priek/cena.
+# Darbība = $0 (deterministisks, bez AI). render_body no-segmentu ceļš NEMAINĀS.
+_SECTION_LABELS = {
+    "eka": "Par ēku", "telpa": "Par telpu",
+    "priek": "Priekšrocības", "cena": "Par cenu",
+}
+
+
+def _norm_sent(s) -> str:
+    """Teikuma normalizācija anchor-salīdzināšanai (atstarpes/reģistrs/gala punkts)."""
+    s = re.sub(r"\s+", " ", str(s or "")).strip().lower()
+    return s.rstrip(".!?").strip()
+
+
+def _parse_segments(raw) -> list[dict]:
+    """listings.Agent_text_segments (JSONB vai JSON-string) → tīrs saraksts."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if isinstance(raw, dict):
+        raw = raw.get("segments") or raw.get("items") or []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        text = str(it.get("text") or "").strip()
+        if not text:
+            continue
+        si = it.get("sent_index")
+        out.append({
+            "section": str(it.get("section") or "").strip(),
+            "anchor_text": str(it.get("anchor_text") or "").strip(),
+            "position": str(it.get("position") or "after").strip().lower(),
+            "sent_index": si if isinstance(si, int) else None,
+            "text": text.replace("\n", "<br>"),
+        })
+    return out
+
+
+def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
+    """Ievij papildinājumus _segs struktūrā (in-place). Nekad nezaudē tekstu."""
+    by_sid: dict[str, dict] = {}
+    for s in segs:
+        if s.get("sid"):
+            by_sid.setdefault(s["sid"], s)
+    orphans: list[str] = []
+    for seg in segments:
+        target = by_sid.get(seg["section"])
+        txt = seg["text"]
+        if target is None:
+            orphans.append(txt)
+            continue
+        sents = target["sents"]
+        idx = None
+        anchor = _norm_sent(seg["anchor_text"])
+        if anchor:
+            for i, s in enumerate(sents):
+                if _norm_sent(s) == anchor:
+                    idx = i
+                    break
+        if idx is None and seg["sent_index"] is not None \
+                and 0 <= seg["sent_index"] < len(sents):
+            idx = seg["sent_index"]
+        pos = seg["position"]
+        if idx is None:
+            if pos == "start" and not anchor:
+                sents.insert(0, txt)
+            else:
+                sents.append(txt)
+        else:
+            sents.insert(idx if pos == "before" else idx + 1, txt)
+    if orphans:
+        ci = next((i for i, s in enumerate(segs) if s.get("sid") == "cena"), len(segs))
+        for j, txt in enumerate(orphans):
+            segs.insert(ci + j, {"sid": None, "kind": "P", "heading": None,
+                                 "sep": " ", "sents": [txt]})
+
+
+def _render_from_segs(segs: list[dict]) -> str:
+    """_segs → HTML (tas pats formāts kā blocks-ceļā)."""
+    html: list[str] = []
+    for s in segs:
+        body = s["sep"].join(x for x in s["sents"] if x)
+        k = s["kind"]
+        if k == "B":
+            html.append(f"<p>{_b(body)}</p>")
+        elif k == "P":
+            if body:
+                html.append(f"<p>{body}</p>")
+        elif k == "S":
+            html.append(f"<p>{_b(s['heading'])}<br>{body}</p>")
+    return "".join(html)
+
+
+def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
+                *, _segments_out: Optional[list] = None) -> str:
     """Jaunais pilnu-teikumu teksts → HTML (<p>/<strong>/<br>).
 
     listing = properties.listings rinda (telpas līmeņa lauki).
@@ -499,6 +605,13 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     sale = _is_sale(L.get("price_type"))
     area = _num(L.get("area_m2"))
     blocks: list[tuple[str, object]] = []
+    # Teksta būvētāja paralēlā struktūra (per-teikuma papildinājumiem). Būvēta
+    # additīvi līdzās `blocks` — bez segmentiem to NElieto (byte-identical ceļš).
+    _segs: list[dict] = []
+
+    def _seg(sid, kind, sents, heading=None, sep=" "):
+        _segs.append({"sid": sid, "kind": kind, "heading": heading,
+                      "sep": sep, "sents": list(sents)})
 
     # #36 (Raimonds 2026-07-23): PROJEKTS — telpas vēl nav uzceltas (bildes =
     # vizualizācijas). Ja atzīmēts, teksts skan NĀKOTNĒ (būs, atradīsies) un zem
@@ -576,15 +689,19 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if area:
         head += f" – {area} m²"
     blocks.append(("B", head))
+    _seg("virsraksts", "B", [head])
 
     # PROJEKTA BRĪDINĀJUMS tūlīt zem virsraksta (Raimonds 2026-07-23). Īss karogs;
     # detalizētais "tiek būvētas ... gatavas {datums}" teikums iet Telpu plānojuma
     # sadaļā (zemāk). "pabeigtas", ne "uzceltas" (Raimonds 2026-07-23).
     if proj:
         blocks.append(("B", "Šīs telpas vēl nav pabeigtas."))
+        _seg(None, "B", ["Šīs telpas vēl nav pabeigtas."])
         # Vizualizācijas atruna — lai skatītājs saprot, ka bildes ir renderi.
-        blocks.append(("P", "Attēlos redzamas telpu vizualizācijas — "
-                            "tās atspoguļo plānoto izskatu pēc būvniecības pabeigšanas."))
+        _viz = ("Attēlos redzamas telpu vizualizācijas — "
+                "tās atspoguļo plānoto izskatu pēc būvniecības pabeigšanas.")
+        blocks.append(("P", _viz))
+        _seg(None, "P", [_viz])
 
     # 2. IEVADS — ēkas raksturs. BEZ "Iznomā {veids} {adrese}" atkārtojuma (jau virsrakstā).
     fy = _num(bp.get("bdg_year"))
@@ -675,6 +792,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
                 else "klusā un reprezentablā darba vidē")
         intro.append(f"Telpas {atr} {fn}. stāvā, {vide}.")
     blocks.append(("P", " ".join(intro)))
+    _seg("eka", "P", intro, sep=" ")
 
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
     tech: list[str] = []
@@ -810,6 +928,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             tech.append(f"Piemērotas arī {gen} vajadzībām.")
     if tech:
         blocks.append(("S", ("Telpu plānojums un tehniskais stāvoklis:", " ".join(tech))))
+        _seg("telpa", "S", tech, heading="Telpu plānojums un tehniskais stāvoklis:", sep=" ")
 
     # 4. PRIEKŠROCĪBAS (ēkas līmenis; slieksnis: ≥1 īsta iespēja)
     bld = []
@@ -836,8 +955,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if park:
         bld.append((park + " darbiniekiem un klientiem") if "autostāvvieta" in park else park)
     if real_amen >= 1 and bld:
-        blocks.append(("S", ("Priekšrocības:",
-                             _fut("Ēkā ir ", "Ēkā būs ") + _join_lv(bld) + ".")))
+        _priek_sent = _fut("Ēkā ir ", "Ēkā būs ") + _join_lv(bld) + "."
+        blocks.append(("S", ("Priekšrocības:", _priek_sent)))
+        _seg("priek", "S", [_priek_sent], heading="Priekšrocības:", sep=" ")
 
     # 4.5. PAPILDU TEKSTS (Raimonds 2026-07-28) — aģenta manuālais brīvteksts
     # (listings.Agent_text_extra, panelī "Papildu teksts sludinājumā"). Šablons to
@@ -849,7 +969,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
         for _para in extra_txt.split("\n\n"):
             _para = _para.strip()
             if _para:
-                blocks.append(("P", _para.replace("\n", "<br>")))
+                _para_html = _para.replace("\n", "<br>")
+                blocks.append(("P", _para_html))
+                _seg(None, "P", [_para_html])
 
     # 5. NOSACĪJUMI
     ppm2 = g("price_per_m2")
@@ -908,16 +1030,28 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
                         + ", ".join(f"„{it}”" for it in items) + ".")
     cost.append("Visām cenām pieskaitāms PVN.")
     # Katrs nosacījumu teikums savā rindā (Raimonds 2026-06-07) — <br>, ne atstarpe.
-    blocks.append(("S", ("Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:", "<br>".join(cost))))
+    _cena_head = "Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:"
+    blocks.append(("S", (_cena_head, "<br>".join(cost))))
+    _seg("cena", "S", cost, heading=_cena_head, sep="<br>")
 
     # 6. NOSLĒGUMS — projektā aicina rezervēt jau būvniecības stadijā.
     if proj:
-        blocks.append(("P", "Sazinieties ar mums, lai rezervētu telpas jau projekta "
-                            "stadijā un uzzinātu vairāk par nodošanas termiņiem. 🏗️"))
+        _closing = ("Sazinieties ar mums, lai rezervētu telpas jau projekta "
+                    "stadijā un uzzinātu vairāk par nodošanas termiņiem. 🏗️")
     else:
-        blocks.append(("P", "Sazinieties ar mums, lai uzzinātu vairāk vai vienotos par telpu apskati. 🏢"))
+        _closing = "Sazinieties ar mums, lai uzzinātu vairāk vai vienotos par telpu apskati. 🏢"
+    blocks.append(("P", _closing))
+    _seg(None, "P", [_closing])
 
-    # ── HTML ──
+    # ── Teksta būvētājs: atdod struktūru (body_segments) + ievij papildinājumus ──
+    if _segments_out is not None:
+        _segments_out.append(_segs)
+    segments = _parse_segments(L.get("Agent_text_segments"))
+    if segments:
+        _apply_segments(_segs, segments)
+        return _render_from_segs(_segs)
+
+    # ── HTML (no-segmentu ceļš — NEMAINĀS) ──
     html: list[str] = []
     for typ, val in blocks:
         if typ == "B":
@@ -929,6 +1063,27 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             head, body = val  # type: ignore
             html.append(f"<p>{_b(head)}<br>{body}</p>")
     return "".join(html)
+
+
+def body_segments(space_group: str, listing: dict,
+                  bp: Optional[dict] = None) -> list[dict]:
+    """Teksta būvētājam: ģenerētā teksta sekcijas ar teikumiem, KUR var pierakstīt.
+    Atgriež [{section, label, heading, sentences:[...]}] tikai pieliekamām daļām
+    (eka/telpa/priek/cena). Zeme/Investīciju objekts → tukšs (builder nepieejams)."""
+    out: list = []
+    render_body(space_group, listing, bp, _segments_out=out)
+    segs = out[0] if out else []
+    res: list[dict] = []
+    for s in segs:
+        sid = s.get("sid")
+        if sid in _SECTION_LABELS:
+            res.append({
+                "section": sid,
+                "label": _SECTION_LABELS[sid],
+                "heading": s.get("heading"),
+                "sentences": [x for x in s["sents"] if x],
+            })
+    return res
 
 
 # ─── SEO / excerpt / alt (nemainīti — lieto tdata ar district/city) ─────────
