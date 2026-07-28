@@ -702,7 +702,17 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
             tech.append(_fut("Šobrīd telpās ir viena plaša open space telpa.",
                            "Telpās būs viena plaša open space telpa."))
         elif n == 1:
-            tech.append(f"{kopa} 1 atsevišķa telpa.")
+            # 1 telpa ≠ "1 atsevišķa telpa" (Raimonds 2026-07-28) — tā ir viena
+            # liela open space telpa. Sadalīšanas piedēkli liekam tikai, ja nav
+            # tieši atzīmēts Dalama_telpa="Nē" (tad nemelojam).
+            base = _fut("Telpās ir viena liela open space telpa",
+                        "Telpās būs viena liela open space telpa")
+            # NB: tieši no L, ne g() — _clean 'nē' uzskata par tukšu (_MISSING).
+            dalama = str(L.get("Dalama_telpa") or "").strip().lower()
+            if dalama in ("nē", "ne"):
+                tech.append(base + ".")
+            else:
+                tech.append(base + ", ko pēc vajadzības var sadalīt.")
         else:
             tech.append(f"{kopa} {n} atsevišķas telpas.")
     # Logi + griesti = telpu VISPĀRĪGA īpašība, NE piesaistīta telpu skaitam.
@@ -828,6 +838,18 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None) -> s
     if real_amen >= 1 and bld:
         blocks.append(("S", ("Priekšrocības:",
                              _fut("Ēkā ir ", "Ēkā būs ") + _join_lv(bld) + ".")))
+
+    # 4.5. PAPILDU TEKSTS (Raimonds 2026-07-28) — aģenta manuālais brīvteksts
+    # (listings.Agent_text_extra, panelī "Papildu teksts sludinājumā"). Šablons to
+    # VIENMĒR iekļauj tieši kā ierakstīts — sava(s) rindkopa(s) pirms nosacījumiem.
+    # Tā aģents var pielikt savu info, kas pārdzīvo jebkuru auto-pārģenerēšanu
+    # (ēkas/AI izmaiņas), jo tas ir savs DB lauks, ne teksta labojums.
+    extra_txt = (g("Agent_text_extra") or "").strip()
+    if extra_txt:
+        for _para in extra_txt.split("\n\n"):
+            _para = _para.strip()
+            if _para:
+                blocks.append(("P", _para.replace("\n", "<br>")))
 
     # 5. NOSACĪJUMI
     ppm2 = g("price_per_m2")
