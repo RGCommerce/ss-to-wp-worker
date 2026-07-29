@@ -191,6 +191,38 @@ def test_orphan_never_lost():
     return ok
 
 
+def test_replace_sentence():
+    sg, L, bp = _office()
+    orig = "Kopā ir 4 atsevišķas telpas."
+    L1 = dict(L, Agent_text_segments=json.dumps([{
+        "section": "telpa", "anchor_text": orig, "position": "replace",
+        "text": "Telpās ir 4 gaišas darba telpas ar atsevišķu ieeju.",
+    }]))
+    html = render_body(sg, L1, dict(bp))
+    ok = True
+    ok &= _check("aizvieto teikumu (jaunais teksts ir)",
+                 "4 gaišas darba telpas ar atsevišķu ieeju." in html)
+    ok &= _check("oriģinālais teikums PAZUDIS", orig not in html)
+    # replace + append uz TO PAŠU teikumu: abi paliek (append aiz aizvietotā)
+    L2 = dict(L, Agent_text_segments=json.dumps([
+        {"section": "telpa", "anchor_text": orig, "position": "replace",
+         "text": "Telpās ir 4 darba telpas."},
+        {"section": "telpa", "anchor_text": orig, "position": "after",
+         "text": "Papildus ir noliktava 100 m²."},
+    ]))
+    html2 = render_body(sg, L2, dict(bp))
+    ok &= _check("replace + append kopā (aizvietots + pieraksts aiz tā)",
+                 "Telpās ir 4 darba telpas. Papildus ir noliktava 100 m²." in html2)
+    # aizvietojamais pazudis → teksts NEzūd (daļas beigās)
+    L3 = dict(L, Agent_text_segments=json.dumps([{
+        "section": "telpa", "anchor_text": "Šāda teikuma nav", "position": "replace",
+        "text": "AIZVIET-NEZUD.",
+    }]))
+    html3 = render_body(sg, L3, dict(bp))
+    ok &= _check("pazudis aizvietojamais → teksts NEzūd", "AIZVIET-NEZUD." in html3)
+    return ok
+
+
 if __name__ == "__main__":
     if "--dump" in sys.argv:
         dump()
@@ -201,6 +233,7 @@ if __name__ == "__main__":
             test_splice_after_sentence(),
             test_section_start_end(),
             test_orphan_never_lost(),
+            test_replace_sentence(),
         ]
         print("\n" + ("VISI ZAĻI ✓" if all(results)
                       else "!!! KĀDS TESTS KRITA"))

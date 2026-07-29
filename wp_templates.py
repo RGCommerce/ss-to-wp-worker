@@ -535,26 +535,40 @@ def _parse_segments(raw) -> list[dict]:
 
 
 def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
-    """Ievij papildinājumus _segs struktūrā (in-place). Nekad nezaudē tekstu."""
+    """Ievij papildinājumus _segs struktūrā (in-place). Nekad nezaudē tekstu.
+
+    Divi režīmi:
+      • ievietošana (after/before/start/end) — papildinājums blakus teikumam;
+      • aizvieto (replace) — aģenta teksts AIZVIETO ģenerēto teikumu.
+    Ievietošanas iet PIRMS aizvietošanas, lai append aiz teikuma saglabātos arī tad,
+    ja to pašu teikumu aizvieto (satura sakritība notiek pret oriģinālo teikumu)."""
     by_sid: dict[str, dict] = {}
     for s in segs:
         if s.get("sid"):
             by_sid.setdefault(s["sid"], s)
     orphans: list[str] = []
-    for seg in segments:
+
+    def _match(sents, anchor):
+        if not anchor:
+            return None
+        for i, s in enumerate(sents):
+            if _norm_sent(s) == anchor:
+                return i
+        return None
+
+    inserts = [s for s in segments if s["position"] != "replace"]
+    replaces = [s for s in segments if s["position"] == "replace"]
+
+    # 1. ievietošana (after/before/start/end)
+    for seg in inserts:
         target = by_sid.get(seg["section"])
         txt = seg["text"]
         if target is None:
             orphans.append(txt)
             continue
         sents = target["sents"]
-        idx = None
         anchor = _norm_sent(seg["anchor_text"])
-        if anchor:
-            for i, s in enumerate(sents):
-                if _norm_sent(s) == anchor:
-                    idx = i
-                    break
+        idx = _match(sents, anchor)
         if idx is None and seg["sent_index"] is not None \
                 and 0 <= seg["sent_index"] < len(sents):
             idx = seg["sent_index"]
@@ -566,6 +580,23 @@ def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
                 sents.append(txt)
         else:
             sents.insert(idx if pos == "before" else idx + 1, txt)
+
+    # 2. aizvietošana (replace) — TIKAI pēc precīzas satura sakritības (index-fallback
+    #    varētu aizvietot nepareizo teikumu). Ja oriģināls pazudis → teksts nezūd:
+    #    krīt daļas beigās (orphan), būvētājā parādās kā "atsaistīts".
+    for seg in replaces:
+        target = by_sid.get(seg["section"])
+        txt = seg["text"]
+        if target is None:
+            orphans.append(txt)
+            continue
+        sents = target["sents"]
+        idx = _match(sents, _norm_sent(seg["anchor_text"]))
+        if idx is not None:
+            sents[idx] = txt
+        else:
+            orphans.append(txt)
+
     if orphans:
         ci = next((i for i, s in enumerate(segs) if s.get("sid") == "cena"), len(segs))
         for j, txt in enumerate(orphans):
