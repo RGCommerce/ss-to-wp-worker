@@ -535,18 +535,23 @@ def _parse_segments(raw) -> list[dict]:
 
 
 def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
-    """Ievij papildinājumus _segs struktūrā (in-place). Nekad nezaudē tekstu.
+    """Ievij papildinājumus _segs struktūrā (in-place).
 
-    Divi režīmi:
-      • ievietošana (after/before/start/end) — papildinājums blakus teikumam;
-      • aizvieto (replace) — aģenta teksts AIZVIETO ģenerēto teikumu.
-    Ievietošanas iet PIRMS aizvietošanas, lai append aiz teikuma saglabātos arī tad,
+    Piesaistes modelis (Raimonds 2026-07-28):
+      • TEIKUMA līmenis (anchor_text != "") — pieraksts (after/before) vai aizvieto
+        (replace) piesaistīts KONKRĒTAM teikumam. Renderē TIKAI, ja tas teikums vēl
+        eksistē. Ja teikums pazudis/pārrakstīts (piem. noņem WC → WC teikuma nav) →
+        tekstu NErenderē (loģiski: lieta ir prom). Būvētājā parādās kā "atsaistīts"
+        (dati saglabāti — var piesaistīt no jauna vai izdzēst), tāpēc nezūd pavisam.
+      • SEKCIJAS līmenis (anchor_text == "") — sākuma/beigu pieraksts, nav piesaistīts
+        teikumam → renderē vienmēr (ja sekcija pazūd, krīt pirms cenas).
+    Ievietošana iet PIRMS aizvietošanas, lai append aiz teikuma saglabātos arī tad,
     ja to pašu teikumu aizvieto (satura sakritība notiek pret oriģinālo teikumu)."""
     by_sid: dict[str, dict] = {}
     for s in segs:
         if s.get("sid"):
             by_sid.setdefault(s["sid"], s)
-    orphans: list[str] = []
+    orphans: list[str] = []  # TIKAI sekcijas līmeņa info, kur sekcija pazudusi
 
     def _match(sents, anchor):
         if not anchor:
@@ -563,39 +568,33 @@ def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
     for seg in inserts:
         target = by_sid.get(seg["section"])
         txt = seg["text"]
-        if target is None:
-            orphans.append(txt)
-            continue
-        sents = target["sents"]
         anchor = _norm_sent(seg["anchor_text"])
-        idx = _match(sents, anchor)
-        if idx is None and seg["sent_index"] is not None \
-                and 0 <= seg["sent_index"] < len(sents):
-            idx = seg["sent_index"]
-        pos = seg["position"]
-        if idx is None:
-            if pos == "start" and not anchor:
-                sents.insert(0, txt)
+        if not anchor:
+            # SEKCIJAS līmenis — renderē vienmēr.
+            if target is None:
+                orphans.append(txt)            # sekcija pazudusi → pirms cenas
+            elif seg["position"] == "start":
+                target["sents"].insert(0, txt)
             else:
-                sents.append(txt)
-        else:
-            sents.insert(idx if pos == "before" else idx + 1, txt)
+                target["sents"].append(txt)
+            continue
+        # TEIKUMA līmenis — renderē tikai, ja teikums vēl ir.
+        if target is None:
+            continue                            # atsaistīts (sekcija prom) → nerenderē
+        idx = _match(target["sents"], anchor)
+        if idx is None:
+            continue                            # atsaistīts (teikums prom) → nerenderē
+        target["sents"].insert(idx if seg["position"] == "before" else idx + 1, txt)
 
-    # 2. aizvietošana (replace) — TIKAI pēc precīzas satura sakritības (index-fallback
-    #    varētu aizvietot nepareizo teikumu). Ja oriģināls pazudis → teksts nezūd:
-    #    krīt daļas beigās (orphan), būvētājā parādās kā "atsaistīts".
+    # 2. aizvietošana (replace) — TIKAI pēc precīzas satura sakritības. Ja aizvietojamais
+    #    teikums pazudis → NErenderē (atsaistīts), NE orphan (lieta ir prom).
     for seg in replaces:
         target = by_sid.get(seg["section"])
-        txt = seg["text"]
         if target is None:
-            orphans.append(txt)
             continue
-        sents = target["sents"]
-        idx = _match(sents, _norm_sent(seg["anchor_text"]))
+        idx = _match(target["sents"], _norm_sent(seg["anchor_text"]))
         if idx is not None:
-            sents[idx] = txt
-        else:
-            orphans.append(txt)
+            target["sents"][idx] = seg["text"]
 
     if orphans:
         ci = next((i for i, s in enumerate(segs) if s.get("sid") == "cena"), len(segs))

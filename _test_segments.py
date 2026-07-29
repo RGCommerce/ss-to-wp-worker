@@ -167,27 +167,53 @@ def test_section_start_end():
     return ok
 
 
-def test_orphan_never_lost():
+def test_detach_behavior():
     sg, L, bp = _office()
-    # anchor uz teikumu, kura NAV → papildinājums krīt daļas beigās, nezūd
+    # TEIKUMA līmenis: anchor uz teikumu, kura NAV → NErenderē (atsaistīts).
     L1 = dict(L, Agent_text_segments=json.dumps([{
         "section": "telpa", "anchor_text": "Šāda teikuma nav vispār",
-        "position": "after", "text": "PALIEK-REDZAMS.",
+        "position": "after", "text": "NEPARADAS.",
     }]))
     html1 = render_body(sg, L1, dict(bp))
     ok = True
-    ok &= _check("pazudis anchor → teksts NEzūd (daļas beigās)",
-                 "PALIEK-REDZAMS." in html1)
-    # sekcija, kuras šim listingam nav (priek bez ērtībām) → orphan pirms cenas
+    ok &= _check("teikuma līmenis, teikums prom → NErenderē (atsaistīts)",
+                 "NEPARADAS." not in html1)
+    # SEKCIJAS līmenis (anchor=""), sekcija pazudusi (priek bez ērtībām) →
+    # renderē pirms cenas (neatkarīga info).
     bp2 = dict(bp); bp2["has_lift"] = False
     L2 = dict(L, Agent_text_segments=json.dumps([{
         "section": "priek", "anchor_text": "", "position": "end",
-        "text": "ORPHAN-TEKSTS.",
+        "text": "SEKC-INFO.",
     }]))
     html2 = render_body(sg, L2, dict(bp2))
-    ok &= _check("pazudusi sekcija → orphan NEzūd (pirms cenas)",
-                 "ORPHAN-TEKSTS." in html2 and
-                 html2.index("ORPHAN-TEKSTS.") < html2.index("Nomas nosacījumi:"))
+    ok &= _check("sekcijas līmenis, sekcija prom → renderē pirms cenas",
+                 "SEKC-INFO." in html2 and
+                 html2.index("SEKC-INFO.") < html2.index("Nomas nosacījumi:"))
+    return ok
+
+
+def test_removed_fact_drops_text():
+    """Raimonda WC gadījums: pārraksti teikumu par WC, pēc tam noņem WC →
+    ģenerētais WC teikums pazūd → pārrakstītais teksts NEparādās (lieta ir prom)."""
+    sg, L, bp = _office()
+    L = dict(L, cik_WC="1")  # ģenerē sanitārā mezgla teikumu
+    secs = body_segments(sg, dict(L), dict(bp))
+    telpa = next(s for s in secs if s["section"] == "telpa")
+    wc_sent = next((x for x in telpa["sentences"] if "sanitār" in x.lower()), None)
+    ok = _check("WC teikums ir (kad WC=1)", wc_sent is not None)
+    if not wc_sent:
+        return False
+    seg = [{"section": "telpa", "anchor_text": wc_sent, "position": "replace",
+            "text": "Sanitārais mezgls ir tikko renovēts."}]
+    # ar WC → pārrakstītais parādās
+    html_with = render_body(sg, dict(L, Agent_text_segments=json.dumps(seg)), dict(bp))
+    ok &= _check("ar WC → pārrakstītais teikums parādās",
+                 "tikko renovēts." in html_with)
+    # noņem WC → WC teikuma nav → pārrakstītais NEparādās
+    L_no = dict(L, cik_WC=None, Agent_text_segments=json.dumps(seg))
+    html_no = render_body(sg, L_no, dict(bp))
+    ok &= _check("noņem WC → pārrakstītais teksts PAZŪD",
+                 "tikko renovēts." not in html_no)
     return ok
 
 
@@ -213,13 +239,14 @@ def test_replace_sentence():
     html2 = render_body(sg, L2, dict(bp))
     ok &= _check("replace + append kopā (aizvietots + pieraksts aiz tā)",
                  "Telpās ir 4 darba telpas. Papildus ir noliktava 100 m²." in html2)
-    # aizvietojamais pazudis → teksts NEzūd (daļas beigās)
+    # aizvietojamais teikums pazudis → NErenderē (atsaistīts; lieta ir prom)
     L3 = dict(L, Agent_text_segments=json.dumps([{
         "section": "telpa", "anchor_text": "Šāda teikuma nav", "position": "replace",
-        "text": "AIZVIET-NEZUD.",
+        "text": "AIZVIET-NEPARADAS.",
     }]))
     html3 = render_body(sg, L3, dict(bp))
-    ok &= _check("pazudis aizvietojamais → teksts NEzūd", "AIZVIET-NEZUD." in html3)
+    ok &= _check("pazudis aizvietojamais → NErenderē (atsaistīts)",
+                 "AIZVIET-NEPARADAS." not in html3)
     return ok
 
 
@@ -232,7 +259,8 @@ if __name__ == "__main__":
             test_body_segments(),
             test_splice_after_sentence(),
             test_section_start_end(),
-            test_orphan_never_lost(),
+            test_detach_behavior(),
+            test_removed_fact_drops_text(),
             test_replace_sentence(),
         ]
         print("\n" + ("VISI ZAĻI ✓" if all(results)
