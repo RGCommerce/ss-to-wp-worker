@@ -181,6 +181,67 @@ def listing_body_segments(
 
 
 # ---------------------------------------------------------------------------
+# 2.6) TEKSTA KOREKTORS — "Labot kļūdas" poga (LV gramatika/pareizrakstība)
+# ---------------------------------------------------------------------------
+
+class TextFixReq(BaseModel):
+    text: str
+
+
+_TEXTFIX_SYSTEM = (
+    "Tu esi profesionāls latviešu valodas korektors nekustamā īpašuma sludinājumiem. "
+    "Izlabo gramatikas, pareizrakstības un interpunkcijas kļūdas dotajā tekstā. "
+    "OBLIGĀTI saglabā nozīmi, faktus, skaitļus un lietišķo toni. NEPIEVIENO un "
+    "NEIZŅEM informāciju, NEMAINI stilu vairāk kā nepieciešams kļūdu labošanai. "
+    "Atgriez TIKAI izlaboto tekstu — bez paskaidrojumiem, bez pēdiņām, bez markdown."
+)
+
+
+@router.post("/text-fix")
+def text_fix(req: TextFixReq, _auth: None = Depends(require_token)) -> dict:
+    """Aizsūta aģenta tekstu OpenAI korektoram un atgriež izlaboto (LV gramatika).
+    Kļūmes gadījumā atgriež oriģinālu ar ok=false (UI nekad nepaliek bez teksta)."""
+    text = (req.text or "").strip()
+    if not text:
+        return {"text": "", "ok": True}
+    if len(text) > 5000:
+        text = text[:5000]
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"text": req.text, "ok": False, "error": "OPENAI_API_KEY nav konfigurēts"}
+    try:
+        from openai import OpenAI
+        # Ātrs ne-spriešanas modelis — poga jābūt "fast & smooth" (~2s, ne 4-5s kā
+        # gpt-5.4-mini). Kvalitāte gramatikai tā pati. Pārlabojams ar TEXTFIX_MODEL.
+        model = os.getenv("TEXTFIX_MODEL", "gpt-4.1-mini")
+        _verify = os.getenv("VERIFY_SSL", os.getenv("WP_VERIFY_SSL", "1")) \
+            not in ("0", "false", "False")
+        if not _verify:
+            import httpx
+            client = OpenAI(api_key=api_key, http_client=httpx.Client(verify=False))
+        else:
+            client = OpenAI(api_key=api_key)
+        resp = client.responses.create(
+            model=model,
+            input=[
+                {"role": "system",
+                 "content": [{"type": "input_text", "text": _TEXTFIX_SYSTEM}]},
+                {"role": "user",
+                 "content": [{"type": "input_text", "text": text}]},
+            ],
+        )
+        fixed = (resp.output_text or "").strip()
+        # Notīra iespējamās pēdiņas ap visu tekstu, ja modelis tās pieliek.
+        if len(fixed) >= 2 and fixed[0] in "\"“„'" and fixed[-1] in "\"”“'":
+            fixed = fixed[1:-1].strip()
+        if not fixed:
+            return {"text": req.text, "ok": False, "error": "tukša atbilde"}
+        return {"text": fixed, "ok": True}
+    except Exception as e:  # noqa: BLE001
+        return {"text": req.text, "ok": False, "error": str(e)[:200]}
+
+
+# ---------------------------------------------------------------------------
 # 3) DRAFT SAVE / LOAD / DELETE — autosave priekš anketas state-a
 # ---------------------------------------------------------------------------
 
