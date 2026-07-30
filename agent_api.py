@@ -439,22 +439,34 @@ def listing_images(listing_id: int, _auth: None = Depends(require_token)) -> dic
     base = STORAGE_ROOT / "listings" / str(listing_id)
     raw_dir = base / "raw"
     ai_dir = base / "ai_ready"
+    wp_dir = base / "wp_raw"
 
     has_raw = raw_dir.is_dir()
     has_ai = ai_dir.is_dir()
-    if not has_raw and not has_ai:
+    has_wp = wp_dir.is_dir()
+    if not has_raw and not has_ai and not has_wp:
         return {"images": [], "note": f"Nav bilžu /storage/listings/{listing_id}/"}
 
-    # Priekšroka raw (oriģināls ar SS.lv ūdenszīmi); ja nav raw, fallback ai_ready
-    src_dir = raw_dir if has_raw else ai_dir
-    src_label = "raw" if has_raw else "ai_ready"
+    # Priekšroka raw (oriģināls ar SS.lv ūdenszīmi); tad ai_ready; tad wp_raw
+    # (mājaslapas bildes — piem. WP-source listingi, kam ss.lv raw nav vispār;
+    # bez šī fallback ēkas skata bilžu modālis tiem bija tukšs).
+    if has_raw:
+        src_dir, src_label = raw_dir, "raw"
+    elif has_ai:
+        src_dir, src_label = ai_dir, "ai_ready"
+    else:
+        src_dir, src_label = wp_dir, "wp_raw"
 
     _img_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
     files = sorted(p for p in src_dir.glob("img_*.*")
                    if p.suffix.lower() in _img_exts)
+    if not files:
+        # Mape ir, bet img_* failu nav (cits nosaukumu formāts?) — ņem visus attēlus
+        files = sorted(p for p in src_dir.iterdir()
+                       if p.is_file() and p.suffix.lower() in _img_exts)
     images = [{
         "name": f.name,
-        "type": src_label,  # 'raw' (ar ūdenszīmi) vai 'ai_ready' (apstrādāts)
+        "type": src_label,  # 'raw' / 'ai_ready' / 'wp_raw'
         "url": f"/agent/image-proxy/{listing_id}/{src_label}/{f.name}",
     } for f in files]
     return {
@@ -463,7 +475,8 @@ def listing_images(listing_id: int, _auth: None = Depends(require_token)) -> dic
         "has_ai_ready": has_ai,
         "note": ("RAW bildes no SS.lv (ar ūdenszīmi). AI uzlabošana notiks pie 'Ielikt WP' klikšķa."
                  if src_label == "raw" else
-                 "AI-apstrādātas bildes (ūdenszīme noņemta)."),
+                 "AI-apstrādātas bildes (ūdenszīme noņemta)." if src_label == "ai_ready" else
+                 "Mājaslapas bildes (WP)."),
     }
 
 
@@ -568,21 +581,24 @@ def image_proxy(
     x_rgc_token: Annotated[Optional[str], Header(alias="X-RGC-Token")] = None,
 ):
     """Atgriež bildes baitus no /storage/listings/<id>/<folder>/.
-    folder = 'raw' (ss.lv oriģināls) vai 'ai_ready' (Seedream apstrādāts).
+    folder = 'raw' (ss.lv oriģināls) / 'ai_ready' (Seedream) / 'wp_raw' (mājaslapas).
     Auth: X-RGC-Token header VAI ?token=... query param."""
     from fastapi.responses import FileResponse
     if not RGC_MK_TOKEN:
         raise HTTPException(500, "Service nav konfigurēts")
     if x_rgc_token != RGC_MK_TOKEN and token != RGC_MK_TOKEN:
         raise HTTPException(403, "Trūkst tokena")
-    if folder not in ("raw", "ai_ready"):
-        raise HTTPException(400, "folder ir 'raw' vai 'ai_ready'")
+    if folder not in ("raw", "ai_ready", "wp_raw"):
+        raise HTTPException(400, "folder ir 'raw', 'ai_ready' vai 'wp_raw'")
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(400, "Nepareizs filename")
     path = STORAGE_ROOT / "listings" / str(listing_id) / folder / filename
     if not path.is_file():
         raise HTTPException(404, "Bilde nav atrasta")
-    return FileResponse(path)
+    # Cache-Control: bez tā pārlūks/panelis katru reizi vilka pilnu bildi no
+    # Railway (lēnā ielāde). Faila saturs tajā pašā ceļā mainās tikai crop/enhance,
+    # ko UI pavada ar ?v= cache-busteri → 1h kešs ir drošs.
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
 
 
 # ---------------------------------------------------------------------------
