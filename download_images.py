@@ -195,6 +195,24 @@ def process_listing_wp(conn, listing_id: int, urls: list[str]) -> dict[str, Any]
     out_dir = listing_wp_dir(listing_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # RE-DOWNLOAD pēc bilžu maiņas (2026-07-30): faili saucas img_001.jpg… pēc
+    # POZĪCIJAS, un `filepath.exists()` tos izlaiž → ja URL komplekts MAINĪJIES
+    # (publish pēc bilžu rediģēšanas resetoja wp_images_downloaded_at), vecie
+    # faili ar tiem pašiem vārdiem paliktu ar VECO saturu. Tāpēc: ja _meta.json
+    # source_urls nesakrīt ar jauno sarakstu — iztīra mapes img_* failus.
+    meta_p = out_dir / "_meta.json"
+    if meta_p.is_file():
+        try:
+            old_urls = json.loads(meta_p.read_text(encoding="utf-8")).get("source_urls")
+        except Exception:
+            old_urls = None
+        if old_urls != urls:
+            for f in out_dir.glob("img_*.*"):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
     saved_paths: list[str] = []
     file_hashes: list[str] = []
     missing: list[str] = []

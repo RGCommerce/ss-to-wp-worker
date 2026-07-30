@@ -655,11 +655,14 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # manifesta `type`. wp_attachment_ids glabā visus IDs filename-order
         # (lai būtu deriv mapping filename→ID nākamajām re-publish).
         # wp_floor_plan_attachment_ids = derivēts plānu apakšsaraksts.
+        fresh_upload = False
+        fresh_urls: list = []   # jauno WP media URL (spoguļa atjaunošanai)
         if existing_att and len(existing_att) == len(img_paths) and not force:
             print(f"  → reuse {len(existing_att)} esošos attachment ID "
                   f"(filename-order)")
             all_attach_ids = list(existing_att)
         else:
+            fresh_upload = True
             all_attach_ids = []
             for p in img_paths:
                 if not p.is_file():
@@ -667,6 +670,9 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
                     continue
                 res = wp.upload_media(p, filename=p.name, alt=alt_txt)
                 all_attach_ids.append(res["id"])
+                u = res.get("source_url") or res.get("url") or res.get("link")
+                if u:
+                    fresh_urls.append(u)
                 print(f"  → augšuplādēts {p.name} → att {res['id']}")
 
         # Filename→ID mapping pēc filename-order zip
@@ -737,6 +743,31 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
             (wp_id, all_attach_ids or None,
              plan_attach_ids or None, listing_id),
         )
+        # SPOGUĻA ATSVAIDZINĀŠANA (Raimonds 2026-07-30): paneļa "Mājaslapas"
+        # folderis (wp_raw + wp_image_urls) lejupielādējas TIKAI vienreiz
+        # (WHERE wp_images_downloaded_at IS NULL) → pēc bilžu maiņas panelis
+        # mūžīgi rādīja VECO komplektu ("ieliku jaunas — skatā neparādās").
+        # Svaiga augšupielāde → atjauno wp_image_urls (ja plugin atdeva URL)
+        # + reset download timestamp → wp downloader pārvelk wp_raw no jauna.
+        if fresh_upload:
+            if fresh_urls and len(fresh_urls) == len(all_attach_ids):
+                conn.execute(
+                    """UPDATE properties.listings
+                       SET wp_image_urls = %s, wp_images_downloaded_at = NULL
+                       WHERE id = %s""",
+                    (fresh_urls, listing_id),
+                )
+                print(f"  → spogulis: wp_image_urls atjaunots "
+                      f"({len(fresh_urls)}) + wp_raw re-download rindā")
+            else:
+                conn.execute(
+                    """UPDATE properties.listings
+                       SET wp_images_downloaded_at = NULL
+                       WHERE id = %s""",
+                    (listing_id,),
+                )
+                print("  → spogulis: wp_raw re-download rindā "
+                      f"(URL no plugin: {len(fresh_urls)}/{len(all_attach_ids)})")
         conn.commit()
         print(f"  ✓ DB atjaunināts: wp_post_id={wp_id}, "
               f"all_ids={len(all_attach_ids)}, "
