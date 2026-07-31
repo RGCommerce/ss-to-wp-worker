@@ -83,6 +83,25 @@ def _num(v) -> Optional[int]:
         return None
 
 
+# Ielas-tipa vārdi (pilni + saīsinājumi) — izmet no adreses salīdzināšanas.
+_STREET_TYPES = {
+    "iela", "gatve", "bulvaris", "prospekts", "laukums", "dambis", "cels",
+    "aleja", "soseja", "linija", "krastmala", "tilts", "pasaza", "gate",
+    "street", "bulv", "gat", "gatv", "prosp", "sos", "iel", "lauk", "lin",
+    "krastm", "al", "nab",
+}
+
+
+def _street_tokens(s: Optional[str]) -> set:
+    """Adreses ielas-vārda tokeni (bez tipa vārdiem, cipariem, diakritikas).
+    'Barona iela 28' → {'barona'}; 'Kr. Barona iela 28' → {'barona'}."""
+    s = (s or "").lower().translate(
+        str.maketrans("āčēģīķļņōŗšūž", "acegiklnorsuz"))
+    s = s.split(",")[0]  # pirms komata (pilsēta/rajons aiz tā)
+    toks = re.findall(r"[a-z]+", s)
+    return {t for t in toks if t not in _STREET_TYPES and len(t) >= 3}
+
+
 def _area_num(v) -> Optional[float]:
     """Platības teksts ('27', '27.5', '27 m²') → float. None, ja nav cipara.
     NB: NE _num (tas '27.5' pārvērstu par 275) — platībai jāsaglabā decimāldaļa."""
@@ -107,11 +126,12 @@ def _fetch_diffs() -> list[dict]:
         rows = conn.execute("""
             SELECT l.id, l.price AS l_price, l.price_type AS l_pt,
                    l.area_m2 AS area, l.on_website, l.wp_post_id,
+                   l.street AS l_street,
                    si.price AS s_price, si.price_type AS s_pt,
-                   si.area_m2 AS s_area
+                   si.area_m2 AS s_area, si.street AS s_street
             FROM properties.listings l
             JOIN LATERAL (
-                SELECT price, price_type, area_m2
+                SELECT price, price_type, area_m2, street
                 FROM properties.scrape_inbox si2
                 WHERE si2.link = l.link
                 ORDER BY si2.date_posted DESC NULLS LAST, si2.id DESC
@@ -160,6 +180,21 @@ def _fetch_diffs() -> list[dict]:
                     "(iespējams cita telpa uz tā paša URL)", r["id"], la, sa,
                 )
                 continue
+        # Guard 5 (Raimonds 2026-07-31): ADRESE. ss.lv REGULĀRI pārliek to pašu īso
+        # URL (piem. hnfeo.html) uz PILNĪGI CITU īpašumu. Tad scrape_inbox zem tā
+        # paša linka satur cita objekta cenu/adresi (listing#1567: mūsu Barona 28
+        # €1431 vs ss.lv pārlikts Elizabetes 18 €3550; platība 139≈142 → platības
+        # guards to NEnoķēra). Ja ielas vārds SKAIDRI atšķiras (nav neviena kopīga
+        # tokena) → cits īpašums → cenu NESINHRONIZĒ. Konservatīvi: sinhronizē, ja
+        # kāda adrese tukša/neparsējama vai tokeni pārklājas (nebloķē īstus updatus).
+        l_tok, s_tok = _street_tokens(r["l_street"]), _street_tokens(r["s_street"])
+        if l_tok and s_tok and l_tok.isdisjoint(s_tok):
+            logger.warning(
+                "listing#%s adrese mūsu '%s' ≠ ss.lv '%s' — cenu NESINHRONIZĒ "
+                "(ss.lv URL pārlikts uz citu īpašumu)",
+                r["id"], r["l_street"], r["s_street"],
+            )
+            continue
         r["_new_price"] = sp
         out.append(r)
     return out
