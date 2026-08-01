@@ -129,14 +129,19 @@ def seedream_predict(image_url: str) -> str | None:
         timeout=180,
         verify=_VERIFY,
     )
-    if resp.status_code not in (200, 201):
+    # 202 = Replicate pieņēma predikciju, bet `Prefer: wait` sinhronais logs
+    # (~60s) beidzās PIRMS Seedream pabeidza → atgriež predikcijas objektu ar
+    # `id`, kas jāpollē. Seedream reāli aizņem ~60s/bilde → 202 ir NORMĀLS, ne
+    # kļūda. (Iepriekš 202 kritās uz `return None` → KATRA bilde "fail" un
+    # publish ATCELTS "nav AI-apstrādātu bilžu".) 200/201 = pabeigts sinhroni.
+    if resp.status_code not in (200, 201, 202):
         print(f"      ! Seedream HTTP {resp.status_code}: {resp.text[:300]}")
         return None
     body = resp.json()
     if body.get("status") == "succeeded":
         out = body["output"]
         return out if isinstance(out, str) else out[0]
-    # fallback poll
+    # fallback poll (t.sk. 202: status='starting'/'processing')
     pred_id = body["id"]
     for _ in range(120):
         time.sleep(2)
