@@ -355,7 +355,13 @@ def _split_by_manifest(img_paths: list[Path], manifest: dict
     - galvenā galerija: fasade (pirmā) + interjers + cits
     - plani: atsevišķi (uz Houzez floor plan sekciju)
     Stabils sort — vienāds type saglabā oriģinālo secību.
-    Ja manifestā nav ieraksta → uzskatām par 'interjers'."""
+    Ja manifestā nav ieraksta → uzskatām par 'interjers'.
+
+    MANUĀLĀ SECĪBA (Raimonds 2026-08-02): ja panelī bildes kārtotas ar roku
+    (bilžu editors → manifestā `__manual_order__`), type-sorts galeriju
+    NEPĀRKĀRTO — paneļa DB masīva secība IR patiesība (aģents redz tieši to).
+    Plāni vienalga atdalās. Featured (★) tāpat paliek pirmā fasade —
+    sk. _featured_att_id (tā var būt jebkurā pozīcijā)."""
     gallery, plans = [], []
     for p in img_paths:
         info = manifest.get(p.name) if isinstance(manifest, dict) else None
@@ -364,9 +370,28 @@ def _split_by_manifest(img_paths: list[Path], manifest: dict
             plans.append(p)
         else:
             gallery.append(p)
-    gallery.sort(key=lambda p: _TYPE_ORDER.get(
-        (manifest.get(p.name) or {}).get("type", "interjers"), 1))
+    manual = bool(manifest.get("__manual_order__")) \
+        if isinstance(manifest, dict) else False
+    if not manual:
+        gallery.sort(key=lambda p: _TYPE_ORDER.get(
+            (manifest.get(p.name) or {}).get("type", "interjers"), 1))
     return gallery, plans
+
+
+def _featured_att_id(gallery_paths: list[Path], fname_to_id: dict,
+                     manifest: dict):
+    """WP featured_media = pirmā fasade galerijā (bilžu editora ★), arī ja
+    manuālajā secībā tā NAV pirmā bilde; ja fasades nav — pirmā galerijas
+    bilde. Sortotajā ceļā pirmā fasade jau ir galerijas sākumā → identiski
+    vecajai uzvedībai (gallery_ids[0])."""
+    for p in gallery_paths:
+        if p.name in fname_to_id and \
+                (manifest.get(p.name) or {}).get("type") == "fasade":
+            return fname_to_id[p.name]
+    for p in gallery_paths:
+        if p.name in fname_to_id:
+            return fname_to_id[p.name]
+    return None
 
 
 _SALE_PT = {"regular", "parastā", "parasta", "sale", "sell", "buy"}
@@ -737,17 +762,19 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # grupu 'floor_plans' no šiem attachment ID-iem (fave_plan_image =
         # wp_get_attachment_url; tas ir file_input/URL lauks). Vienmēr sūtam
         # (arī tukšu sarakstu) — lai plugin var iztīrīt veco, ja plānu nav.
+        featured_id = _featured_att_id(gallery_paths, fname_to_id, manifest)
         print(f"  → galerija: {len(gallery_ids)} bildes "
-              f"(featured = att {gallery_ids[0] if gallery_ids else 'n/a'})")
+              f"(featured = att {featured_id if featured_id else 'n/a'})")
         if plan_attach_ids:
             print(f"  → plāni:    {len(plan_attach_ids)} → Houzez floor_plans")
 
-        # 3. Create vai update — featured_media = pirmā galerijā (fasade ja ir),
-        # floor_plan_attachment_ids → plugin būvē Houzez 'floor_plans' grupu
+        # 3. Create vai update — featured_media = pirmā fasade (★; manuālā
+        # secībā var nebūt pirmā), floor_plan_attachment_ids → plugin būvē
+        # Houzez 'floor_plans' grupu
         common = dict(
             title=title, content=body, excerpt=excerpt, status="publish",
             author=agent, meta=meta, taxonomies=tax,
-            featured_media=(gallery_ids[0] if gallery_ids else None),
+            featured_media=featured_id,
             floor_plan_attachment_ids=plan_attach_ids,
             floor_plan_title="Telpu plāns",
             # PILNA adrese (iela+pilsēta+Latvija, paplašināti saīsinājumi) plugin

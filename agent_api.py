@@ -772,6 +772,10 @@ def _write_manifest_map(listing_id: int, types: dict[str, str]) -> None:
         images[name] = {**prev, "type": t,
                         "quality": prev.get("quality", "good_for_website"),
                         "filename": name}
+    # __manual_order__ (paneļa manuālā secība) NEDRĪKST pazust pie
+    # featured/plāna maiņas — pārnes no esošā manifesta.
+    if isinstance(existing, dict) and existing.get("__manual_order__"):
+        images["__manual_order__"] = True
     image_classify.save_manifest(STORAGE_ROOT, listing_id, images)
 
 
@@ -834,6 +838,23 @@ def listing_image_classify(listing_id: int, req: ClassifyReq,
         "featured": _featured_of(types),
         "plans": [n for n, t in types.items() if t == "plans"],
     }
+
+
+@router.post("/listing-manual-order/{listing_id}")
+def listing_manual_order(listing_id: int,
+                         _auth: None = Depends(require_token)) -> dict:
+    """Panelis pēc manuālas bilžu labošanas (secība/upload/dzēšana) atzīmē
+    manifestā `__manual_order__` → publish_to_wp galeriju NEPĀRKĀRTO pēc
+    type (fasade/interjers/cits), bet saglabā paneļa DB masīva secību —
+    aģents mājaslapā redz TIEŠI to, ko sakārtoja editorā (Raimonds
+    2026-08-02). Featured (★) paliek pirmā fasade. Idempotents."""
+    manifest = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+    if not isinstance(manifest, dict):
+        manifest = {}
+    if not manifest.get("__manual_order__"):
+        manifest["__manual_order__"] = True
+        image_classify.save_manifest(STORAGE_ROOT, listing_id, manifest)
+    return {"ok": True}
 
 
 class EditorEnhanceReq(BaseModel):
