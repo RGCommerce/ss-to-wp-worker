@@ -256,6 +256,45 @@ def _image_paths(listing: dict) -> list[Path]:
     return [p for p in paths if p.is_file()]
 
 
+def _promote_wp_raw(conn, listing: dict) -> bool:
+    """WP-avota (source='wp') listingiem: bildes, kas JAU BIJA mūsu mājaslapā
+    (wp_raw spogulis), pārceļ uz ai_ready + local_image_paths_processed BEZ
+    Seedream — tās ir mūsu pašu, jau publicētas bildes, AI skaistināšana tām
+    nav vajadzīga (tas pats princips kā agent_publish anketas bildēm, kas arī
+    iet uz ai_ready tieši). Drošība: _watermark_gate vienalga pārbauda VISAS
+    publicējamās bildes pirms augšuplādes — ja kādā tomēr ss.com ūdenszīme,
+    to notīra/atceļ tur.
+
+    Atgriež True, ja izdevās (processed uzlikts); False → sauc image_pipeline
+    kā līdz šim (piem. wp_raw failu nav uz diska)."""
+    import shutil
+
+    rel = listing.get("local_image_paths_wp_raw") or []
+    src = [(STORAGE_ROOT / r) for r in rel]
+    src = [p for p in src if p.is_file()]
+    if not src:
+        return False
+
+    listing_id = listing["id"]
+    dst_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    processed: list[str] = []
+    for p in src:
+        shutil.copy2(p, dst_dir / p.name)
+        processed.append(f"listings/{listing_id}/ai_ready/{p.name}")
+
+    conn.execute(
+        "UPDATE properties.listings SET local_image_paths_processed = %s "
+        "WHERE id = %s",
+        (processed, listing_id),
+    )
+    conn.commit()
+    listing["local_image_paths_processed"] = processed
+    print(f"  → WP-avota bildes ({len(processed)}) pārceltas no wp_raw uz "
+          f"ai_ready BEZ Seedream (jau bija mājaslapā)")
+    return True
+
+
 def _watermark_gate(listing_id: int, img_paths: list[Path]) -> bool:
     """GALA DROŠĪBAS VĀRTS: pirms augšuplādes pārbauda VISAS publicējamās
     bildes ar watermark_check (gpt-4o-mini, kešots — atkārtots publish = $0).
@@ -508,6 +547,12 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # IET TIKAI smukās ai_ready bildes, NE raw ss.lv. Ja vēl nav
         # processed → palaiž image_pipeline ($0.04/bilde, ~30-40s/bilde;
         # idempotents — re-publish nepārtērē, jo skip ja jau apstrādāts).
+        # WP-avota listingi (source='wp'): bildes jau bija mūsu mājaslapā →
+        # NEvajag Seedream; pārceļ wp_raw → ai_ready tieši (Raimonds 2026-08-01).
+        if (not listing.get("local_image_paths_processed")
+                and listing.get("source") == "wp" and not dry_run):
+            _promote_wp_raw(conn, listing)
+
         if not listing.get("local_image_paths_processed") and not skip_ai:
             if dry_run:
                 print("  [dry-run] processed bilžu nav — reālā palaišanā "
