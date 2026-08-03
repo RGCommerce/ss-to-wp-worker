@@ -14,7 +14,8 @@ panelis (un mājaslapa, ja publicēts) rāda novecojušu cenu.
      rindā (action='publish'). queue_poller pārpublicē = `update_property`
      (atjauno ESOŠO WP postu, NEdublē, pārizmanto galeriju → bez AI izmaksām).
 
-Tikai ss.lv-source listingiem (agent_anketa nav ss.lv link → JOIN tos izlaiž).
+Tikai ss.lv-source listingiem (agent_anketa nav ss.lv link → JOIN tos izlaiž;
+source='wp' izslēgts ar Guard 0 — tiem cena ir mūsu, ne ss.lv).
 
 Drošības guard-i (lai NEKAD neuzliktu nepareizu cenu uz prod/mājaslapas):
   1. EKSAKTS periods — sinhronizē tikai monthly→monthly, daily→daily,
@@ -139,6 +140,13 @@ def _fetch_diffs() -> list[dict]:
             ) si ON true
             WHERE l."Debug_status" = 'ok'
               AND l.link IS NOT NULL AND l.link <> ''
+              -- Guard 0 (Raimonds 2026-08-03, #106938 Cēsu 31): WP-avota
+              -- listingu cena ir MŪSU (brokera) cena no mājaslapas — ss.lv
+              -- links tiem ir tikai piesaistīts (piem. īpašnieka paralēlais
+              -- sludinājums par to pašu telpu ar CITU cenu). ss.lv cena tur
+              -- NAV autoritatīva → tos nesinhronizējam NEKAD. (#106938:
+              -- īpašnieka ss.lv 246→316 pārrakstīja mūsu €408/24 m².)
+              AND l.source <> 'wp'
               -- Guard 3: brokeris manuāli labojis cenu panelī → 'price' ∈
               -- agent_locked_fields → NEAIZTIEC (manuālā cena ir autoritatīva).
               AND NOT ('price' = ANY(COALESCE(l.agent_locked_fields, '{}')))
