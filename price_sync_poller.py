@@ -29,8 +29,16 @@ Drošības guard-i (lai NEKAD neuzliktu nepareizu cenu uz prod/mājaslapas):
      listings.agent_locked_fields), pollers to NEAIZTIEC (manuālā cena
      autoritatīva pār ss.lv). Panelis uzliek lock pie edit save.
 
+⛔ PAGAIDĀM IZSLĒGTS PĒC NOKLUSĒJUMA (Raimonds 2026-08-04): auto-sinhronizācija
+radīja pārāk daudz pārsteigumu dzīvē — aģents ieliek sludinājumu ar SAVU cenu,
+ss.lv īpašnieka cena (bieži ar citu struktūru, piem. «nomas maksa + komunālie
+kopā 422,40 € + PVN») to klusi pārraksta, un uz apskati brauc ar nepareizu
+skaitli (klients domā 17,6 €/m², īstenībā 24 €/m²; aģents pat nezina, ka
+mainīts). Ieslēgt atpakaļ var ar env PRICE_SYNC_ENABLED=1, kad izdomāta
+drošāka plūsma (piem. tikai paziņojums aģentam, nevis auto-pārrakstīšana).
+
 Konfigurējams ar env:
-  PRICE_SYNC_ENABLED   (default "1") — "0" izslēdz
+  PRICE_SYNC_ENABLED   (default "0" — IZSLĒGTS; "1" ieslēdz)
   PRICE_SYNC_INTERVAL  (default "1800") — sekundes starp cikliem (30 min)
   PRICE_SYNC_MAX_REPUB (default "25") — maks. WP re-publish rindu vienā ciklā
   PRICE_SYNC_MAX_RATIO (default "3.0") — virs šīs cenas attiecības = izlaiž (manuāli)
@@ -49,7 +57,8 @@ from psycopg.rows import dict_row
 logger = logging.getLogger("price_sync_poller")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-PRICE_SYNC_ENABLED = os.getenv("PRICE_SYNC_ENABLED", "1") != "0"
+# Default IZSLĒGTS (Raimonds 2026-08-04) — sk. ⛔ docstring augšā.
+PRICE_SYNC_ENABLED = os.getenv("PRICE_SYNC_ENABLED", "0") == "1"
 PRICE_SYNC_INTERVAL = float(os.getenv("PRICE_SYNC_INTERVAL", "1800"))
 PRICE_SYNC_MAX_REPUB = int(os.getenv("PRICE_SYNC_MAX_REPUB", "25"))
 PRICE_SYNC_MAX_RATIO = float(os.getenv("PRICE_SYNC_MAX_RATIO", "3.0"))
