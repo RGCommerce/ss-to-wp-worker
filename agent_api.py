@@ -543,8 +543,22 @@ def duplicate_listing(
     price_type = "regular" if pt in _SALE_PRICE_TYPES else ("monthly" if pt else None)
     wc_loc = L.get("WC_location")
 
+    # #65: dublējot līdzi iet arī "der arī kā" (Potential_space_group bez primārā),
+    # "Cenā ietilpst" un projekta ("telpas vēl nav uzceltas") atzīme — agrāk tie
+    # izkrita un anketā bija jāķeksē no jauna.
+    primary_sg = str(L.get("Space_group") or "").strip()
+    potential = [
+        x.strip() for x in str(L.get("Potential_space_group") or "").split(",")
+        if x.strip() and x.strip() != primary_sg
+    ]
+    price_includes = [x.strip() for x in str(L.get("price_includes") or "").split(",") if x.strip()]
+
     unit = {
         "space_group": L.get("Space_group"),
+        "potential_space_groups": potential,
+        "price_includes": price_includes,
+        "is_project": bool(L.get("is_project")),
+        "project_completion": s("project_completion"),
         "area_m2": s("area_m2"),
         "floor": s("floor"),
         "price": s("price"),
