@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -202,6 +204,86 @@ def _bp_coerce(value, typ):
     return s or None
 
 
+# ── Kanoniskais building_key (#14, 2026-08-10) ───────────────────────────────
+# Sinhroni ar building_profiles_worker.build_key. Agrāk aģenta anketa lietoja
+# "agent:street|city|<timestamp>" → VIENMĒR unikāls → katra ēka rada dublikātu,
+# pat ja tā pati adrese jau DB (skrāpēta vai citas anketas). Tagad ģenerējam to
+# pašu kanonisko atslēgu, lai aģenta ievadītā ēka sasaistās ar esošo profilu.
+# ⚠ Ja maina building_profiles_worker normalizāciju — sinhronizē arī šeit.
+_LV_TRANS = str.maketrans("āčēģīķļņšūž ĀČĒĢĪĶĻŅŠŪŽ", "acegiklnsuz acegiklnsuz")
+_BK_STREET_TYPE_RE = re.compile(
+    r"\b(iela|iel|gatve|gat|bulvaris|bulv|prospekts|prosp|pr|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\.?\b"
+)
+_BK_INITIALS_RE = re.compile(r"\b[a-z]{1,2}\.")
+_BK_HOUSE_RE = re.compile(r"^(.+?)\s+(\d+\s*(?:k-\d+|k\d+|[-/]\d+)?[a-zA-Z]?)$", re.IGNORECASE)
+_BK_SUBURBS = ("marupe", "babite", "kekava", "olaine", "salaspils",
+               "ropazi", "stopini", "garkalne", "carnikava", "adazi")
+_BK_ALIASES = {
+    "zemgala|74|riga": "gustava zemgala|74|riga",
+    "zemgala|76|riga": "gustava zemgala|76|riga",
+}
+
+
+def _bk_norm(t: str) -> str:
+    if not t:
+        return ""
+    t = re.sub(r"\s+", " ", t.strip().lower()).translate(_LV_TRANS)
+    return "".join(c for c in unicodedata.normalize("NFKD", t) if ord(c) < 128)
+
+
+def _bk_strip_type(s: str) -> str:
+    s = _BK_INITIALS_RE.sub(" ", s)
+    s = _BK_STREET_TYPE_RE.sub(" ", s)
+    s = s.replace(".", " ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _bk_canon_city(city: str, district: str = "") -> str:
+    c = _bk_norm(city)
+    d = _bk_norm(district)
+    for sub in _BK_SUBURBS:
+        if sub == c or sub in d:
+            return sub
+    return c
+
+
+def _canonical_bp_key(street: str, city: str, district: str = "") -> str:
+    """Kanoniskais building_key no adreses — sinhroni ar building_profiles_worker."""
+    raw = (street or "").strip()
+    m = _BK_HOUSE_RE.match(raw)
+    if m:
+        sname, house = m.group(1).strip(), m.group(2).strip()
+    else:
+        sname, house = raw, None
+    parts = [_bk_strip_type(_bk_norm(sname))]
+    if house:
+        parts.append(_bk_norm(house))
+    parts.append(_bk_canon_city(city, district))
+    key = "|".join(parts)
+    return _BK_ALIASES.get(key, key)
+
+
+def _bp_apply_updates(conn, bp_id: int, building: dict) -> None:
+    """Auto-update esošam building_profile: aģenta vērtība uzvar, tukšu patur DB."""
+    sets, params = [], []
+    for k, typ in _BP_FIELDS:
+        v = _bp_coerce(building.get(k), typ)
+        if v is None:
+            continue
+        if typ == "int":
+            sets.append(f'"{k}" = COALESCE(%s::int, "{k}")')
+        else:
+            sets.append(f'"{k}" = COALESCE(%s, "{k}")')
+        params.append(v)
+    if sets:
+        params.append(bp_id)
+        conn.execute(
+            f'UPDATE properties.building_profiles SET {", ".join(sets)}, '
+            f'updated_at = now() WHERE id = %s',
+            tuple(params),
+        )
+
+
 def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     """Atgriež building_profile_id. Ja existing_building_id (vai existing_bp_id)
     ir norādīts → UPDATE (auto-update building_profile: aģenta ievadītā vērtība
@@ -237,7 +319,18 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     if not street or not city:
         raise ValueError("street + city ir obligāti")
     full_address = f"{street}, {city}".strip(", ")
-    building_key = f"agent:{street.lower()}|{city.lower()}|{int(time.time())}"
+    # #14: kanoniskais building_key — ja tā pati ēka JAU ir DB (skrāpēta vai citas
+    # anketas), sasaistāmies ar to, nevis radām dublikātu. Agrāk = laika zīmogs
+    # (vienmēr unikāls → vienmēr dublikāts).
+    building_key = _canonical_bp_key(raw_street, city, building.get("district") or "")
+    existing = conn.execute(
+        'SELECT id FROM properties.building_profiles WHERE building_key = %s',
+        (building_key,),
+    ).fetchone()
+    if existing:
+        bp_id = int(existing[0])
+        _bp_apply_updates(conn, bp_id, building)
+        return bp_id
 
     cols = ['building_key', 'street', 'full_address']
     vals = [building_key, street, full_address]
