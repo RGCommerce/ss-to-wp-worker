@@ -221,6 +221,8 @@ _BK_SUBURBS = ("marupe", "babite", "kekava", "olaine", "salaspils",
 _BK_ALIASES = {
     "zemgala|74|riga": "gustava zemgala|74|riga",
     "zemgala|76|riga": "gustava zemgala|76|riga",
+    "zemgala|77|riga": "gustava zemgala|77|riga",
+    "zemgala|83|riga": "gustava zemgala|83|riga",
 }
 
 
