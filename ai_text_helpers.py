@@ -873,10 +873,34 @@ If there are enough images and no heating evidence, use Nav.
 ---
 
 ## Treifelis_Pacelajs
-Checkbox logic:
-- visible or text-supported lift/hoist -> checked
-- enough evidence and clearly absent -> not checked
-- insufficient evidence -> unknown
+
+Meaning:
+Telferis = a ceiling / beam / gantry mounted HOIST or overhead crane used to lift heavy goods
+(electric chain hoist, monorail hoist, gantry crane, jib crane, "krāna sija", "kran-balka",
+"konsoles celtnis"). Typical only in warehouse / production / workshop / heavy autoservice.
+It is NOT a building elevator.
+
+Allowed values:
+- checked
+- not checked
+- unknown
+
+Primary Source:
+- PHOTO (IMG_INTERIOR / IMG_TECHNICAL)
+Secondary Source:
+- TEXT
+
+Rules:
+- checked ONLY if there is real hoist/crane evidence:
+  * a ceiling/beam-mounted hoist or overhead crane is clearly visible in a photo, OR
+  * text explicitly names an industrial hoist/crane: "telferis", "celtnis", "krāna sija",
+    "kran-balka", "konsoles celtnis", "liellaidu celtnis".
+- DO NOT check for building elevators. The words "lifts", "kravas lifts", "pasažieru lifts",
+  "kravas un pasažieru lifti", "Stāvs: X/Y/lifts" mean a passenger / freight ELEVATOR, which is a
+  different building-level feature, NOT a telferis -> do NOT set checked based on these alone.
+- a car service lift belongs to Auto_pacelajs_check, not here.
+- if enough evidence exists and no hoist/crane is present -> not checked
+- if evidence is insufficient -> unknown
 
 ---
 
