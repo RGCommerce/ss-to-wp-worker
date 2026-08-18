@@ -170,7 +170,7 @@ def _tag_pending_lps(conn, listing_id: int, wp_post_id: int) -> None:
     if not (WP_URL and RGC_MK_TOKEN):
         return
     rows = conn.execute("""
-        SELECT DISTINCT state_slug
+        SELECT DISTINCT state_slug, note
           FROM properties.client_listing_actions
          WHERE listing_id = %s AND action_type = 'broker_pin' AND active
     """, (listing_id,)).fetchall()
@@ -178,11 +178,17 @@ def _tag_pending_lps(conn, listing_id: int, wp_post_id: int) -> None:
         slug = r["state_slug"]
         if not slug:
             continue
+        # #74: ja brokeris pierakstīja piezīmi PENDING laikā (pirms wp_post_id) —
+        # pieliekam to uz LP tagad, publicējot. Bez piezīmes lauku izlaižam.
+        note = (r.get("note") or "").strip()
+        payload = {"wp_post_ids": [wp_post_id]}
+        if note:
+            payload["note"] = note
         try:
             resp = requests.post(
                 f"{WP_URL}/wp-json/rgc/v1/anketa-v2/lp-tag/{slug}",
                 headers={"X-RGC-Token": RGC_MK_TOKEN},
-                json={"wp_post_ids": [wp_post_id]},
+                json=payload,
                 timeout=20,
             )
             if resp.status_code != 200:
