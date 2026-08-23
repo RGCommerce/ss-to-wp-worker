@@ -415,6 +415,9 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
         bp_id = agent_publish._get_or_create_bp(
             conn, {"street": street, "city": city, "district": district}, wp_user_id
         )
+        # Commit BP uzreiz — zemāk INSERT kļūdas gadījumā ir rollback+retry, kas
+        # citādi atritinātu arī tikko izveidoto BP (FK violation retry mēģinājumā).
+        conn.commit()
 
         price = fields.get("price")
         area = fields.get("area_m2")
@@ -425,7 +428,7 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
         except Exception:
             pass
 
-        note_bits = ["Imports caur linku (agent_link)"]
+        note_bits = ["Imports caur linku"]
         if ai_note:
             note_bits.append(ai_note)
         debug_note = "; ".join(note_bits)[:500]
@@ -435,7 +438,12 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
             "street": agent_publish._ensure_street_suffix(street) or street,
             "city": city,
             "district": district,
-            "source": "agent_link",
+            # DB listings_source_check (mig 025) atļauj TIKAI sslv/wp/
+            # agent_anketa_easy/agent_anketa_full — 'agent_link' tur nav, tāpēc
+            # lietojam 'agent_anketa_full' (semantika sakrīt: Debug_status='ok'
+            # uzreiz, AI poller neaiztiek). Caur-linku importu atšķir pēc
+            # link IS NOT NULL (ss.lv/...) + Debug_note 'Imports caur linku'.
+            "source": "agent_anketa_full",
             "agent_user_id": wp_user_id or None,
             # Kontaktus aģents ieraksta PATS (imports = citu cilvēku sludinājums,
             # viņu numuru NEpārņemam). Lock, lai backfill/AI to neaizpilda.
@@ -464,21 +472,42 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
             if fields.get("land_use"):
                 cols["land_use"] = fields["land_use"]
 
-        # AI lauki pa virsu (nepārraksta jau saliktos pamatlaukus)
-        for k, v in ai_fields.items():
-            if k not in cols:
-                cols[k] = v
-
         # Drop None vērtības — ļauj DB defaults
-        cols = {k: v for k, v in cols.items() if v is not None}
+        core_cols = {k: v for k, v in cols.items() if v is not None}
 
-        col_list = ", ".join(f'"{k}"' for k in cols)
-        val_list = ", ".join(["%s"] * len(cols))
-        cur = conn.execute(
-            f"INSERT INTO properties.listings ({col_list}) VALUES ({val_list}) RETURNING id",
-            tuple(cols.values()),
-        )
-        listing_id = int(cur.fetchone()[0])
+        # AI lauki pa virsu (nepārraksta jau saliktos pamatlaukus). Tie iet
+        # enum/numeric kolonnās → viena negaidīta AI vērtība (CheckViolation,
+        # InvalidTextRepresentation u.tml.) nedrīkst nogāzt VISU importu:
+        # tādā gadījumā atkārtojam INSERT tikai ar pamatlaukiem + brīdinājums.
+        full_cols = dict(core_cols)
+        for k, v in ai_fields.items():
+            if k not in full_cols and v is not None:
+                full_cols[k] = v
+
+        def _insert(c: dict[str, Any]) -> int:
+            col_list = ", ".join(f'"{k}"' for k in c)
+            val_list = ", ".join(["%s"] * len(c))
+            cur = conn.execute(
+                f"INSERT INTO properties.listings ({col_list}) VALUES ({val_list}) RETURNING id",
+                tuple(c.values()),
+            )
+            return int(cur.fetchone()[0])
+
+        try:
+            listing_id = _insert(full_cols)
+            cols = full_cols
+        except psycopg.Error as e:
+            conn.rollback()
+            if full_cols.keys() == core_cols.keys():
+                raise  # AI lauku nemaz nebija — kļūda ir pamatlaukos
+            warnings.append(
+                "AI laukus DB noraidīja "
+                f"({type(e).__name__}: {str(e).splitlines()[0][:200]}) — "
+                "importēts bez tiem, aizpildi laukus listinga redaktorā."
+            )
+            ai_ok = False
+            listing_id = _insert(core_cols)
+            cols = core_cols
         conn.commit()
 
     return {
