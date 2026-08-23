@@ -109,6 +109,15 @@ class WPPublisher:
     def health(self) -> dict:
         return self._request("GET", "/health")
 
+    # ---- gallery (source='wp' listingiem — pilnā WP galerija) --------------
+
+    def get_property_gallery(self, post_id: int) -> dict:
+        """GET /property/{id}/gallery — pilnā Houzez galerija (URL secībā).
+        Lieto mājaslapā-dzimušiem (source='wp') listingiem, kuru bildes dzīvo
+        tikai WP pusē. Atgriež {post_id, featured_id, count, image_ids, images}.
+        Prasa rgc-mk plugin >= 5.2.0."""
+        return self._request("GET", f"/property/{int(post_id)}/gallery")
+
     # ---- property ---------------------------------------------------------
 
     def create_property(

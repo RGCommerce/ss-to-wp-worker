@@ -732,6 +732,54 @@ def sslv_import_endpoint(req: SslvImportReq,
 
 
 # ---------------------------------------------------------------------------
+# 7c) WP GALERIJAS SINHRONIZĀCIJA — mājaslapā-dzimušiem (source='wp') listingiem
+#     ievelk PILNO Houzez galeriju no WP (mūsu DB importējot glabāja tikai 1).
+# ---------------------------------------------------------------------------
+
+@router.post("/wp-gallery-sync/{listing_id}")
+def wp_gallery_sync(listing_id: int,
+                    _auth: None = Depends(require_token)) -> dict:
+    """Ievelk PILNO WP galeriju listingam, kuram wp_post_id ir (parasti
+    source='wp' — izveidots tieši WordPress). Raksta wp_image_urls = visas
+    galerijas bildes + reset wp_images_downloaded_at=NULL → image_download_poller
+    pārvelk lokālo wp_raw spoguli (~30s) → panelis rāda visas + dublēšana kopē
+    visas. Prasa rgc-mk plugin >= 5.2.0 (GET /property/{id}/gallery)."""
+    with _db() as conn:
+        row = conn.execute(
+            'SELECT wp_post_id, source FROM properties.listings WHERE id = %s',
+            (listing_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Listings nav atrasts")
+    wp_post_id = row["wp_post_id"]
+    if not wp_post_id:
+        raise HTTPException(400, "Listingam nav wp_post_id (nav uz mājaslapas) — nav ko sinhronizēt")
+
+    import wp_publisher
+    try:
+        gallery = wp_publisher.WPPublisher().get_property_gallery(int(wp_post_id))
+    except Exception as e:
+        raise HTTPException(502, f"WP galerijas nolasīšana neizdevās: {str(e)[:300]}")
+
+    urls = [im["url"] for im in (gallery.get("images") or [])
+            if isinstance(im, dict) and im.get("url")]
+    if not urls:
+        return {"ok": True, "listing_id": listing_id, "count": 0,
+                "note": "WP galerija tukša — nekas netika mainīts."}
+
+    with _db() as conn:
+        conn.execute(
+            """UPDATE properties.listings
+               SET wp_image_urls = %s, wp_images_downloaded_at = NULL
+               WHERE id = %s""",
+            (urls, listing_id),
+        )
+        conn.commit()
+    return {"ok": True, "listing_id": listing_id, "count": len(urls),
+            "featured_id": gallery.get("featured_id")}
+
+
+# ---------------------------------------------------------------------------
 # 8) REPUBLISH — esoša listing-a (ne agent_anketa) publicēšana uz WP
 # ---------------------------------------------------------------------------
 
