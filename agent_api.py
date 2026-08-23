@@ -898,7 +898,8 @@ def listing_manual_order(listing_id: int,
 
 
 class EditorEnhanceReq(BaseModel):
-    filename: str                 # ai_ready bildes fails
+    filename: str                 # bildes fails folderī
+    folder: str = "ai_ready"      # raw | ai_ready | wp_raw (kur bilde reāli ir)
     engine: str = "replicate"     # replicate (lētais) | openai (dārgais)
     quality: str = "medium"       # tikai openai
     # Custom prompt (tikai replicate/Seedream ceļam) — aģents pats apraksta, kas
@@ -910,16 +911,21 @@ class EditorEnhanceReq(BaseModel):
 @router.post("/listing-image-enhance/{listing_id}")
 def listing_image_enhance(listing_id: int, req: EditorEnhanceReq,
                           _auth: None = Depends(require_token)) -> dict:
-    """AI uzlabo VIENU dzīvā listinga ai_ready bildi UZ VIETAS (pārraksta to
-    pašu failu, lai DB ceļš/secība/manifests nemainās). Pēc tam ss.com
-    ūdenszīmes pārbaude. Panelis pēc tam republicē (force) → WP dabū jauno."""
-    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
-    src = ai_dir / req.filename
+    """AI uzlabo VIENU dzīvā listinga bildi UZ VIETAS (pārraksta to pašu failu,
+    lai DB ceļš/secība/manifests nemainās). Strādā jebkurā lokālā folderī
+    (raw/ai_ready/wp_raw) — tā AI (t.sk. custom prompt ūdenszīmju noņemšanai)
+    pieejama arī vēl nepublicētiem / tikko importētiem listingiem, kur apstrādātu
+    bilžu vēl nav (Raimonds 2026-08-23). Pēc tam ss.com ūdenszīmes pārbaude.
+    Panelis pēc tam republicē (force) → WP dabū jauno."""
+    if req.folder not in _EDIT_FOLDERS:
+        raise HTTPException(400, f"folder jābūt {_EDIT_FOLDERS}")
+    img_dir = STORAGE_ROOT / "listings" / str(listing_id) / req.folder
+    src = img_dir / req.filename
     if req.filename.startswith(".") or "/" in req.filename \
             or "\\" in req.filename or ".." in req.filename:
         raise HTTPException(400, "Nederīgs filename")
     if not src.is_file():
-        raise HTTPException(404, f"Bilde nav ai_ready: {req.filename}")
+        raise HTTPException(404, f"Bilde nav {req.folder}: {req.filename}")
 
     engine = (req.engine or "replicate").strip().lower()
     tmp = src.with_name(src.stem + "__enh_tmp" + src.suffix)
