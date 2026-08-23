@@ -408,7 +408,10 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
             )
 
     # ── 3) Building profile + listings INSERT ──────────────────────────────
-    with psycopg.connect(agent_publish.DATABASE_URL, row_factory=dict_row) as conn:
+    # NB: plain (tuple-rindu) savienojums — agent_publish._get_or_create_bp
+    # lieto pozicionālo indeksēšanu (existing[0], fetchone()[0]); dict_row te dotu
+    # KeyError: 0.
+    with psycopg.connect(agent_publish.DATABASE_URL) as conn:
         bp_id = agent_publish._get_or_create_bp(
             conn, {"street": street, "city": city, "district": district}, wp_user_id
         )
@@ -475,7 +478,7 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
             f"INSERT INTO properties.listings ({col_list}) VALUES ({val_list}) RETURNING id",
             tuple(cols.values()),
         )
-        listing_id = int(cur.fetchone()["id"])
+        listing_id = int(cur.fetchone()[0])
         conn.commit()
 
     return {
