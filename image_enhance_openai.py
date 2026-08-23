@@ -220,10 +220,12 @@ def enhance_image(src_path: Path, dst_path: Path, quality: str = "medium") -> Pa
     return dst_path
 
 
-def enhance_image_replicate(src_path: Path, dst_path: Path) -> Path:
+def enhance_image_replicate(src_path: Path, dst_path: Path,
+                            prompt: str | None = None) -> Path:
     """Vienas bildes uzlabošana caur Replicate Seedream (TAS PATS dzinējs, ko
     DB→WP image_pipeline). Alternatīva gpt-image-1 — aģents izvēlas katrai bildei.
-    Met EnhanceError ar konkrētu iemeslu, ja neizdodas."""
+    prompt — opcionāls aģenta custom prompt (bilžu editora «Custom» opcija);
+    None/tukšs → standarta Seedream PROMPT. Met EnhanceError, ja neizdodas."""
     import image_pipeline as ip  # replicate_upload + seedream_predict + _VERIFY
     if not ip.REPLICATE_TOKEN:
         raise EnhanceError("REPLICATE_TOKEN trūkst")
@@ -231,7 +233,7 @@ def enhance_image_replicate(src_path: Path, dst_path: Path) -> Path:
     dst_path = Path(dst_path)
     try:
         url = ip.replicate_upload(src_path.read_bytes(), src_path.name)
-        out_url = ip.seedream_predict(url)
+        out_url = ip.seedream_predict(url, prompt=prompt)
     except Exception as e:
         raise EnhanceError(f"Replicate kļūda: {str(e)[:140]}")
     if not out_url:

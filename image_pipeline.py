@@ -107,10 +107,12 @@ def replicate_upload(image_bytes: bytes, filename: str) -> str:
     return resp.json()["urls"]["get"]
 
 
-def seedream_predict(image_url: str) -> str | None:
-    """Palaiž Seedream 5 Lite, atgriež output URL vai None ja kļūda."""
+def seedream_predict(image_url: str, prompt: str | None = None) -> str | None:
+    """Palaiž Seedream 5 Lite, atgriež output URL vai None ja kļūda.
+    prompt=None → standarta ūdenszīmes-noņemšanas PROMPT; citādi aģenta
+    custom prompt (bilžu editora «Custom» opcija)."""
     inputs = {
-        "prompt": PROMPT,
+        "prompt": (prompt or "").strip() or PROMPT,
         "image_input": [image_url],
         "size": "2K",
         "aspect_ratio": "match_input_image",

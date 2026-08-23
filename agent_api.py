@@ -901,6 +901,10 @@ class EditorEnhanceReq(BaseModel):
     filename: str                 # ai_ready bildes fails
     engine: str = "replicate"     # replicate (lētais) | openai (dārgais)
     quality: str = "medium"       # tikai openai
+    # Custom prompt (tikai replicate/Seedream ceļam) — aģents pats apraksta, kas
+    # bildē jāizdara (piem. konkrētas ūdenszīmes noņemšana). Tukšs → standarta
+    # Seedream PROMPT.
+    prompt: Optional[str] = None
 
 
 @router.post("/listing-image-enhance/{listing_id}")
@@ -925,7 +929,8 @@ def listing_image_enhance(listing_id: int, req: EditorEnhanceReq,
                 src_path=src, dst_path=tmp, quality=req.quality)
         else:
             image_enhance_openai.enhance_image_replicate(
-                src_path=src, dst_path=tmp)
+                src_path=src, dst_path=tmp,
+                prompt=(req.prompt or "").strip() or None)
     except Exception as e:
         try:
             tmp.unlink(missing_ok=True)
