@@ -706,6 +706,32 @@ def draft_image_proxy(
 
 
 # ---------------------------------------------------------------------------
+# 7b) SS.LV IMPORTS CAUR LINKU — viens sludinājums → listings DB (bez WP)
+# ---------------------------------------------------------------------------
+
+class SslvImportReq(BaseModel):
+    url: str
+    wp_user_id: int = 0
+
+
+@router.post("/sslv-import")
+def sslv_import_endpoint(req: SslvImportReq,
+                         _auth: None = Depends(require_token)) -> dict:
+    """«Caur linku» imports: noskrāpē VIENU ss.lv sludinājumu (kas nav DB),
+    izlaiž caur AI analīzi (ss.lv teksts + galerijas URL) un izveido listings
+    rindu ar Debug_status='ok'. UZ WP NEIET — kontaktus aģents ieraksta pats,
+    tad «Export to WP». Bildes lejupielādē image_download_poller (~30s).
+    Sinhrons (~30-90s, AI vision). Sk. sslv_import.py."""
+    import sslv_import
+    try:
+        return sslv_import.import_from_url(req.url, req.wp_user_id)
+    except sslv_import.SslvImportError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Imports neizdevās: {type(e).__name__}: {str(e)[:300]}")
+
+
+# ---------------------------------------------------------------------------
 # 8) REPUBLISH — esoša listing-a (ne agent_anketa) publicēšana uz WP
 # ---------------------------------------------------------------------------
 
