@@ -365,10 +365,25 @@ def _join_lv(items) -> str:
 _BDESC_BAD = ("nav redzam", "ārpus", "arpus", "nav saskat", "nezin", "neredz",
               "bilde", "foto", "attēl", "attel")
 
+# "...un komerctelpām pirmajā stāvā" tipa piedēklis — AI to bieži pieliek, bet
+# tas NEDER visiem (ne katrā ēkā ir komerctelpas 1. stāvā). Raimonds 2026-08-23:
+# noņemt no šablona; noņemas renderējot → mājaslapā pazūd pie nākamā republish,
+# masveida update nav vajadzīgs. Tikai savienojošā "un" klauzula (ne patstāvīgs
+# teikuma sākums), lai nenogriež ēkas pamataprakstu.
+_BDESC_GROUND_FLOOR_RE = re.compile(
+    r"\s+un\s+[^.,;]{0,30}?komerctelp\w*[^.,;]{0,30}?(?:pirmaj\w+|1\.?)\s*st[āa]v\w*",
+    re.IGNORECASE,
+)
+
 
 def _clean_bdesc(s) -> Optional[str]:
     """Izņem AI meta-klauzulas no Building_description (piem. 'Ārpuse nav redzama;')."""
     s = _clean(s)
+    if not s:
+        return None
+    # Nogriež "un komerctelpām pirmajā stāvā" piedēkli (neder visiem — Raimonds).
+    s = _BDESC_GROUND_FLOOR_RE.sub("", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
     if not s:
         return None
     parts = re.split(r"[;.]", s)
