@@ -275,15 +275,20 @@ def ensure_raw_local(conn, listing: dict) -> list[Path]:
     # Skenē kas jau ir lokāli (visi bilžu paplašinājumi, ne tikai .jpg)
     existing = _raw_files_local(out_dir)
 
-    expected_count = 0
-    if listing["jpg_field"]:
-        expected_count = len(download_images.parse_image_urls(listing["jpg_field"]))
-
-    if existing and len(existing) >= expected_count:
-        print(f"  raw bildes jau lokāli: {len(existing)} gab.")
+    # NEATGRIEZENISKA dzēšana (Raimonds 2026-08-23): ja raw JAU ir lokāli (kaut
+    # viena bilde), TĀS ir patiesības avots — NEpapildinām no ss.lv. Agrāk, ja
+    # failu bija mazāk nekā "JPG bildes" URL, pār-lejupielādēja trūkstošās →
+    # aģenta dzēstās (ūdenszīmju) bildes atgriezās PDF/publish laikā. Tagad
+    # lejupielādē TIKAI, kad raw ir PILNĪGI tukšs (pirmreizējais imports).
+    if existing:
+        print(f"  raw bildes jau lokāli: {len(existing)} gab. (autoritāte — bez top-up)")
         return existing
 
-    # Lejupielādē trūkstošās. download_images.process_listing ir idempotents (skip ja eksistē).
+    if not listing["jpg_field"]:
+        return existing
+
+    expected_count = len(download_images.parse_image_urls(listing["jpg_field"]))
+    # Lejupielādē pirmreizēji (raw tukšs). download_images.process_listing ir idempotents.
     print(f"  lejupielādē raw no ss.lv ({expected_count} URLs)...")
     # download_images STORAGE_ROOT izmanto modulā kā globālu mainīgo — uzstādīt
     download_images.STORAGE_ROOT = STORAGE_ROOT
