@@ -30,6 +30,7 @@ import io
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 import psycopg
 from dotenv import load_dotenv
@@ -61,16 +62,29 @@ IEVA_GROUPS = {"Birojs", "Medicīna", "Tirdzniecība", "Studija"}
 _SALE_PT = {"regular", "parastā", "parasta", "sale", "sell", "buy"}
 AGENT_CONTACTS = {
     AGENT_IEVA: {
-        "name": "Ieva", "phone": "", "email": "",
+        "name": "Ieva Ekštele",
+        "phone": "+371 26650429",
+        "email": "ieva@rgcommerce.lv",
         "photo": "agent_ieva.jpg",
     },
     AGENT_RAIMONDS: {
         "name": "Raimonds Grīnbergs",
-        "phone": "+371 23072 4004",
+        "phone": "+371 23072404",
         "email": "raimonds@rgcommerce.lv",
         "photo": "agent_raimonds.jpg",
     },
 }
+
+# Ielogotā lietotāja e-pasts → aģenta ID (PDF kontakts = kurš taisa PDF).
+# Sinhroni ar paneļa agent-user.ts EMAIL_TO_WP_USER_ID.
+EMAIL_TO_AGENT_ID = {
+    "raimonds@rgcommerce.lv": AGENT_RAIMONDS,
+    "ieva@rgcommerce.lv": AGENT_IEVA,
+}
+
+
+def agent_id_for_email(email) -> Optional[int]:
+    return EMAIL_TO_AGENT_ID.get((email or "").strip().lower())
 
 # Mūsu logo (RGC Commercial Real Estate Firm) — transparent PNG → uzliek
 # uz kontaktu lapas navy fona bez baltas kastes ap to
@@ -442,8 +456,13 @@ def _esc(s) -> str:
 # HTML būve
 # ---------------------------------------------------------------------------
 
-def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
-    """Atgriež (html_str, base_url) WeasyPrint-am."""
+def build_html(listing: dict, bp: dict, listing_id: int,
+               agent_id: Optional[int] = None) -> tuple[str, str]:
+    """Atgriež (html_str, base_url) WeasyPrint-am.
+
+    agent_id — PDF kontakts = ielogotais lietotājs, kas taisa PDF (Raimonds
+    2026-08-23). Ja padots un ir AGENT_CONTACTS → to lieto; citādi fallback uz
+    veco likumu (pārdod→Raimonds; Ieva grupas→Ieva)."""
     sg = (listing.get("Space_group") or "").strip()
     veids = _VEIDS.get(sg, "Komerctelpas")
     sale = str(listing.get("price_type") or "").lower() in _SALE_PT
@@ -474,10 +493,15 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
     desc_html = render_body(sg if sg in _VEIDS else "Birojs", listing, bp)
 
     # ---- Agents ----
-    is_sale_agent = str(listing.get("price_type") or "").lower() in _SALE_PT
-    agent_id = (AGENT_RAIMONDS if is_sale_agent
-                else (AGENT_IEVA if sg in IEVA_GROUPS else AGENT_RAIMONDS))
-    agent = AGENT_CONTACTS.get(agent_id, AGENT_CONTACTS[AGENT_RAIMONDS])
+    # PDF kontakts = ielogotais lietotājs (agent_id), ja atpazīts; citādi vecais
+    # likums pēc darījuma/grupas (fallback, ja agent_id nav vai nav kontaktos).
+    if agent_id is not None and int(agent_id) in AGENT_CONTACTS:
+        resolved_agent_id = int(agent_id)
+    else:
+        is_sale_agent = str(listing.get("price_type") or "").lower() in _SALE_PT
+        resolved_agent_id = (AGENT_RAIMONDS if is_sale_agent
+                             else (AGENT_IEVA if sg in IEVA_GROUPS else AGENT_RAIMONDS))
+    agent = AGENT_CONTACTS.get(resolved_agent_id, AGENT_CONTACTS[AGENT_RAIMONDS])
 
     price_lbl = "Cena" if sale else "Noma mēnesī"
     price_str = (f"{_money(price)} EUR" if price else "Cena pēc pieprasījuma")
@@ -645,7 +669,7 @@ def _ensure_ai_ready(listing_id: int) -> None:
         print(f"[pdf_maker] image_classify brīdinājums: {e}")
 
 
-def render_pdf_bulk(listing_ids: list[int]) -> bytes:
+def render_pdf_bulk(listing_ids: list[int], agent_id: Optional[int] = None) -> bytes:
     """Apvieno N listingu PDF lapas vienā brošūrā (klientam dot kā saliktu
     piedāvājumu).
 
@@ -666,7 +690,7 @@ def render_pdf_bulk(listing_ids: list[int]) -> bytes:
     for idx, lid in enumerate(listing_ids, start=1):
         print(f"[pdf_maker.bulk] {idx}/{len(listing_ids)} listing#{lid}")
         try:
-            pdf_bytes = render_pdf(lid)
+            pdf_bytes = render_pdf(lid, agent_id=agent_id)
         except Exception as e:
             print(f"[pdf_maker.bulk] listing#{lid} izlaists: {e}")
             continue
@@ -690,8 +714,9 @@ def saved_pdf_path(listing_id: int) -> Path:
     return STORAGE_ROOT / "listings" / str(listing_id) / "offer.pdf"
 
 
-def render_pdf(listing_id: int) -> bytes:
-    """Galvenā API — atgriež PDF baitus.
+def render_pdf(listing_id: int, agent_id: Optional[int] = None) -> bytes:
+    """Galvenā API — atgriež PDF baitus. agent_id = ielogotais lietotājs → PDF
+    kontakts (fallback uz likumu, ja nav).
 
     PIRMS render — VIENMĒR nodrošina AI bildes (image_pipeline + classify), ja
     ai_ready/ trūkst. Tā PDF nekad nedabū tukšu galeriju.
@@ -705,7 +730,7 @@ def render_pdf(listing_id: int) -> bytes:
     from weasyprint import HTML  # imports šeit — ja libs trūkst, skaidra kļūda
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         listing, bp = _fetch(conn, listing_id)
-    html_doc, base_url = build_html(listing, bp, listing_id)
+    html_doc, base_url = build_html(listing, bp, listing_id, agent_id=agent_id)
     pdf_bytes = HTML(string=html_doc, base_url=base_url).write_pdf()
     # Saglabā/pārraksta saglabāto kopiju (nekritiski — ja neizdodas, PDF tāpat
     # atgriežas pārlūkam). write_bytes pārraksta esošo → vecais izdzēšas.

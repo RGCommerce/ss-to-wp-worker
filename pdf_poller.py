@@ -63,7 +63,7 @@ def _claim_next() -> Optional[dict]:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         with conn.transaction():
             cur = conn.execute("""
-                SELECT id, listing_ids, attempts
+                SELECT id, listing_ids, attempts, requested_by
                 FROM properties.pdf_jobs
                 WHERE status = 'pending'
                 ORDER BY requested_at ASC
@@ -119,8 +119,10 @@ def _process(job: dict) -> tuple[bool, str, Optional[str]]:
     if not listing_ids:
         return False, "listing_ids tukšs", None
 
+    # PDF kontakts = kurš pieprasīja (ielogotais lietotājs), fallback uz likumu.
+    agent_id = pdf_maker.agent_id_for_email(job.get("requested_by"))
     try:
-        pdf_bytes = pdf_maker.render_pdf_bulk(listing_ids)
+        pdf_bytes = pdf_maker.render_pdf_bulk(listing_ids, agent_id=agent_id)
     except SystemExit as e:
         return False, f"SystemExit: {e}", None
     except Exception as e:

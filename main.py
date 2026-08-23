@@ -141,6 +141,11 @@ class PublishRequest(BaseModel):
 
 class BulkPdfRequest(BaseModel):
     listing_ids: list[int]
+    agent_id: Optional[int] = None  # ielogotais lietotājs → PDF kontakts
+
+
+class PdfRequest(BaseModel):
+    agent_id: Optional[int] = None  # ielogotais lietotājs → PDF kontakts
 
 
 class ClassifyRequest(BaseModel):
@@ -336,7 +341,7 @@ def pdf_bulk(body: BulkPdfRequest):
     if len(body.listing_ids) > 20:
         raise HTTPException(400, "Maksimums 20 listingi vienā PDF")
     try:
-        pdf_bytes = pdf_maker.render_pdf_bulk(body.listing_ids)
+        pdf_bytes = pdf_maker.render_pdf_bulk(body.listing_ids, agent_id=body.agent_id)
     except SystemExit as e:
         raise HTTPException(500, f"Bulk PDF kļūda: {e}")
     except Exception as e:
@@ -350,11 +355,12 @@ def pdf_bulk(body: BulkPdfRequest):
 
 
 @app.post("/pdf/{listing_id}", dependencies=[Depends(require_token)])
-def pdf(listing_id: int):
+def pdf(listing_id: int, body: PdfRequest = PdfRequest()):
     """Ģenerē RGC sludinājuma PDF brošūru (1 īpašums). Atgriež PDF failu
-    (application/pdf). Broker Panel poga "Izveidot PDF" izsauks šo."""
+    (application/pdf). Broker Panel poga "Izveidot PDF" izsauks šo.
+    body.agent_id = ielogotais lietotājs → PDF kontakts (fallback uz likumu)."""
     try:
-        pdf_bytes = pdf_maker.render_pdf(listing_id)
+        pdf_bytes = pdf_maker.render_pdf(listing_id, agent_id=body.agent_id)
     except SystemExit as e:
         raise HTTPException(500, f"PDF kļūda: {e}")
     except Exception as e:
