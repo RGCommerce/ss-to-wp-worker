@@ -113,6 +113,10 @@ def _fetch_eligible() -> list[dict]:
           AND {auto_cond}
           AND l.wp_post_id IS NULL
           AND l.link IS NOT NULL AND l.link <> ''
+          -- #81: NEauto-publicēt aizņemtos (occupied) — citādi pēc "Aizņemts"
+          -- unpublish (wp_post_id -> NULL) tie atkal kļūst eligible un poller tos
+          -- republicē (Cēsu 31 bug: unpublish -> auto_publish -> atkal aktīvs).
+          AND l.occupancy_status IS DISTINCT FROM 'occupied'
           -- nav jau rindā vai kļūdā publicēšanai (loop drošība)
           AND NOT EXISTS (
                 SELECT 1 FROM properties.wp_export_queue q
