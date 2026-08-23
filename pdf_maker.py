@@ -285,6 +285,28 @@ def _ordered_images(listing_id: int) -> list[Path]:
     return gallery
 
 
+_PLAN_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _plan_images(listing_id: int) -> list[Path]:
+    """Plānu bildes (manifest type='plans') — TĀS PAŠAS, kas mājaslapā iet uz
+    Houzez plānu sekciju (publish_to_wp._split_by_manifest). PDF tās rāda savās
+    «Plāns» lapās (Raimonds 2026-08-23). Visi bilžu formāti (ne tikai .jpg —
+    aģenta augšupielādētie plāni mēdz būt .png/.webp)."""
+    ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
+    if not ai_dir.is_dir():
+        return []
+    try:
+        manifest = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+    except Exception:
+        manifest = {}
+    return sorted(
+        p for p in ai_dir.glob("img_*.*")
+        if p.suffix.lower() in _PLAN_EXTS
+        and (manifest.get(p.name) or {}).get("type") == "plans"
+    )
+
+
 def _data_uri(path: Path, max_w: int, quality: int = 82) -> str:
     """Ielādē bildi, samazina līdz max_w platumam, atgriež base64 data-URI.
     Tā PDF nav atkarīgs no failu ceļiem un ir krietni mazāks (downscale)."""
@@ -382,6 +404,11 @@ body { font-family: 'Open Sans', 'DejaVu Sans', sans-serif;
 .gallery tr { page-break-inside: avoid; }
 .gallery img { width: 100%; height: 60mm; object-fit: cover;
                border-radius: 3pt; display: block; }
+
+/* ---- Plāna lapa (katrs plāns savā lapā; contain — plānu NEDRĪKST apgriezt) ---- */
+.plan-page { page-break-before: always; }
+.plan-img { display: block; max-width: 100%; max-height: 225mm;
+            margin: 0 auto; border-radius: 3pt; }
 
 /* ---- Kontaktu lapa (logo augšā, bilde apakšā) ---- */
 .contact { page: contact; page-break-before: always;
@@ -488,6 +515,18 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
         f'<table class="gallery">{gallery_rows}</table></div>'
         if gallery_rows else "")
 
+    # ---- Plāni — katrs savā lapā «Plāns» / «Plāns 1..N» (kā mājaslapā) ----
+    plan_imgs = _plan_images(listing_id)
+    plans_html = ""
+    if plan_imgs:
+        multi = len(plan_imgs) > 1
+        for i, p in enumerate(plan_imgs, start=1):
+            title = f"Plāns {i}" if multi else "Plāns"
+            plans_html += (
+                f'<div class="section plan-page"><div class="h2">{_esc(title)}</div>'
+                f'<img class="plan-img" src="{_data_uri(p, 1900, 85)}"></div>'
+            )
+
     # ---- Kontaktu lapa: aģenta foto + brand logo ----
     photo_path = ASSETS_DIR / agent.get("photo", "")
     photo_uri = _data_uri(photo_path, 800, 88) if photo_path.is_file() else ""
@@ -548,6 +587,8 @@ def build_html(listing: dict, bp: dict, listing_id: int) -> tuple[str, str]:
 </div>
 
 {gallery_section}
+
+{plans_html}
 
 <div class="contact">
   {logo_html}
