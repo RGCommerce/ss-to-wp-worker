@@ -490,10 +490,16 @@ def _meta(listing: dict, bp: dict) -> dict:
     is_sale = price_type in _SALE_PT
     price_n = _numeric(g("price"))
     area_n = _numeric(g("area_m2"))
-    # m² cena = cena / platība (Houzez fave_property_sec_price, kā Ievas)
+    # m² cena (Houzez fave_property_sec_price). #80: LIETO saglabāto precīzo
+    # price_per_m2 (lietotāja anketā ievadītais, piem. 7.5) — NEpārrēķina no
+    # noapaļotās kopcenas/platības (tas 7.5 pārvērta par 7.49). Ja price_per_m2 nav
+    # (ss.lv skrāpētie) → fallback uz cena/platība.
     sec_price = ""
     try:
-        if price_n and area_n and float(area_n) > 0:
+        stored_ppm2 = _numeric(g("price_per_m2"))
+        if stored_ppm2:
+            sec_price = _trim_dec(stored_ppm2)
+        elif price_n and area_n and float(area_n) > 0:
             sec_price = _trim_dec(round(float(price_n) / float(area_n), 2))
     except (ValueError, ZeroDivisionError):
         sec_price = ""
