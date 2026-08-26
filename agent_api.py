@@ -489,27 +489,63 @@ class DuplicateReq(BaseModel):
 _SALE_PRICE_TYPES = {"regular", "pārdošana", "pardosana", "sale", "pārdod", "pardod"}
 
 
-def _copy_listing_images_to_draft(listing_id: int, draft_id: int, target: str) -> list[dict]:
+def _copy_listing_images_to_draft(
+    listing_id: int, draft_id: int, target: str,
+    wp_image_urls: Optional[list[str]] = None,
+) -> list[dict]:
     """Kopē listinga bildes uz draft mapi → ImageRef[] paths, lai dublētā
     telpa tās rāda kā parastas augšuplādētas bildes.
 
-    PRIORITĀTE ai_ready (TĪRAS, bez ss.com ūdenszīmes)! Agrāk kopēja raw →
-    ūdenszīmju bildes iegāja anketas draftā un no turienes TIEŠI uz WP
-    (agent_publish ai_ready kopē bez Seedream) — tā #109581 dzīvē nonāca
-    ss.com logo. raw = tikai fallback, ja ai_ready vēl nav; tad ūdenszīmi
-    pie publicēšanas noķer publish_to_wp _watermark_gate."""
+    Kopē VISAS bildes, ko panelis reāli rāda (ne 1). Agrāk skatīja tikai
+    ai_ready→raw, tāpēc mājaslapā-dzimušiem (source='wp') listingiem — kam ir
+    tikai wp_raw / wp_image_urls, ne ss.lv raw — dublējās 1 bilde, kaut galerijā
+    ir visas (#61914 Ganību Dambis 25d). Tagad no lokālajām mapēm ņem to ar
+    VISVAIRĀK bildēm (= pilnā galerija); pie vienāda skaita priekšroka ai_ready
+    (TĪRAS, bez ss.com ūdenszīmes → #109581 regresija) > wp_raw > raw. Ja WP
+    remote URL komplekts ir lielāks par jebkuru lokālo spoguli (wp_raw spogulis
+    vēl nav pārvilcies pēc «Ievilkt mājaslapas bildes»), lejupielādē pilno
+    galeriju tieši no wp_image_urls."""
     base = STORAGE_ROOT / "listings" / str(listing_id)
-    src_dir = base / "ai_ready"
-    if not src_dir.is_dir():
-        src_dir = base / "raw"
-    if not src_dir.is_dir():
-        return []
+    exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+
+    def _files(folder: str) -> list[Path]:
+        d = base / folder
+        if not d.is_dir():
+            return []
+        fs = sorted(p for p in d.glob("img_*.*") if p.suffix.lower() in exts)
+        if not fs:  # cits nosaukumu formāts — ņem visus attēlus
+            fs = sorted(p for p in d.iterdir()
+                        if p.is_file() and p.suffix.lower() in exts)
+        return fs
+
+    # Priekšroka: pie VIENĀDA skaita ai_ready > wp_raw > raw (max ņem pirmo
+    # maksimālo → saraksta secība = tiebreak). Uzvar tas, kam visvairāk bilžu.
+    local_best = max([_files("ai_ready"), _files("wp_raw"), _files("raw")], key=len)
+
     dst = STORAGE_ROOT / "agent_drafts" / str(draft_id) / target
     dst.mkdir(parents=True, exist_ok=True)
-    exts = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
-    files = sorted(p for p in src_dir.glob("img_*.*") if p.suffix.lower() in exts)
     out: list[dict] = []
-    for f in files:
+
+    urls = [u for u in (wp_image_urls or []) if u]
+    if len(urls) > len(local_best):
+        # Lokālais spogulis nepilnīgs → velc pilno galeriju no mājaslapas (WP
+        # bildes jau tīras — Seedream tām gāja publicējot). download_one → None
+        # ja bilde pazudusi; ja VISS neizdodas, atkāpjas uz local_best zemāk.
+        import download_images
+        for url in urls:
+            data = download_images.download_one(url)
+            if data is None:
+                continue
+            new = f"{uuid.uuid4().hex}.jpg"
+            (dst / new).write_bytes(data)
+            out.append({
+                "path": f"agent_drafts/{draft_id}/{target}/{new}",
+                "size": (dst / new).stat().st_size,
+            })
+        if out:
+            return out
+
+    for f in local_best:
         new = f"{uuid.uuid4().hex}{f.suffix.lower()}"
         shutil.copy2(f, dst / new)
         out.append({
@@ -584,7 +620,9 @@ def duplicate_listing(
     ):
         unit[c] = chk(c)
 
-    images = _copy_listing_images_to_draft(listing_id, req.draft_id, req.target)
+    images = _copy_listing_images_to_draft(
+        listing_id, req.draft_id, req.target, L.get("wp_image_urls")
+    )
     return {"unit": unit, "images": images}
 
 
