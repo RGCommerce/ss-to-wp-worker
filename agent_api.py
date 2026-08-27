@@ -898,10 +898,13 @@ def _write_manifest_map(listing_id: int, types: dict[str, str]) -> None:
         images[name] = {**prev, "type": t,
                         "quality": prev.get("quality", "good_for_website"),
                         "filename": name}
-    # __manual_order__ (paneļa manuālā secība) NEDRĪKST pazust pie
-    # featured/plāna maiņas — pārnes no esošā manifesta.
+    # __manual_order__ (paneļa manuālā secība) un __wp_att__ (per-faila WP
+    # attachment karte ātrajam re-publish) NEDRĪKST pazust pie featured/plāna
+    # maiņas — pārnes no esošā manifesta.
     if isinstance(existing, dict) and existing.get("__manual_order__"):
         images["__manual_order__"] = True
+    if isinstance(existing, dict) and isinstance(existing.get("__wp_att__"), dict):
+        images["__wp_att__"] = existing["__wp_att__"]
     image_classify.save_manifest(STORAGE_ROOT, listing_id, images)
 
 
@@ -961,6 +964,45 @@ def listing_image_classify(listing_id: int, req: ClassifyReq,
     return {
         "ok": True,
         "images": types,
+        "featured": _featured_of(types),
+        "plans": [n for n, t in types.items() if t == "plans"],
+    }
+
+
+class ImageBatchReq(BaseModel):
+    featured: Optional[str] = None       # ai_ready fails, kam būt galvenajai
+    plans: Optional[list[str]] = None    # PILNS plānu saraksts (None = neaiztikt)
+    manual_order: bool = False           # uzliek __manual_order__ karogu
+
+
+@router.post("/listing-image-batch/{listing_id}")
+def listing_image_batch(listing_id: int, req: ImageBatchReq,
+                        _auth: None = Depends(require_token)) -> dict:
+    """VIENĀ izsaukumā: galvenā + pilns plānu komplekts + manual_order karogs
+    (bilžu editora «Saglabāt» — agrāk katrs bija atsevišķs HTTP izsaukums →
+    lēni). Viens manifest write. plans = PILNS vēlamais saraksts (diff šeit)."""
+    types = _manifest_map(listing_id)
+    if req.plans is not None:
+        want = {p for p in req.plans if p in types}
+        for name in types:
+            if name in want:
+                types[name] = "plans"
+            elif types[name] == "plans":
+                types[name] = "interjers"
+    if req.featured and req.featured in types:
+        for name in types:
+            if name == req.featured:
+                types[name] = "fasade"
+            elif types[name] != "plans":
+                types[name] = "interjers"
+    _write_manifest_map(listing_id, types)
+    if req.manual_order:
+        manifest = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+        if isinstance(manifest, dict) and not manifest.get("__manual_order__"):
+            manifest["__manual_order__"] = True
+            image_classify.save_manifest(STORAGE_ROOT, listing_id, manifest)
+    return {
+        "ok": True,
         "featured": _featured_of(types),
         "plans": [n for n, t in types.items() if t == "plans"],
     }

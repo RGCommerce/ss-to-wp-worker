@@ -23,6 +23,7 @@ nodrošina manifestu `storage/listings/<id>/_image_manifest.json`. Tad:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -727,29 +728,61 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
                 tax["property_status"] = [int(st["term_id"])]
                 print("  · property_status nav datu → default 'Nomā'")
 
-        # 2. Bildes — augšuplādē/reuse VISAS filename-order, tad split pa
-        # manifesta `type`. wp_attachment_ids glabā visus IDs filename-order
-        # (lai būtu deriv mapping filename→ID nākamajām re-publish).
-        # wp_floor_plan_attachment_ids = derivēts plānu apakšsaraksts.
+        # 2. Bildes — PER-FAILA reuse (Raimonds 2026-08-27: «saglabāt prasīja
+        # 2 min» — katra bilžu maiņa pārsūtīja VISAS bildes no jauna).
+        # Manifestā glabājas `__wp_att__` = {filename: {id, sha, url}} no
+        # iepriekšējā publish. Failam, kam SHA nav mainījies, reuse esošo WP
+        # attachment (0 sekundes); augšuplādē TIKAI jaunos/mainītos. Dzēšana/
+        # secība/galvenā/plāns → parasti 0 upload → publish sekundēs.
+        # `force` (AI enhance / ūdenszīmes gate) → visu pārsūta kā līdz šim.
+        att_map = manifest.get("__wp_att__") if isinstance(manifest, dict) else None
+        att_map = att_map if isinstance(att_map, dict) else {}
+        new_att_map: dict = {}
         fresh_upload = False
-        fresh_urls: list = []   # jauno WP media URL (spoguļa atjaunošanai)
-        if existing_att and len(existing_att) == len(img_paths) and not force:
-            print(f"  → reuse {len(existing_att)} esošos attachment ID "
-                  f"(filename-order)")
-            all_attach_ids = list(existing_att)
-        else:
+        fresh_urls: list = []   # WP media URL galerijas secībā (spogulim)
+        urls_complete = True    # vai katram failam zinām URL
+        all_attach_ids = []
+        reused = 0
+        # Fallback bez kartes: vecā pozicionālā reuse TIKAI ja NEKAS nav mainīts
+        # (skaits sakrīt) — pēc pārkārtošanas/dzēšanas tā vairs nav droša.
+        positional_ok = (not att_map and existing_att
+                         and len(existing_att) == len(img_paths) and not force)
+        for pos_i, p in enumerate(img_paths):
+            if not p.is_file():
+                print(f"  ! bilde nav atrasta, izlaiž: {p}")
+                continue
+            sha = hashlib.sha256(p.read_bytes()).hexdigest()
+            ent = att_map.get(p.name) if not force else None
+            if isinstance(ent, dict) and ent.get("id") and ent.get("sha") == sha:
+                all_attach_ids.append(int(ent["id"]))
+                new_att_map[p.name] = {"id": int(ent["id"]), "sha": sha,
+                                       "url": ent.get("url")}
+                if ent.get("url"):
+                    fresh_urls.append(ent["url"])
+                else:
+                    urls_complete = False
+                reused += 1
+                continue
+            if positional_ok:
+                aid = int(existing_att[pos_i])
+                all_attach_ids.append(aid)
+                new_att_map[p.name] = {"id": aid, "sha": sha, "url": None}
+                urls_complete = False
+                reused += 1
+                continue
+            res = wp.upload_media(p, filename=p.name, alt=alt_txt)
             fresh_upload = True
-            all_attach_ids = []
-            for p in img_paths:
-                if not p.is_file():
-                    print(f"  ! bilde nav atrasta, izlaiž: {p}")
-                    continue
-                res = wp.upload_media(p, filename=p.name, alt=alt_txt)
-                all_attach_ids.append(res["id"])
-                u = res.get("source_url") or res.get("url") or res.get("link")
-                if u:
-                    fresh_urls.append(u)
-                print(f"  → augšuplādēts {p.name} → att {res['id']}")
+            all_attach_ids.append(res["id"])
+            u = res.get("source_url") or res.get("url") or res.get("link")
+            new_att_map[p.name] = {"id": int(res["id"]), "sha": sha, "url": u}
+            if u:
+                fresh_urls.append(u)
+            else:
+                urls_complete = False
+            print(f"  → augšuplādēts {p.name} → att {res['id']}")
+        if reused:
+            print(f"  → reuse {reused}/{len(img_paths)} nemainītos attachment "
+                  f"(augšuplādēti tikai jaunie/mainītie)")
 
         # Filename→ID mapping pēc filename-order zip
         fname_to_id = {p.name: aid for p, aid
@@ -827,25 +860,36 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # mūžīgi rādīja VECO komplektu ("ieliku jaunas — skatā neparādās").
         # Svaiga augšupielāde → atjauno wp_image_urls (ja plugin atdeva URL)
         # + reset download timestamp → wp downloader pārvelk wp_raw no jauna.
-        if fresh_upload:
-            if fresh_urls and len(fresh_urls) == len(all_attach_ids):
-                conn.execute(
-                    """UPDATE properties.listings
-                       SET wp_image_urls = %s, wp_images_downloaded_at = NULL
-                       WHERE id = %s""",
-                    (fresh_urls, listing_id),
-                )
-                print(f"  → spogulis: wp_image_urls atjaunots "
-                      f"({len(fresh_urls)}) + wp_raw re-download rindā")
-            else:
-                conn.execute(
-                    """UPDATE properties.listings
-                       SET wp_images_downloaded_at = NULL
-                       WHERE id = %s""",
-                    (listing_id,),
-                )
-                print("  → spogulis: wp_raw re-download rindā "
-                      f"(URL no plugin: {len(fresh_urls)}/{len(all_attach_ids)})")
+        old_urls = list(listing.get("wp_image_urls") or [])
+        urls_ready = (urls_complete and fresh_urls
+                      and len(fresh_urls) == len(all_attach_ids))
+        if urls_ready and fresh_urls != old_urls:
+            # Arī reorder-only (0 upload) — spogulim jāatbilst jaunajai secībai.
+            conn.execute(
+                """UPDATE properties.listings
+                   SET wp_image_urls = %s, wp_images_downloaded_at = NULL
+                   WHERE id = %s""",
+                (fresh_urls, listing_id),
+            )
+            print(f"  → spogulis: wp_image_urls atjaunots "
+                  f"({len(fresh_urls)}) + wp_raw re-download rindā")
+        elif fresh_upload:
+            conn.execute(
+                """UPDATE properties.listings
+                   SET wp_images_downloaded_at = NULL
+                   WHERE id = %s""",
+                (listing_id,),
+            )
+            print("  → spogulis: wp_raw re-download rindā "
+                  f"(URL zināmi: {len(fresh_urls)}/{len(all_attach_ids)})")
+        # Saglabā per-faila attachment karti manifestā (nākamais publish reuse).
+        try:
+            disk_now = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+            disk_now = disk_now if isinstance(disk_now, dict) else {}
+            disk_now["__wp_att__"] = new_att_map
+            image_classify.save_manifest(STORAGE_ROOT, listing_id, disk_now)
+        except Exception as e:
+            print(f"  ! __wp_att__ karti nesaglabāja: {e!s:.120}")
         conn.commit()
         print(f"  ✓ DB atjaunināts: wp_post_id={wp_id}, "
               f"all_ids={len(all_attach_ids)}, "
