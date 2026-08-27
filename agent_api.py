@@ -630,11 +630,18 @@ def duplicate_listing(
 def image_proxy(
     listing_id: int, folder: str, filename: str,
     token: Optional[str] = None,
+    w: Optional[int] = None,
     x_rgc_token: Annotated[Optional[str], Header(alias="X-RGC-Token")] = None,
 ):
     """Atgriež bildes baitus no /storage/listings/<id>/<folder>/.
     folder = 'raw' (ss.lv oriģināls) / 'ai_ready' (Seedream) / 'wp_raw' (mājaslapas).
-    Auth: X-RGC-Token header VAI ?token=... query param."""
+    Auth: X-RGC-Token header VAI ?token=... query param.
+
+    ?w=<px> (Raimonds 2026-08-27 «bildes lēni lādējas»): atdod GATAVU sīktēlu
+    (WebP), kešotu uz volume (.thumbs/). Agrāk panelis vilka PILNO failu
+    (vairāki MB × 16 bildes) un mazināja pats — tagad pa tīklu iet ~30-60KB
+    un paneļa CPU neko nedara. Kešs invalidējas pēc avota mtime (crop/AI
+    pārraksta failu → sīktēls pārģenerējas)."""
     from fastapi.responses import FileResponse
     if not RGC_MK_TOKEN:
         raise HTTPException(500, "Service nav konfigurēts")
@@ -647,6 +654,30 @@ def image_proxy(
     path = STORAGE_ROOT / "listings" / str(listing_id) / folder / filename
     if not path.is_file():
         raise HTTPException(404, "Bilde nav atrasta")
+
+    if w and 50 <= w <= 1600:
+        try:
+            src_mtime = path.stat().st_mtime
+            tdir = path.parent / ".thumbs"
+            tpath = tdir / f"{filename}.w{int(w)}.webp"
+            if not (tpath.is_file() and tpath.stat().st_mtime >= src_mtime):
+                from PIL import Image, ImageOps
+                tdir.mkdir(exist_ok=True)
+                with Image.open(path) as im:
+                    im = ImageOps.exif_transpose(im)
+                    if im.width > w:
+                        im = im.resize(
+                            (w, max(1, round(im.height * w / im.width))),
+                            Image.LANCZOS)
+                    if im.mode not in ("RGB", "L"):
+                        im = im.convert("RGB")
+                    im.save(tpath, "WEBP", quality=72)
+            return FileResponse(
+                tpath, media_type="image/webp",
+                headers={"Cache-Control": "private, max-age=86400"})
+        except Exception:
+            pass  # sīktēls neizdevās → atdod pilno failu kā līdz šim
+
     # Cache-Control: bez tā pārlūks/panelis katru reizi vilka pilnu bildi no
     # Railway (lēnā ielāde). Faila saturs tajā pašā ceļā mainās tikai crop/enhance,
     # ko UI pavada ar ?v= cache-busteri → 1h kešs ir drošs.
@@ -715,6 +746,15 @@ def listing_file_delete(
             if p.is_file():
                 p.unlink()
                 deleted += 1
+            # Arī kešotos sīktēlus (.thumbs/<fails>.wNNN.webp) — lai orphan
+            # sīktēli nekrājas un dzēstais nekur vairs neparādās.
+            tdir = p.parent / ".thumbs"
+            if tdir.is_dir():
+                for t in tdir.glob(f"{p.name}.w*.webp"):
+                    try:
+                        t.unlink()
+                    except OSError:
+                        pass
         except OSError:
             pass
     return {"ok": True, "deleted": deleted}
