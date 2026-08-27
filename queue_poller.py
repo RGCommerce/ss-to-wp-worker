@@ -61,15 +61,18 @@ def _recover_stale() -> int:
     restarta. Railway auto-redeploy nogalina vidū esošo publish_to_wp.publish(),
     bet DB ieraksts paliek 'processing' un nekad netiek paņemts atpakaļ.
 
+    Worker ir VIENS — startup brīdī NEKAS nevar būt godīgi 'processing', tāpēc
+    atjauno VISUS (bez vecuma filtra; agrāk 30 min filtrs lika svaigi
+    orphan-otam darbam karāties līdz pusstundai — Raimonds 2026-08-28).
+
     Atgriež atjaunoto rindu skaitu."""
     if not DATABASE_URL:
         return 0
     with psycopg.connect(DATABASE_URL) as conn:
-        r = conn.execute(f"""
+        r = conn.execute("""
             UPDATE properties.wp_export_queue
             SET status = 'pending', started_at = NULL
             WHERE status = 'processing'
-              AND started_at < now() - INTERVAL '{STALE_PROCESSING_MIN} minutes'
         """)
         return r.rowcount
 
@@ -91,12 +94,19 @@ def _claim_next() -> Optional[dict]:
         return None
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         with conn.transaction():
+            # Debug_status gate TIKAI pirmpublicēšanai (wp_post_id NULL).
+            # JAU publicētam listingam (wp_post_id IR) republish = bilžu/teksta
+            # atjaunošana esošam WP postam — tam statusa gate NEDRĪKST bloķēt
+            # (Raimonds 2026-08-28, #108194: bilžu edits pēc saglabāšanas
+            # karājās «mājaslapa atjaunojas», jo Debug_status nebija 'ok' un
+            # rinda NEKAD netika paņemta).
             cur = conn.execute("""
                 SELECT q.id, q.listing_id, q.attempts, q.action, q.wp_post_id
                 FROM properties.wp_export_queue q
                 LEFT JOIN properties.listings l ON l.id = q.listing_id
                 WHERE q.status = 'pending'
                   AND (q.action IN ('unpublish', 'delete')
+                       OR l.wp_post_id IS NOT NULL
                        OR l."Debug_status" = 'ok')
                 ORDER BY q.priority DESC, q.requested_at ASC
                 LIMIT 1
