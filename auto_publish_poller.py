@@ -11,9 +11,11 @@ Listings ir tiesīgs TIKAI ja:
   - Debug_status='ok'
   - zem ēkas ar auto_publish=true
   - vēl NAV uz web (wp_post_id IS NULL)
-  - VERIFICĒTS numurs — listinga telefons sakrīt ar ēkas primary/secondary (pēdējie
-    8 cipari). Drošības vārti: NEKAD nepublicē nepārbaudītu (piem. vecos, kas pa
-    veco "pēc adreses" ceļu ienāca bez numura).
+  - VERIFICĒTS numurs — listinga telefons sakrīt ar ēkas `auto_publish_phones`
+    (TIKAI manuāli apstiprinātie; pēdējie 8 cipari). ⚠ NE primary/secondary —
+    tos building_profiles_worker AUTOMĀTISKI savāc no ēkas sludinājumiem, tāpēc
+    pret tiem verificēt = aplis: jebkurš svešs ss.lv numurs auto-publish ēkā
+    pats kļūtu "verificēts" (Raimonds 2026-08-28, #110350 Cēsu 31).
   - UNIKĀLS — nav cita JAU publicēta listinga tajā pašā ēkā ar to pašu telpas
     atslēgu (area+floor+price_type). Nepublicē dublikātus.
   - nav jau rindā vai kļūdā publicēšanai (pending/processing/error).
@@ -86,9 +88,10 @@ def _fetch_eligible() -> list[dict]:
     """Listingi, kas gatavi auto-publicēšanai, bet vēl nav rindā/uz web.
 
     Divi ceļi:
-      A) parastais — ēka ar auto_publish=true UN listinga numurs ∈ ēkas primary/secondary.
+      A) parastais — ēka ar auto_publish=true UN listinga numurs ∈ ēkas
+         auto_publish_phones (TIKAI manuāli apstiprinātie numuri).
       B) VIP — listinga numurs ∈ VIP sarakstā → publicē JEBKURĀ ēkā (arī bez ēkas
-         karodziņa), numurs = verificēts pēc definīcijas (apiet primary/secondary vārtus).
+         karodziņa), numurs = verificēts pēc definīcijas.
     Abiem PALIEK: ok + wp_post_id null + nav rindā/kļūdā + unikāls (area+floor+price_type)."""
     if not DATABASE_URL:
         return []
@@ -106,7 +109,7 @@ def _fetch_eligible() -> list[dict]:
 
     query = f"""
         SELECT l.id, l.street, l.phone_numbers,
-               b.primary_phone, b.secondary_phone, b.auto_publish
+               b.auto_publish_phones, b.auto_publish
         FROM properties.listings l
         JOIN properties.building_profiles b ON b.id = l.building_profile_id
         WHERE l."Debug_status" = 'ok'
@@ -149,9 +152,11 @@ def _fetch_eligible() -> list[dict]:
         if vip_tails and (listing_tails & vip_tails):
             out.append(r)
             continue
-        # A) Parastais: ēka auto_publish + numurs ∈ ēkas primary/secondary.
+        # A) Parastais: ēka auto_publish + numurs ∈ MANUĀLI apstiprinātajiem
+        # (auto_publish_phones). primary/secondary NELIETO — tos worker savāc
+        # automātiski no sludinājumiem (#110350 aplis).
         if r["auto_publish"]:
-            owner = _tails(r["primary_phone"]) | _tails(r["secondary_phone"])
+            owner = _tails(r["auto_publish_phones"])
             if listing_tails & owner:
                 out.append(r)
     return out
