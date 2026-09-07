@@ -37,6 +37,33 @@ except Exception:
 load_dotenv(Path(__file__).parent / ".env")
 
 
+def _auto_translate(post_id: int, content: str) -> None:
+    """Daudzvalodu (LV→EN/RU) auto-tulkošana pēc teksta nonākšanas WP.
+
+    Fona pavedienā — NEbremzē un NEKAD neaptur publicēšanu. Tulko tikai
+    mainītās rindkopas (hash+kešs translate.py). Sk. HANDOFF_DAUDZVALODU.md.
+    Izslēdzama ar env AUTO_TRANSLATE=0 (piem., masveida darbībai tulkošanu
+    atliekot uz nakts backfilu backfill_translations.py).
+    """
+    if os.getenv("AUTO_TRANSLATE", "1") in ("0", "false", "False"):
+        return
+    if not content or len(content.strip()) < 40:
+        return
+
+    def _run() -> None:
+        try:
+            from translate import translate_listing
+            st = translate_listing(post_id, html=content)
+            if st and (st["translated"] or st["failed"]):
+                print(f"  · tulkojums wp={post_id}: +{st['translated']} "
+                      f"(kešs {st['cached']}, kļūdas {st['failed']})")
+        except Exception as e:  # best-effort — nekad netraucē publicēšanu
+            print(f"  · tulkojums wp={post_id} izlaists: {str(e)[:80]}")
+
+    import threading
+    threading.Thread(target=_run, daemon=True).start()
+
+
 class WPPublisherError(RuntimeError):
     """REST izsaukums neizdevas (ne-2xx vai tikla kluda)."""
 
@@ -156,7 +183,11 @@ class WPPublisher:
         # PILNA ģeokodējamā adrese (tikai plugin koordinātēm; NErādās frontendā).
         if geocode_address:
             body["geocode_address"] = geocode_address
-        return self._request("POST", "/property/create", json_body=body)
+        resp = self._request("POST", "/property/create", json_body=body)
+        # Auto-tulkošana (EN/RU) jaunam sludinājumam — fonā, best-effort
+        if content and resp.get("id"):
+            _auto_translate(int(resp["id"]), content)
+        return resp
 
     def update_property(
         self,
@@ -202,9 +233,14 @@ class WPPublisher:
         # PILNA ģeokodējamā adrese (tikai plugin koordinātēm; NErādās frontendā).
         if geocode_address:
             body["geocode_address"] = geocode_address
-        return self._request(
+        resp = self._request(
             "POST", f"/property/{int(post_id)}/update", json_body=body
         )
+        # Auto-tulkošana (EN/RU) pēc teksta maiņas — fonā; hash nodrošina,
+        # ka pārtulkojas TIKAI mainītās rindkopas (piem. apsaimniekotāja edits)
+        if content:
+            _auto_translate(int(post_id), content)
+        return resp
 
     def delete_property(self, post_id: int, force: bool = False) -> dict:
         suffix = "?force=true" if force else ""
