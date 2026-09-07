@@ -9,14 +9,17 @@ Tas pats skripts der arī kā REZERVES fona darbs (piem. reizi naktī):
 atkārtota palaišana pārtulko tikai jauno/mainīto — «bez mūsu iesaistes».
 
 Palaišana:
-    python backfill_translations.py            # viss (ar pauzēm, lai netraucē WP)
-    python backfill_translations.py --limit 50 # pirmie 50 (tests)
+    python backfill_translations.py               # viss, secīgi
+    python backfill_translations.py --limit 50    # pirmie 50 (tests)
+    python backfill_translations.py --workers 8   # paralēli (pilnajam backfilam)
 """
 from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from translate import _db, translate_listing, ensure_table
 
@@ -30,8 +33,11 @@ PAUSE = float(os.getenv("TR_PAUSE", "0.4"))  # sek starp listingiem (saudzē WP/
 
 def main() -> None:
     limit = 0
+    workers = 1
     if "--limit" in sys.argv:
         limit = int(sys.argv[sys.argv.index("--limit") + 1])
+    if "--workers" in sys.argv:
+        workers = max(1, int(sys.argv[sys.argv.index("--workers") + 1]))
 
     conn = _db()
     ensure_table(conn)
@@ -43,25 +49,37 @@ def main() -> None:
         ids = [r[0] for r in cur.fetchall()]
     conn.close()
 
-    print(f"Backfils: {len(ids)} sludinājumi → EN+RU")
+    print(f"Backfils: {len(ids)} sludinājumi → EN+RU (workers={workers})", flush=True)
     tot = {"translated": 0, "cached": 0, "kept": 0, "failed": 0, "empty": 0}
+    done = {"n": 0}
+    lock = threading.Lock()
     t0 = time.time()
-    for i, wp_id in enumerate(ids, 1):
+
+    def one(wp_id) -> None:
         st = translate_listing(wp_id)
-        if st is None:
-            tot["empty"] += 1
-        else:
-            for k in ("translated", "cached", "kept", "failed"):
-                tot[k] += st[k]
-        if i % 25 == 0 or i == len(ids):
-            mins = (time.time() - t0) / 60
-            print(f"  {i}/{len(ids)} ({mins:.1f} min) — "
-                  f"tulkots {tot['translated']}, kešs {tot['cached']}, "
-                  f"nemainīts {tot['kept']}, kļūdas {tot['failed']}, tukši {tot['empty']}")
-        # Pauze tikai ja tiešām kaut ko darīja (kept-only iet zibenīgi)
-        if st and (st["translated"] or st["cached"]):
+        with lock:
+            if st is None:
+                tot["empty"] += 1
+            else:
+                for k in ("translated", "cached", "kept", "failed"):
+                    tot[k] += st[k]
+            done["n"] += 1
+            if done["n"] % 25 == 0 or done["n"] == len(ids):
+                mins = (time.time() - t0) / 60
+                print(f"  {done['n']}/{len(ids)} ({mins:.1f} min) — "
+                      f"tulkots {tot['translated']}, kešs {tot['cached']}, "
+                      f"nemainīts {tot['kept']}, kļūdas {tot['failed']}, "
+                      f"tukši {tot['empty']}", flush=True)
+        if workers == 1 and st and (st["translated"] or st["cached"]):
             time.sleep(PAUSE)
-    print("GATAVS:", tot)
+
+    if workers == 1:
+        for wp_id in ids:
+            one(wp_id)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(one, ids))
+    print("GATAVS:", tot, flush=True)
 
 
 if __name__ == "__main__":
