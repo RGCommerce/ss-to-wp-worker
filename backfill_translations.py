@@ -29,6 +29,29 @@ except Exception:
     pass
 
 PAUSE = float(os.getenv("TR_PAUSE", "0.4"))  # sek starp listingiem (saudzē WP/OpenAI)
+WP_BASE = os.getenv("WP_BASE", "https://rgcommerce.lv")
+
+
+def _wp_catalog_ids() -> list:
+    """VISI mājaslapas kataloga sludinājumu ID tieši no WP (offset lapošana)."""
+    import httpx
+    ids, offset = [], 0
+    try:
+        while True:
+            r = httpx.get(WP_BASE + "/wp-admin/admin-ajax.php",
+                          params={"action": "rgc_catalog_page", "offset": offset},
+                          timeout=30)
+            d = r.json()
+            batch = [x["id"] for x in (d.get("listings") or []) if x.get("id")]
+            if not batch:
+                break
+            ids.extend(batch)
+            offset += len(batch)
+            if d.get("total") and offset >= int(d["total"]):
+                break
+    except Exception as e:
+        print(f"  ! WP catalog ids: {str(e)[:80]}")
+    return sorted(set(ids), reverse=True)
 
 
 def main() -> None:
@@ -41,13 +64,24 @@ def main() -> None:
 
     conn = _db()
     ensure_table(conn)
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT DISTINCT wp_post_id FROM properties.listings "
-            "WHERE on_website = true AND wp_post_id IS NOT NULL "
-            "ORDER BY wp_post_id DESC" + (f" LIMIT {limit}" if limit else ""))
-        ids = [r[0] for r in cur.fetchall()]
     conn.close()
+
+    # ID avots = pats WP katalogs (rgc_catalog_page) — tas ir PILNAIS mājaslapas
+    # saraksts, ieskaitot WP-dzimušos sludinājumus, kuru nav DB listings tabulā
+    # (DB avots tos izlaida — Kliģenes 22 gadījums). Fallback: DB.
+    ids = _wp_catalog_ids()
+    if not ids:
+        print("! WP katalogs nesasniedzams — fallback uz DB listings")
+        conn = _db()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT wp_post_id FROM properties.listings "
+                "WHERE on_website = true AND wp_post_id IS NOT NULL "
+                "ORDER BY wp_post_id DESC")
+            ids = [r[0] for r in cur.fetchall()]
+        conn.close()
+    if limit:
+        ids = ids[:limit]
 
     print(f"Backfils: {len(ids)} sludinājumi → EN+RU (workers={workers})", flush=True)
     tot = {"translated": 0, "cached": 0, "kept": 0, "failed": 0, "empty": 0}
