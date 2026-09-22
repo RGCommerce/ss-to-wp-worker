@@ -39,7 +39,11 @@ import unicodedata
 _LV = str.maketrans("āčēģīķļņšūž", "acegiklnsuz")
 _TYPE = re.compile(r"\b(iela|iel|gatve|gat|bulvaris|bulv|prospekts|prosp|pr|"
                    r"laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\.?\b")
-_INI = re.compile(r"\b[a-z]{1,2}\.")
+# «M.»/«L.» = «Mazā»/«Lielā» — CITA iela (zaļā 2026-09-22: M. Nometņu ≠
+# Nometņu) → izvērš pilnajā vārdā, NEizmet; pārējos iniciāļus izmet.
+_INI = re.compile(r"\b(?!m\.|l\.)[a-z]{1,2}\.")
+_MAZA = re.compile(r"\b(?:m|maz)\.\s*")
+_LIELA = re.compile(r"\b(?:l|liel)\.\s*")
 
 
 def _norm(t: str) -> str:
@@ -49,11 +53,14 @@ def _norm(t: str) -> str:
 
 
 def normalize_key(key: str) -> str:
-    """'aspazijas bulv.|20|riga' → 'aspazijas|20|riga' (aktuālā loģika)."""
+    """'aspazijas bulv.|20|riga' → 'aspazijas|20|riga' (aktuālā loģika).
+    'm. nometnu|45|riga' → 'maza nometnu|45|riga' (NEsaplūst ar 'nometnu')."""
     parts = (key or "").split("|")
     if not parts:
         return key
     s = _norm(parts[0])
+    s = _MAZA.sub("maza ", s)
+    s = _LIELA.sub("liela ", s)
     s = _INI.sub(" ", s)
     s = _TYPE.sub(" ", s).replace(".", " ")
     parts[0] = re.sub(r"\s+", " ", s).strip()

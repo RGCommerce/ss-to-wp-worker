@@ -85,17 +85,26 @@ def autocomplete(
     # SAĪSINĀTS (bulv./gat./pr.) + iniciāļi (Kr.) + diakritika nost; 2026-09-22
     # «Aspazijas bulvāris 20» ↔ «Aspazijas bulv. 20» spogulis street-search.ts +
     # mig. 2026-09-22_street_search_abbrev).
+    # ⚠ «M.»/«L.» = «Mazā»/«Lielā» — cita iela → izvērš, NEizmet (2026-09-22).
     _LV = str.maketrans("āčēģīķļņōŗšūž", "acegiklnorsuz")
-    _INI = _re.compile(r"\b[a-z]{1,2}\.")
+    _MAZA = _re.compile(r"\b(?:m|maz)\.\s*")
+    _LIELA = _re.compile(r"\b(?:l|liel)\.\s*")
+    _INI = _re.compile(r"\b(?!m\.|l\.)[a-z]{1,2}\.")
     _TYPE = _re.compile(r"\b(iela|iel|gatve|gat|bulvaris|bulv|prospekts|prosp|pr|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\.?\b")
     key = q.split(",")[0].lower().translate(_LV)
+    key = _MAZA.sub("maza ", key)
+    key = _LIELA.sub("liela ", key)
     key = _INI.sub(" ", key)
     key = _TYPE.sub(" ", key).replace(".", " ")
     key = _re.sub(r"\s+", " ", key).strip()
-    # SQL norm izteiksme (= listings.street_search ģenerētā kolona pēc mig.)
+    # SQL norm izteiksme (= listings.street_search ģenerētā kolona pēc mig.
+    # 2026-09-22_street_search_mazal)
     norm = (r"btrim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+            r"regexp_replace(regexp_replace("
             r"translate(lower(split_part(%s,',',1)),"
             r"'āčēģīķļņōŗšūž','acegiklnorsuz'),"
+            r"'\y(m|maz)\.\s*','maza ','g'),"
+            r"'\y(l|liel)\.\s*','liela ','g'),"
             r"'\y[a-z]{1,2}\.',' ','g'),"
             r"'\y(iela|iel|gatve|gat|bulvaris|bulv|prospekts|prosp|pr|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\y',' ','g'),"
             r"'\.',' ','g'),'\s+',' ','g'))")
