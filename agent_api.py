@@ -81,14 +81,24 @@ def autocomplete(
     q = (q or "").strip()
     if len(q) < 2:
         return []
-    # Normalizē meklēšanas terminu tāpat kā DB izteiksme (tipa vārds + diakritika nost)
+    # Normalizē meklēšanas terminu tāpat kā DB izteiksme (tipa vārds — arī
+    # SAĪSINĀTS (bulv./gat./pr.) + iniciāļi (Kr.) + diakritika nost; 2026-09-22
+    # «Aspazijas bulvāris 20» ↔ «Aspazijas bulv. 20» spogulis street-search.ts +
+    # mig. 2026-09-22_street_search_abbrev).
     _LV = str.maketrans("āčēģīķļņōŗšūž", "acegiklnorsuz")
-    _TYPE = _re.compile(r"\b(iela|gatve|bulvaris|prospekts|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\b")
-    key = _re.sub(r"\s+", " ", _TYPE.sub(" ", q.split(",")[0].lower().translate(_LV))).strip()
-    # SQL norm izteiksme (= listings.street_search ģenerētā kolona)
-    norm = (r"btrim(regexp_replace(regexp_replace(translate(lower(split_part(%s,',',1)),"
+    _INI = _re.compile(r"\b[a-z]{1,2}\.")
+    _TYPE = _re.compile(r"\b(iela|iel|gatve|gat|bulvaris|bulv|prospekts|prosp|pr|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\.?\b")
+    key = q.split(",")[0].lower().translate(_LV)
+    key = _INI.sub(" ", key)
+    key = _TYPE.sub(" ", key).replace(".", " ")
+    key = _re.sub(r"\s+", " ", key).strip()
+    # SQL norm izteiksme (= listings.street_search ģenerētā kolona pēc mig.)
+    norm = (r"btrim(regexp_replace(regexp_replace(regexp_replace(regexp_replace("
+            r"translate(lower(split_part(%s,',',1)),"
             r"'āčēģīķļņōŗšūž','acegiklnorsuz'),"
-            r"'\y(iela|gatve|bulvaris|prospekts|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\y',' ','g'),'\s+',' ','g'))")
+            r"'\y[a-z]{1,2}\.',' ','g'),"
+            r"'\y(iela|iel|gatve|gat|bulvaris|bulv|prospekts|prosp|pr|laukums|dambis|cels|aleja|soseja|linija|krastmala|tilts|pasaza)\y',' ','g'),"
+            r"'\.',' ','g'),'\s+',' ','g'))")
     cols = "id, full_address, city, district, building_type, building_class, listing_count_active"
     order = "ORDER BY listing_count_active DESC NULLS LAST, full_address LIMIT 8"
     with _db() as conn, conn.cursor() as cur:
