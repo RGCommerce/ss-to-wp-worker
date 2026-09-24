@@ -1901,11 +1901,13 @@ def extract_floor_value(listing_text: str) -> Optional[str]:
 
 
 def extract_gallery_urls(html: str) -> List[str]:
-    pattern = r'https://i\.ss\.lv/gallery/[^"\']+?\.jpg'
+    # i.ss.LV un i.ss.COM (2026-09-24, Trikātas 4): ss.com spoguļa lapas bildes
+    # servē no i.ss.com — bez tā «Caur linku» imports ss.com linkam redz 0 bildes.
+    pattern = r'https://i\.ss\.(?:lv|com)/gallery/[^"\']+?\.jpg'
     found = re.findall(pattern, html, flags=re.IGNORECASE)
 
     if not found:
-        pattern2 = r'//i\.ss\.lv/gallery/[^"\']+?\.jpg'
+        pattern2 = r'//i\.ss\.(?:lv|com)/gallery/[^"\']+?\.jpg'
         found2 = re.findall(pattern2, html, flags=re.IGNORECASE)
         found.extend(["https:" + x for x in found2])
 
