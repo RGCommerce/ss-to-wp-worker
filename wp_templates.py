@@ -866,16 +866,17 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
                            "Telpās būs viena plaša open space telpa."))
         elif n == 1:
             # 1 telpa ≠ "1 atsevišķa telpa" (Raimonds 2026-07-28) — tā ir viena
-            # liela open space telpa. Sadalīšanas piedēkli liekam tikai, ja nav
-            # tieši atzīmēts Dalama_telpa="Nē" (tad nemelojam).
+            # liela open space telpa. #93 (Ieva 2026-09-07): «ko var sadalīt»
+            # TIKAI ja Dalama_telpa tieši "Jā" — agrāk lika vienmēr, ja nebija
+            # "Nē", un sadalīšanas apgalvojums nebija balstīts datos (meloja).
             base = _fut("Telpās ir viena liela open space telpa",
                         "Telpās būs viena liela open space telpa")
             # NB: tieši no L, ne g() — _clean 'nē' uzskata par tukšu (_MISSING).
             dalama = str(L.get("Dalama_telpa") or "").strip().lower()
-            if dalama in ("nē", "ne"):
-                tech.append(base + ".")
-            else:
+            if dalama in ("jā", "ja", "yes"):
                 tech.append(base + ", ko pēc vajadzības var sadalīt.")
+            else:
+                tech.append(base + ".")
         else:
             tech.append(f"{kopa} {n} atsevišķas telpas.")
     # Logi + griesti = telpu VISPĀRĪGA īpašība, NE piesaistīta telpu skaitam.
