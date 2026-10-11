@@ -650,6 +650,17 @@ def duplicate_listing(
     images = _copy_listing_images_to_draft(
         listing_id, req.draft_id, req.target, L.get("wp_image_urls")
     )
+
+    # #90: marķieris drafta mapē — no kura listinga dublēts. Publicējot (agent_publish)
+    # jaunais listings PĀRMANTO avota manuālos teksta labojumus (Agent_text_segments +
+    # Agent_text_extra). Caur unit to nevar — frontend formas state svešus laukus nomet.
+    try:
+        marker_dir = STORAGE_ROOT / "agent_drafts" / str(req.draft_id) / req.target
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / ".duplicate_of").write_text(str(listing_id), encoding="utf-8")
+    except Exception as e:
+        print(f"  ⚠ .duplicate_of marķieris neizdevās: {e}")
+
     return {"unit": unit, "images": images}
 
 

@@ -390,6 +390,42 @@ def _sort_images_for_publish(images: list[dict]) -> list[dict]:
     return [img for _idx, img in sorted(enumerate(images), key=sort_key)]
 
 
+def _duplicate_source_id(unit: dict) -> int | None:
+    """#90: ja telpa dublēta no esoša listinga, drafta mapē ir `.duplicate_of`
+    marķieris (raksta agent_api.duplicate_listing). Atrod to pēc telpas bilžu
+    ceļiem (agent_drafts/<draft>/<target>/...) un atgriež avota listing id."""
+    for img in (unit.get("images") or []):
+        rel = str((img or {}).get("path") or "")
+        m = re.match(r"agent_drafts/(\d+)/([^/]+)/", rel.replace("\\", "/"))
+        if not m:
+            continue
+        marker = STORAGE_ROOT / "agent_drafts" / m.group(1) / m.group(2) / ".duplicate_of"
+        try:
+            if marker.is_file():
+                return int(marker.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def _inherit_duplicate_texts(conn, new_id: int, source_id: int) -> bool:
+    """#90: dublētais listings pārmanto avota manuālos teksta labojumus —
+    Agent_text_segments (teksta būvētāja per-teikuma papildinājumi; piesaistās
+    pēc satura jaunajā tekstā, nepiesaistītie krīt fallback blokā — nekad nezūd)
+    + Agent_text_extra («Papildu teksts»). Kopē tikai, ja avotam tādi ir."""
+    cur = conn.execute(
+        """UPDATE properties.listings dst
+              SET "Agent_text_segments" = src."Agent_text_segments",
+                  "Agent_text_extra"    = src."Agent_text_extra"
+             FROM properties.listings src
+            WHERE dst.id = %s AND src.id = %s
+              AND (src."Agent_text_segments" IS NOT NULL
+                   OR COALESCE(src."Agent_text_extra", '') <> '')""",
+        (new_id, source_id),
+    )
+    return bool(cur.rowcount)
+
+
 def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
     """Pārkopē bildes no /storage/agent_drafts/<draft>/<target>/<file>
     uz /storage/listings/<listing_id>/{raw,ai_ready}/. Atgriež
@@ -956,6 +992,15 @@ def publish_anketa(payload: dict) -> dict:
             else:
                 listing_id = _insert_listing(conn, bp_id, unit, building, mode, wp_user_id)
             log.append(f"✓ listing #{i} → id={listing_id}")
+
+            # #90: dublēta telpa → pārmanto avota manuālos teksta labojumus
+            # (teksta būvētāja segmenti + «Papildu teksts»). Best-effort.
+            try:
+                _dup_src = _duplicate_source_id(unit)
+                if _dup_src and _inherit_duplicate_texts(conn, listing_id, _dup_src):
+                    log.append(f"  → teksta labojumi pārmantoti no #{_dup_src} (#90)")
+            except Exception as e:
+                warnings.append(f"teksta pārmantošana listing {listing_id}: {e}")
 
             # Bildes: ēkas kopīgās + telpas (katra ar type un featured no aģenta)
             all_imgs = (building.get("images") or []) + (unit.get("images") or [])
