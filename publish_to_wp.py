@@ -397,8 +397,29 @@ def _split_by_manifest(img_paths: list[Path], manifest: dict
     manual = bool(manifest.get("__manual_order__")) \
         if isinstance(manifest, dict) else False
     if not manual:
-        gallery.sort(key=lambda p: _TYPE_ORDER.get(
-            (manifest.get(p.name) or {}).get("type", "interjers"), 1))
+        # #91 (Ieva 2026-09-03): VIENA fasāde pirmā (= featured), tad telpas
+        # (interjers), BEIGĀS pārējās fasādes + koplietošana/cits. Agrāk VISAS
+        # fasādes stāvēja priekšā → galerija sākās ar N vienādiem ēkas skatiem.
+        # Stabili — grupas iekšienē saglabā oriģinālo secību.
+        def _t(p: Path) -> str:
+            return (manifest.get(p.name) or {}).get("type", "interjers") \
+                if isinstance(manifest, dict) else "interjers"
+        first_fas = next((p for p in gallery if _t(p) == "fasade"), None)
+
+        def _key(pair: tuple[int, Path]) -> tuple[int, int]:
+            i, p = pair
+            t = _t(p)
+            if p is first_fas:
+                grp = 0          # pirmā fasāde — galerijas sākums
+            elif t == "interjers":
+                grp = 1          # telpas
+            elif t == "fasade":
+                grp = 2          # pārējās fasādes — beigās
+            else:
+                grp = 3          # cits/koplietošana — pašās beigās
+            return (grp, i)
+
+        gallery = [p for _i, p in sorted(enumerate(gallery), key=_key)]
     return gallery, plans
 
 
