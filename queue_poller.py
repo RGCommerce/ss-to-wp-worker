@@ -247,6 +247,18 @@ def _process(queue_row: dict) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}\n{buf.getvalue()}"
 
 
+def _listing_occupied(listing_id: int) -> bool:
+    """#86: vai listings šobrīd atzīmēts kā aizņemts (publish guard izpildes brīdī)."""
+    if not DATABASE_URL:
+        return False
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        row = conn.execute(
+            "SELECT occupancy_status FROM properties.listings WHERE id = %s",
+            (listing_id,),
+        ).fetchone()
+        return bool(row and row.get("occupancy_status") == "occupied")
+
+
 def _unpublish(listing_id: int) -> None:
     """Noņem listingu no mājaslapas (bug #34 — "Aizņemts/Iznomāts").
     WP posts → Atkritne (delete force=False, atgriežams 30 dienas WP pusē).
@@ -265,8 +277,17 @@ def _unpublish(listing_id: int) -> None:
 
         if wp_post_id:
             wp = WPPublisher()
-            wp.delete_property(int(wp_post_id), force=False)  # → Atkritne
-            print(f"  ✓ WP posts #{wp_post_id} pārvietots uz Atkritni")
+            try:
+                wp.delete_property(int(wp_post_id), force=False)  # → Atkritne
+                print(f"  ✓ WP posts #{wp_post_id} pārvietots uz Atkritni")
+            except WPPublisherError as e:
+                # #86: posts WP pusē jau prom (dzēsts/atkritnē citu ceļu), bet DB
+                # wp_post_id palicis — uzskatām par noņemtu un tīram DB, nevis
+                # krītam (citādi rinda failed + retry cilpa uz mūžīgu 404/410).
+                if "HTTP 404" in str(e) or "HTTP 410" in str(e):
+                    print(f"  · WP posts #{wp_post_id} jau nav (404/410) — tīram tikai DB")
+                else:
+                    raise
         else:
             print("  · nav wp_post_id — nekas nav jānoņem no WP")
 
@@ -425,6 +446,25 @@ async def run_loop(stop_event: asyncio.Event) -> None:
             lid = int(row["listing_id"])
             action = (row.get("action") or "publish")
             attempts = int(row.get("attempts") or 0)
+
+            # #86: publish IZPILDES brīdī pārbauda aizņemtību. Race: «Aizņemts»
+            # nospiests, kamēr publish rinda vēl gaida (wp_post_id tobrīd null →
+            # panelis unpublish neierindoja) → publish pabeidzas un occupied
+            # atgriežas mājaslapā. Guard: occupied publish kļūst par unpublish
+            # (noņem, ja uz WP; citādi no-op) — occupied NEKAD netiek publicēts.
+            if action == "publish":
+                try:
+                    occ = await loop.run_in_executor(None, _listing_occupied, lid)
+                except Exception as e:
+                    logger.error(f"occupancy check #{lid} kļūda: {e}")
+                    occ = False
+                if occ:
+                    logger.warning(
+                        f"queue#{qid} listing#{lid}: occupied → publish pārvērsts "
+                        f"par unpublish (#86 guard)"
+                    )
+                    action = "unpublish"
+                    row["action"] = "unpublish"
             logger.info(
                 f"Picked queue#{qid} listing#{lid} action={action} "
                 f"(attempts={attempts})"
