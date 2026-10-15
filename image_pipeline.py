@@ -316,9 +316,19 @@ def process_listing(conn, listing_id: int, force: bool = False, dry_run: bool = 
         return {"listing_id": listing_id, "status": "skipped_already_processed",
                 "processed_count": len(already)}
 
-    if not listing["jpg_field"]:
-        print(f"  nav JPG bildes URLs")
+    # Imports (agent_pdf/agent_manual) un citi listingi BEZ ss.lv "JPG bildes" lauka,
+    # bet AR aģenta augšupielādētām raw bildēm (panelis → listings/<id>/raw/): tās ir
+    # autoritāte (ensure_raw_local tās ņem pirmās). Agrāk tukšs jpg_field atmeta
+    # `no_images` PIRMS raw pārbaudes → «Export to WP» tādiem nekad neizgāja
+    # (publish vārts «nav AI-apstrādātu bilžu»). Tagad: nav ne jpg, ne raw → no_images.
+    if not listing["jpg_field"] and not _raw_files_local(raw_dir(listing_id)):
+        print(f"  nav JPG bildes URLs (un nav lokālu raw bilžu)")
         return {"listing_id": listing_id, "status": "no_images"}
+
+    if dry_run and not listing["jpg_field"]:
+        return {"listing_id": listing_id, "status": "dry_run",
+                "image_count": len(_raw_files_local(raw_dir(listing_id))),
+                "estimated_cost_usd": 0.0}
 
     if dry_run:
         urls = download_images.parse_image_urls(listing["jpg_field"])

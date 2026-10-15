@@ -427,9 +427,79 @@ def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
     return name_to_type
 
 
+# ---------------------------------------------------------------------------
+# IMPORTS (Raimonds 2026-10-15): īpašums no PDF / manuāla ievade — tikai DB, bez WP.
+# Sk. HANDOFF_2026-10-15_PDF_MANUAL_IMPORT_DESIGN.md (panelis, zars melna).
+# ---------------------------------------------------------------------------
+IMPORT_SOURCES = {"agent_pdf", "agent_manual"}
+
+
+class DuplicateListingError(ValueError):
+    """DB jau satur rindu ar to pašu composite atslēgu (iela+platība+stāvs+darījums) —
+    INSERT kristu ar UniqueViolation (dzīvs indekss listings_composite_key_unique)."""
+
+    def __init__(self, existing: dict):
+        self.existing = existing
+        super().__init__(
+            f"Šāda telpa jau ir DB: #{existing.get('id')} {existing.get('street') or ''}, "
+            f"{existing.get('area_m2') or '?'} m², {existing.get('floor') or 'stāvs ?'} "
+            f"({existing.get('source') or '?'}). Maini stāvu/platību vai atver esošo."
+        )
+
+
+# Tieši tāda pati normalizācija kā UNIQUE indeksam `listings_composite_key_unique`
+# (crm mig 017): iela bez diakritikas (ielas tips PALIEK), platības cipari, stāva
+# cipari, noma/pirkums. Ja šeit atrod → INSERT noteikti kristu.
+_DUP_SQL = r"""
+    SELECT id, street, area_m2, floor, price_type, source, on_website
+      FROM properties.listings
+     WHERE translate(lower(trim(street)), 'āēīōūčšžģķļņŗ', 'aeiouczsgklnr')
+           = translate(lower(trim(%s)), 'āēīōūčšžģķļņŗ', 'aeiouczsgklnr')
+       AND regexp_replace(coalesce(area_m2, ''), '[^0-9.]', '', 'g')
+           = regexp_replace(coalesce(%s, ''), '[^0-9.]', '', 'g')
+       AND regexp_replace(lower(coalesce(floor, '')), '[^0-9\-+/]', '', 'g')
+           = regexp_replace(lower(coalesce(%s, '')), '[^0-9\-+/]', '', 'g')
+       AND (CASE WHEN lower(coalesce(price_type, '')) IN ('monthly', 'mēneša') THEN 'rent'
+                 WHEN lower(coalesce(price_type, '')) IN ('regular', 'parastā') THEN 'buy'
+                 ELSE lower(coalesce(price_type, '')) END)
+           = (CASE WHEN lower(coalesce(%s, '')) IN ('monthly', 'mēneša') THEN 'rent'
+                   WHEN lower(coalesce(%s, '')) IN ('regular', 'parastā') THEN 'buy'
+                   ELSE lower(coalesce(%s, '')) END)
+     ORDER BY id
+     LIMIT 1
+"""
+
+
+def find_composite_duplicate(conn, street, area_m2, floor, price_type) -> dict | None:
+    """Atgriež esošo rindu (dict) vai None. Strādā gan ar plain, gan dict_row conn."""
+    if not street:
+        return None
+    pt = str(price_type) if price_type is not None else None
+    cur = conn.execute(
+        _DUP_SQL,
+        (str(street), str(area_m2) if area_m2 is not None else None,
+         str(floor) if floor is not None else None, pt, pt, pt),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return row
+    keys = ["id", "street", "area_m2", "floor", "price_type", "source", "on_website"]
+    return dict(zip(keys, row))
+
+
 def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
-                    mode: str, wp_user_id: int) -> int:
-    """INSERT listings rinda, atgriež jauno ID."""
+                    mode: str, wp_user_id: int,
+                    source_override: str | None = None,
+                    force_ok: bool = False,
+                    debug_note: str | None = None) -> int:
+    """INSERT listings rinda, atgriež jauno ID.
+
+    source_override/force_ok/debug_note — IMPORTA ceļš (agent_pdf/agent_manual):
+    avots no payload, Debug_status='ok' VIENMĒR (arī Zeme/Investīciju objekts, kam
+    anketa citādi atstāj NULL zemes/investīciju AI), phone_numbers lock (kontaktus
+    aģents ieraksta pats; inbox backfill `agent_%` tāpat izlaiž)."""
     locked = list(EASY_LOCKED_FIELDS if mode == "easy" else FULL_LOCKED_FIELDS)
     # Telpu/sanitāro mezglu skaits: lock TIKAI ja aģents pats ievadīja; ja atstāj
     # tukšu — AI to uzmin no bildēm (Raimonds 2026-05-28).
@@ -438,6 +508,12 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
     if unit.get("cik_WC") or unit.get("cik_wc"):
         locked.append("cik_WC")
     source = f"agent_anketa_{mode}"
+    if source_override:
+        if source_override not in IMPORT_SOURCES:
+            raise ValueError(f"Nederīgs importa source: {source_override}")
+        source = source_override
+        if "phone_numbers" not in locked:
+            locked.append("phone_numbers")
     # FULL mode: Debug_status='ok' uzreiz (AI worker neaiztiks)
     # EASY mode: NULL → AI worker paķers + papildinās
     debug_status = "ok" if mode == "full" else None
@@ -640,6 +716,20 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         # AI VIENMĒR iet cauri (Raimonds: bez AI neko likt nedrīkst) → Debug_status=NULL.
         cols["Debug_status"] = None
 
+    # IMPORTS: statuss 'ok' vienmēr (nav AI pēcapstrādes — lauki nāk no PDF/aģenta),
+    # piezīme ar avotu, nav ss.lv linka.
+    if force_ok:
+        cols["Debug_status"] = "ok"
+    if debug_note:
+        cols["Debug_note"] = debug_note[:500]
+
+    # Dublikātu pre-check pret UNIQUE indeksu (importam — skaidra kļūda aģentam;
+    # anketai — tāpat, jo INSERT citādi kristu ar UniqueViolation bez paskaidrojuma).
+    dup = find_composite_duplicate(conn, cols.get("street"), cols.get("area_m2"),
+                                   cols.get("floor"), cols.get("price_type"))
+    if dup:
+        raise DuplicateListingError(dup)
+
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)
     val_list = ", ".join(["%s"] * len(cols))
@@ -691,6 +781,89 @@ def _ensure_classify_manifest(listing_id: int) -> None:
     _write_image_manifest(listing_id, {})
 
 
+def _finish_import(conn, listing_ids: list[int], bp_id: int, mode: str,
+                   import_source: str, import_token: str | None,
+                   import_file_name: str | None, requested_by_email: str | None,
+                   log: list[str], warnings: list[str]) -> dict:
+    """Importa noslēgums: avota PDF → listings/<id>/source/, source_file_* + raw_json,
+    pdf_jobs «done» rinda (LP/panelis var dot PDF). Katrs solis best-effort ar
+    brīdinājumu — listings rindas jau ir commit-otas."""
+    import pdf_import  # lazy (pymupdf/pypdf tikai analīzei; šeit tikai failu kustība)
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    queued: list[dict] = []
+    imported: list[dict] = []
+    pdf: dict | None = None
+    if import_token:
+        try:
+            pdf = pdf_import.attach_pdf_to_listing(import_token, listing_ids[0])
+        except Exception as e:
+            warnings.append(f"Avota PDF piesaiste neizdevās: {type(e).__name__}: {e}")
+        if pdf is None and import_source == "agent_pdf":
+            warnings.append("Avota PDF fails vairs nav atrodams (token novecojis?) — "
+                            "listings izveidots bez PDF.")
+
+    for lid in listing_ids:
+        item = {"listing_id": lid, "source": import_source,
+                "source_file_name": None, "pdf_job_id": None}
+        if pdf:
+            # Viens PDF → viens fails uz volume; multi-unit brošūrai visas telpas rāda
+            # uz to pašu failu (source_file_path + sava pdf_jobs rinda katrai).
+            try:
+                conn.execute(
+                    """UPDATE properties.listings
+                          SET source_file_path = %s, source_file_name = %s,
+                              imported_at = %s, raw_json = COALESCE(%s, raw_json)
+                        WHERE id = %s""",
+                    (pdf["path"], import_file_name or pdf["name"], now,
+                     pdf.get("raw_json"), lid),
+                )
+                conn.commit()
+                item["source_file_name"] = import_file_name or pdf["name"]
+            except Exception as e:
+                conn.rollback()
+                warnings.append(f"source_file_* ieraksts listing {lid} neizdevās "
+                                f"({type(e).__name__}) — vai migrācija "
+                                f"2026-10-15_imports_source ir pielietota?")
+            try:
+                cur = conn.execute(
+                    """INSERT INTO properties.pdf_jobs
+                           (listing_ids, status, requested_by, requested_at,
+                            started_at, finished_at, file_path, attempts)
+                       VALUES (%s, 'done', %s, %s, %s, %s, %s, 0)
+                       RETURNING id""",
+                    ([lid], requested_by_email, now, now, now, pdf["path"]),
+                )
+                item["pdf_job_id"] = int(cur.fetchone()[0])
+                conn.commit()
+                log.append(f"✓ pdf_jobs #{item['pdf_job_id']} (avota PDF) → listing {lid}")
+            except Exception as e:
+                conn.rollback()
+                warnings.append(f"pdf_jobs rinda listing {lid} neizdevās ({type(e).__name__}).")
+        else:
+            try:
+                conn.execute("UPDATE properties.listings SET imported_at = %s WHERE id = %s",
+                             (now, lid))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # kolonnas vēl nav (migrācija) — nekritiski
+        imported.append(item)
+        queued.append({"listing_id": lid, "queue_id": None, "mode": mode, "needs_ai": False})
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "intent": "import",
+        "source": import_source,
+        "building_profile_id": bp_id,
+        "queued": queued,
+        "imported": imported,
+        "log": log,
+        "warnings": warnings,
+    }
+
+
 def publish_anketa(payload: dict) -> dict:
     """Galvenais entry-point — queue-based plūsma (NE sync publish_to_wp).
 
@@ -712,6 +885,22 @@ def publish_anketa(payload: dict) -> dict:
     units = payload["units"]
     requested_by_email = payload.get("requested_by_email")
 
+    # IMPORTS (PDF / manuāli): tikai DB, bez WP rindas. mode piespiedu 'full'
+    # (Debug_status='ok', AI poller neaiztiek), source no payload.
+    is_import = (payload.get("intent") == "import")
+    import_source = None
+    import_token = None
+    import_file_name = None
+    if is_import:
+        import_source = str(payload.get("source") or "agent_manual")
+        if import_source not in IMPORT_SOURCES:
+            raise ValueError(f"Nederīgs importa source: {import_source}")
+        import_token = (payload.get("import_token") or "").strip() or None
+        import_file_name = (payload.get("import_file_name") or "").strip() or None
+        if import_source == "agent_pdf" and not import_token:
+            raise ValueError("PDF importam trūkst import_token (vispirms analizē PDF).")
+        mode = "full"
+
     log: list[str] = []
     warnings: list[str] = []
     queued: list[dict] = []
@@ -720,11 +909,22 @@ def publish_anketa(payload: dict) -> dict:
         # Step 1: BP
         bp_id = _get_or_create_bp(conn, building, wp_user_id)
         log.append(f"✓ building_profile_id = {bp_id}")
+        if is_import:
+            # BP commit uzreiz — ja zemāk INSERT krīt (dublikāts u.c.), ēkas profils
+            # paliek (tas pats princips kā sslv_import).
+            conn.commit()
 
         # Step 2-3: pa katru telpu — INSERT + bildes
         listing_ids = []
         for i, unit in enumerate(units, start=1):
-            listing_id = _insert_listing(conn, bp_id, unit, building, mode, wp_user_id)
+            if is_import:
+                _note = (f"Imports no PDF: {import_file_name}" if import_source == "agent_pdf"
+                         else "Manuāla ievade (imports, bez WP)")
+                listing_id = _insert_listing(conn, bp_id, unit, building, mode, wp_user_id,
+                                             source_override=import_source, force_ok=True,
+                                             debug_note=_note)
+            else:
+                listing_id = _insert_listing(conn, bp_id, unit, building, mode, wp_user_id)
             log.append(f"✓ listing #{i} → id={listing_id}")
 
             # Bildes: ēkas kopīgās + telpas (katra ar type un featured no aģenta)
@@ -749,6 +949,14 @@ def publish_anketa(payload: dict) -> dict:
                     (ai_paths, listing_id),
                 )
             listing_ids.append(listing_id)
+
+        # IMPORTS — Step 4/5 izlaiž (nav WP rindas). Piesaista avota PDF + pdf_jobs
+        # «done» rindu (LP «Pievienot PDF LP» un /publish «Lejupielādēt» lieto pdf_jobs).
+        if is_import:
+            conn.commit()  # listings rindas ir; tālākais best-effort
+            return _finish_import(conn, listing_ids, bp_id, mode, import_source,
+                                  import_token, import_file_name, requested_by_email,
+                                  log, warnings)
 
         # Step 4: Debug_status='ok' priekš QUEUE POLLER GATE
         # FULL: skaidrs, AI nav vajadzīgs — uzliek uzreiz.

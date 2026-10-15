@@ -439,6 +439,12 @@ class PublishReq(BaseModel):
     requested_by_email: Optional[str] = None
     building: dict[str, Any]
     units: list[dict[str, Any]]
+    # IMPORTS (2026-10-15): intent='import' → tikai DB, bez WP rindas.
+    # source: 'agent_pdf' | 'agent_manual'; import_token — no /agent/import/analyze.
+    intent: Optional[str] = None
+    source: Optional[str] = None
+    import_token: Optional[str] = None
+    import_file_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1262,4 +1268,62 @@ def publish_anketa(req: PublishReq, _auth: None = Depends(require_token)) -> dic
         raise HTTPException(400, f"Nezināms mode: {req.mode}")
     if not req.units:
         raise HTTPException(400, "Nav neviena telpas ieraksta")
-    return agent_publish.publish_anketa(req.dict())
+    if req.intent is not None and req.intent != "import":
+        raise HTTPException(400, f"Nezināms intent: {req.intent}")
+    try:
+        return agent_publish.publish_anketa(req.dict())
+    except agent_publish.DuplicateListingError as e:
+        # 409 ar cilvēkam lasāmu tekstu — panelis to rāda toast-ā.
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------------------------------------------------------------------------
+# 7d) IMPORTS NO PDF — analīze (bez DB) + avota PDF atdošana (sk. pdf_import.py)
+# ---------------------------------------------------------------------------
+
+@router.post("/import/analyze")
+def import_analyze(
+    file: UploadFile = File(...),
+    wp_user_id: int = Form(0),
+    _auth: None = Depends(require_token),
+) -> dict:
+    """PDF → AI → anketas FormState (building + units). DB NETIEK rakstīta.
+    Fails paliek `agent_imports/<token>/` līdz /agent/publish (intent='import')."""
+    import pdf_import
+    if not file.filename:
+        raise HTTPException(400, "Filename trūkst")
+    data = file.file.read()
+    try:
+        return pdf_import.analyze_pdf(data, file.filename, wp_user_id)
+    except pdf_import.PdfImportError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"PDF imports neizdevās: {type(e).__name__}: {str(e)[:300]}")
+
+
+@router.get("/listing-source-file/{listing_id}")
+def listing_source_file(listing_id: int, _auth: None = Depends(require_token)):
+    """Importētā listinga AVOTA PDF (oriģinālā brošūra) no volume."""
+    from fastapi.responses import Response
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT source_file_path, source_file_name FROM properties.listings WHERE id = %s",
+            (listing_id,),
+        )
+        row = cur.fetchone()
+    if not row or not row.get("source_file_path"):
+        raise HTTPException(404, f"Listingam {listing_id} nav avota PDF")
+    rel = str(row["source_file_path"]).replace("\\", "/").lstrip("/")
+    if ".." in rel.split("/") or not rel.startswith("listings/"):
+        raise HTTPException(400, "Nederīgs faila ceļš")
+    path = STORAGE_ROOT / rel
+    if not path.is_file():
+        raise HTTPException(410, "Avota PDF fails nav uz volume")
+    name = (row.get("source_file_name") or f"source_{listing_id}.pdf").replace('"', "")
+    return Response(
+        content=path.read_bytes(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{name}"'},
+    )
