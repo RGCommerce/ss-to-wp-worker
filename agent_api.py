@@ -829,6 +829,46 @@ def listing_image_copy(listing_id: int, req: ImageCopyReq,
     return {"ok": True, "copied": copied, "skipped": skipped}
 
 
+class DraftImageCopyReq(BaseModel):
+    draft_id: int
+    target: str                       # 'building' | 'unit_<localId>' (kā /agent/image-upload)
+    items: list[ImageCopyItem]        # src_listing_id + folder (ai_ready|raw|wp_raw) + filename
+
+
+@router.post("/draft-image-copy")
+def draft_image_copy(req: DraftImageCopyReq,
+                     _auth: None = Depends(require_token)) -> dict:
+    """ANKETAI: bildes no esošiem listingiem → anketas melnraksta mapē
+    `agent_drafts/<draft_id>/<target>/` (tieši tāpat kā /agent/image-upload), lai anketa
+    tās rāda, kārto un publicējot pārkopē kā savējās. Atgriež [{path, size, from}]."""
+    if not req.items:
+        raise HTTPException(400, "Nav izvēlētu bilžu")
+    if len(req.items) > 60:
+        raise HTTPException(400, "Max 60 bildes vienā reizē")
+    safe_target = req.target.replace("/", "_").replace("\\", "_")[:32]
+    base = STORAGE_ROOT / "agent_drafts" / str(req.draft_id) / safe_target
+    base.mkdir(parents=True, exist_ok=True)
+    copied: list[dict] = []
+    skipped: list[dict] = []
+    for it in req.items:
+        fn = it.filename
+        if (it.folder not in _EDIT_FOLDERS or not fn or fn.startswith(".")
+                or "/" in fn or "\\" in fn or ".." in fn):
+            skipped.append({"filename": fn, "reason": "nederīgs ceļš"})
+            continue
+        src = STORAGE_ROOT / "listings" / str(it.src_listing_id) / it.folder / fn
+        ext = src.suffix.lower()
+        if ext not in _EDIT_IMG_EXTS or not src.is_file():
+            skipped.append({"filename": fn, "reason": "fails nav atrasts"})
+            continue
+        out = base / f"{uuid.uuid4().hex}{ext}"
+        shutil.copy2(src, out)
+        copied.append({"path": str(out.relative_to(STORAGE_ROOT)).replace("\\", "/"),
+                       "size": out.stat().st_size,
+                       "from": f"#{it.src_listing_id}/{it.folder}/{fn}"})
+    return {"ok": True, "copied": copied, "skipped": skipped}
+
+
 @router.post("/listing-file-delete/{listing_id}")
 def listing_file_delete(
     listing_id: int,
