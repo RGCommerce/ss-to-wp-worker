@@ -753,6 +753,82 @@ class ListingFileDeleteReq(BaseModel):
     paths: list[str]  # relatīvi /storage ceļi: "listings/<id>/<folder>/<file>"
 
 
+class ImageCopyItem(BaseModel):
+    src_listing_id: int
+    folder: str              # avota mape: ai_ready | raw | wp_raw
+    filename: str
+    type: Optional[str] = None  # fasade | interjers | plans | None (= AI/noklusējums)
+
+
+class ImageCopyReq(BaseModel):
+    target_folder: str       # raw | ai_ready | wp_raw (panelis izvēlas pēc listinga avota)
+    items: list[ImageCopyItem]
+
+
+@router.post("/listing-image-copy/{listing_id}")
+def listing_image_copy(listing_id: int, req: ImageCopyReq,
+                       _auth: None = Depends(require_token)) -> dict:
+    """«Pievienot no citiem listingiem» (Raimonds 2026-10-20): pārkopē izvēlētās bildes
+    no citu listingu volume mapēm uz ŠĪ listinga mapi (jauns vārds img_user_<uuid>.ext)
+    + ieraksta manifestā aģenta norādīto tipu (fasade/interjers/plans). Manifests ir pēc
+    faila vārda; image_pipeline saglabā vārdu (raw→ai_ready), ensure_classified izlaiž jau
+    atzīmētos → aģenta izvēle paliek arī pēc Seedream/publicēšanas.
+    Tikai faila I/O + manifests; DB masīvu atjauno panelis (tāpat kā listing-file-write)."""
+    if req.target_folder not in _EDIT_FOLDERS:
+        raise HTTPException(400, f"target_folder jābūt {_EDIT_FOLDERS}")
+    if not req.items:
+        raise HTTPException(400, "Nav izvēlētu bilžu")
+    if len(req.items) > 60:
+        raise HTTPException(400, "Max 60 bildes vienā reizē")
+    dest_dir = STORAGE_ROOT / "listings" / str(listing_id) / req.target_folder
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[dict] = []
+    skipped: list[dict] = []
+    types: dict[str, str] = {}
+    for it in req.items:
+        fn = it.filename
+        if (it.folder not in _EDIT_FOLDERS or not fn or fn.startswith(".")
+                or "/" in fn or "\\" in fn or ".." in fn):
+            skipped.append({"filename": fn, "reason": "nederīgs ceļš"})
+            continue
+        src = STORAGE_ROOT / "listings" / str(it.src_listing_id) / it.folder / fn
+        ext = src.suffix.lower()
+        if ext not in _EDIT_IMG_EXTS:
+            skipped.append({"filename": fn, "reason": f"neatbalstīts formāts {ext}"})
+            continue
+        if not src.is_file():
+            skipped.append({"filename": fn, "reason": "fails nav uz volume"})
+            continue
+        new_name = f"img_user_{uuid.uuid4().hex}{ext}"
+        shutil.copy2(src, dest_dir / new_name)
+        rel = f"listings/{listing_id}/{req.target_folder}/{new_name}"
+        copied.append({"path": rel, "filename": new_name,
+                       "from": f"#{it.src_listing_id}/{it.folder}/{fn}"})
+        if it.type in ("fasade", "interjers", "plans"):
+            types[new_name] = it.type
+    if types:
+        manifest = image_classify.load_manifest(STORAGE_ROOT, listing_id)
+        if not isinstance(manifest, dict):
+            manifest = {}
+        if any(t == "fasade" for t in types.values()):
+            # Viena galvenā: aģenta jaunā fasāde kļūst galvenā → vecās fasādes → interjers
+            for k, v in list(manifest.items()):
+                if isinstance(v, dict) and v.get("type") == "fasade":
+                    manifest[k] = {**v, "type": "interjers"}
+            first = True
+            for name, t in types.items():
+                if t == "fasade":
+                    if not first:
+                        types[name] = "interjers"
+                    first = False
+        for name, t in types.items():
+            manifest[name] = {"type": t, "quality": "good_for_website",
+                              "reason": "aģents (pievienots no cita listinga)",
+                              "filename": name}
+        image_classify.save_manifest(STORAGE_ROOT, listing_id, manifest)
+    return {"ok": True, "copied": copied, "skipped": skipped}
+
+
 @router.post("/listing-file-delete/{listing_id}")
 def listing_file_delete(
     listing_id: int,
