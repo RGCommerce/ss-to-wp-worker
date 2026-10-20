@@ -27,3 +27,6 @@ beautifulsoup4>=4.12.0
 
 # PDF imports (pdf_import.py) — lapu rasterizācija vision analīzei (anketa-api jau lieto to pašu)
 pymupdf>=1.24
+
+# Partneru ieplūde (partner_intake.py) — Excel pielikumi
+openpyxl>=3.1

@@ -87,11 +87,14 @@ async def lifespan(app: FastAPI):
     img_task = asyncio.create_task(image_download_poller.run_loop(stop_event))
     price_task = asyncio.create_task(price_sync_poller.run_loop(stop_event))
     autopub_task = asyncio.create_task(auto_publish_poller.run_loop(stop_event))
+    # Partneru piedāvājumu ieplūde (ai@rgcnoma.lv IMAP → AI → reports) — guļ bez PARTNER_IMAP_*
+    import partner_intake  # noqa: E402
+    partner_task = asyncio.create_task(partner_intake.run_loop(stop_event))
     try:
         yield
     finally:
         stop_event.set()
-        for t in (wp_task, pdf_task, ai_task, img_task, price_task, autopub_task):
+        for t in (wp_task, pdf_task, ai_task, img_task, price_task, autopub_task, partner_task):
             try:
                 await asyncio.wait_for(t, timeout=5)
             except asyncio.TimeoutError:
@@ -235,6 +238,12 @@ def agent_ai_debug_find_pending():
         "service_version": SERVICE_VERSION,
         "rows": rows,
     }
+
+
+@app.get("/partner-intake/status")
+def partner_intake_status():
+    import partner_intake
+    return partner_intake.get_status()
 
 
 @app.get("/poller/status")

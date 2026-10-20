@@ -1527,6 +1527,107 @@ def listing_doc_delete(job_id: int, _auth: None = Depends(require_token)) -> dic
     return {"ok": True, "job_id": job_id}
 
 
+# ---------------------------------------------------------------------------
+# 7f) PARTNERU PIEDĀVĀJUMU IEPLŪDE (partner_intake.py): saraksts, reports, apstiprināšana
+# ---------------------------------------------------------------------------
+
+@router.get("/partner-intake")
+def partner_intake_list(limit: int = 50, _auth: None = Depends(require_token)) -> dict:
+    import partner_intake
+    return {"ok": True, "items": partner_intake.list_intakes(limit), "status": partner_intake.get_status()}
+
+
+@router.get("/partner-intake/{intake_id}")
+def partner_intake_get(intake_id: str, _auth: None = Depends(require_token)) -> dict:
+    import partner_intake
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
+        raise HTTPException(400, "Nederīgs intake_id")
+    d = partner_intake.INTAKE_DIR / intake_id
+    if not (d / "meta.json").is_file():
+        raise HTTPException(404, "Nav tāda piedāvājuma")
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    report = json.loads((d / "report.json").read_text(encoding="utf-8")) if (d / "report.json").is_file() else None
+    body = (d / "body.txt").read_text(encoding="utf-8")[:20000] if (d / "body.txt").is_file() else ""
+    return {"ok": True, "meta": meta, "report": report, "body": body}
+
+
+@router.get("/partner-intake/{intake_id}/file/{rel:path}")
+def partner_intake_file(intake_id: str, rel: str, _auth: None = Depends(require_token)):
+    """Pielikums (att/<fails>) vai izvilkta bilde (img/<idx>/<fails>) priekšskatam panelī."""
+    import partner_intake
+    from fastapi.responses import FileResponse
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id) or ".." in rel.split("/"):
+        raise HTTPException(400, "Nederīgs ceļš")
+    p = partner_intake.INTAKE_DIR / intake_id / rel
+    if not p.is_file():
+        raise HTTPException(404, "Fails nav")
+    return FileResponse(str(p))
+
+
+class PartnerApplyReq(BaseModel):
+    decisions: dict[str, Any]
+    requested_by: Optional[str] = None
+    wp_user_id: int = 0
+
+
+@router.post("/partner-intake/{intake_id}/apply")
+def partner_intake_apply(intake_id: str, req: PartnerApplyReq, _auth: None = Depends(require_token)) -> dict:
+    import partner_intake
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
+        raise HTTPException(400, "Nederīgs intake_id")
+    try:
+        return {"ok": True, **partner_intake.apply(intake_id, req.decisions, req.requested_by, req.wp_user_id)}
+    except FileNotFoundError:
+        raise HTTPException(404, "Reports nav gatavs")
+    except Exception as e:
+        raise HTTPException(500, f"Apstiprināšana neizdevās: {type(e).__name__}: {str(e)[:300]}")
+
+
+@router.post("/partner-intake/{intake_id}/reprocess")
+def partner_intake_reprocess(intake_id: str, _auth: None = Depends(require_token)) -> dict:
+    """Pārlaist AI + salīdzināšanu (piem. pēc partnera profila/ēkas labojuma)."""
+    import partner_intake
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
+        raise HTTPException(400, "Nederīgs intake_id")
+    try:
+        rep = partner_intake.process_intake(intake_id, do_notify=False)
+        return {"ok": True, "summary": rep["summary"]}
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
+
+
+class PartnerUploadReq(BaseModel):
+    pass
+
+
+@router.post("/partner-intake/upload")
+def partner_intake_upload(
+    files: list[UploadFile] = File(default=[]),
+    body_text: str = Form(""),
+    subject: str = Form("Panelī ielikts piedāvājums"),
+    forwarder: str = Form(""),
+    _auth: None = Depends(require_token),
+) -> dict:
+    """Rezerves ceļš bez e-pasta: aģents panelī iemet failus + ielīmē tekstu."""
+    import partner_intake
+    atts = []
+    for f in files:
+        data = f.file.read()
+        if data and f.filename:
+            atts.append({"name": partner_intake._safe_name(f.filename), "type": f.content_type or "", "data": data})
+    if not atts and len(body_text.strip()) < 20:
+        raise HTTPException(400, "Nav ne failu, ne teksta")
+    parsed = {"message_id": f"panel:{uuid.uuid4().hex}", "forwarder_name": "", "forwarder_email": forwarder,
+              "subject": subject, "body": body_text, "orig_sender": partner_intake._orig_sender_from_text(body_text),
+              "attachments_raw": atts, "date": ""}
+    meta = partner_intake._store_intake(parsed, "panel")
+    try:
+        rep = partner_intake.process_intake(meta["intake_id"], do_notify=False)
+        return {"ok": True, "intake_id": meta["intake_id"], "summary": rep["summary"]}
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
+
+
 @router.get("/listing-source-file/{listing_id}")
 def listing_source_file(listing_id: int, _auth: None = Depends(require_token)):
     """Importētā listinga AVOTA PDF (oriģinālā brošūra) no volume."""
