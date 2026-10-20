@@ -433,6 +433,12 @@ def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 IMPORT_SOURCES = {"agent_pdf", "agent_manual"}
 
+# Potential_space_group atļautās vērtības (DB CHECK listings_potential_space_group_chk).
+_POTENTIAL_ALLOWED = {
+    "Birojs", "Tirdzniecība", "Noliktava", "Ražošana", "StockOfiss", "PVD",
+    "Medicīna", "Studija", "Restorans/Cafe", "Sporta zāle", "Autoserviss",
+}
+
 
 class DuplicateListingError(ValueError):
     """DB jau satur rindu ar to pašu composite atslēgu (iela+platība+stāvs+darījums) —
@@ -633,7 +639,10 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         _primary = uget("Space_group", "space_group")
         _pot: list[str] = []
         for _t in ([_primary] + list(_extra_types)):
-            if _t and _t not in _pot:
+            # DB CHECK listings_potential_space_group_chk atļauj TIKAI telpu tipus —
+            # "Zeme" / "Investīciju objekts" / "Daudzēku īpašums" tur krīt ar
+            # CheckViolation (2026-10-20: zemes imports «Līdumi» → 500).
+            if _t and _t in _POTENTIAL_ALLOWED and _t not in _pot:
                 _pot.append(_t)
         if _pot:
             cols["Potential_space_group"] = ", ".join(_pot)

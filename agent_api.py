@@ -1277,6 +1277,18 @@ def publish_anketa(req: PublishReq, _auth: None = Depends(require_token)) -> dic
         raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except psycopg.errors.IntegrityError as e:
+        # DB noraidīja kādu lauku (CHECK/enum/unique) — rādām, KURU, nevis «500».
+        diag = getattr(e, "diag", None)
+        cname = getattr(diag, "constraint_name", None) or ""
+        raise HTTPException(
+            400,
+            f"Datubāze noraidīja ierakstu ({type(e).__name__}"
+            f"{': ' + cname if cname else ''}). Pārbaudi laukus anketā. "
+            f"{str(e).splitlines()[0][:200]}",
+        )
+    except psycopg.errors.DataError as e:
+        raise HTTPException(400, f"Nederīga lauka vērtība: {str(e).splitlines()[0][:250]}")
 
 
 # ---------------------------------------------------------------------------
