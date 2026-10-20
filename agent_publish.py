@@ -939,8 +939,14 @@ def publish_anketa(payload: dict) -> dict:
                 warnings.append(f"manifest neizdevās listing {listing_id}: {e}")
 
             # Lokālos bilžu ceļus saglabā DB (Mig 019 lauki)
+            # RELATĪVI pret STORAGE_ROOT ("listings/<id>/ai_ready/img_001.jpg") — tāpat kā
+            # paneļa upload (listing-file-write) un image_pipeline. Agrāk str(p) deva ABSOLŪTU
+            # "/storage/listings/…", ko paneļa bilžu route noraida (startsWith "listings/") →
+            # anketas/importa listingiem tukšas bilžu kartiņas (Raimonds 2026-10-20, #111647).
+            # Worker pusē abi formāti strādā (STORAGE_ROOT / "/storage/x" = "/storage/x").
             ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
-            ai_paths = sorted(str(p) for p in ai_dir.glob("img_*.*"))
+            ai_paths = sorted(p.relative_to(STORAGE_ROOT).as_posix()
+                              for p in ai_dir.glob("img_*.*"))
             if ai_paths:
                 conn.execute(
                     """UPDATE properties.listings
