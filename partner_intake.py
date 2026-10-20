@@ -1062,6 +1062,12 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     unit_dec = decisions.get("units") or {}
     miss_dec = decisions.get("missing") or {}
     addr_dec = decisions.get("addresses") or {}
+    unit_fields = decisions.get("unit_fields") or {}   # {idx: {space_type: ...}} — aģenta labojumi
+    for addr in report["addresses"]:
+        for u in addr["units"]:
+            ov = unit_fields.get(str(u["idx"])) or {}
+            if ov.get("space_type") in SPACE_GROUPS:
+                u["space_type"] = ov["space_type"]
     for i, addr in enumerate(report["addresses"]):
         ov = addr_dec.get(str(i)) or {}
         if ov.get("bp_id"):
