@@ -1303,6 +1303,102 @@ def import_analyze(
         raise HTTPException(500, f"PDF imports neizdevās: {type(e).__name__}: {str(e)[:300]}")
 
 
+# ---------------------------------------------------------------------------
+# 7e) LISTINGA PDF DOKUMENTI (Raimonds 2026-10-20): pie listinga var glabāt VAIRĀKUS
+#     PDF — īpašnieka atsūtīto (avots) + savus (savs dizains/vizualizācijas).
+#     Glabā `listings/<id>/docs/<uuid>__<nosaukums>.pdf` + pdf_jobs «done» rindu
+#     (tā pati infrastruktūra, ko lieto panelis «Lejupielādēt» un LP «PDF faili» →
+#     bez jaunas tabulas/migrācijas). Nosaukums = faila vārds pēc "__".
+# ---------------------------------------------------------------------------
+
+_DOC_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _safe_doc_name(name: str) -> str:
+    import re as _re
+    base = Path(name or "dokuments.pdf").name
+    base = _re.sub(r"[^\w.\-() ]+", "_", base, flags=_re.UNICODE).strip() or "dokuments.pdf"
+    if not base.lower().endswith(".pdf"):
+        base += ".pdf"
+    return base[:100]
+
+
+@router.post("/listing-doc-upload/{listing_id}")
+def listing_doc_upload(
+    listing_id: int,
+    file: UploadFile = File(...),
+    requested_by: str = Form(""),
+    _auth: None = Depends(require_token),
+) -> dict:
+    """Augšupielādē PDF pie listinga → volume + pdf_jobs 'done' rinda. Atgriež job_id."""
+    if not file.filename:
+        raise HTTPException(400, "Filename trūkst")
+    data = file.file.read()
+    if not data or not data[:5].startswith(b"%PDF"):
+        raise HTTPException(400, "Fails nav PDF")
+    if len(data) > _DOC_MAX_BYTES:
+        raise HTTPException(400, "PDF pārāk liels (max 25 MB)")
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM properties.listings WHERE id = %s", (listing_id,))
+        if not cur.fetchone():
+            raise HTTPException(404, f"Listings {listing_id} nav atrasts")
+        safe = _safe_doc_name(file.filename)
+        rel_dir = Path("listings") / str(listing_id) / "docs"
+        (STORAGE_ROOT / rel_dir).mkdir(parents=True, exist_ok=True)
+        rel = (rel_dir / f"{uuid.uuid4().hex}__{safe}").as_posix()
+        (STORAGE_ROOT / rel).write_bytes(data)
+        cur.execute(
+            """INSERT INTO properties.pdf_jobs
+                   (listing_ids, status, requested_by, requested_at, started_at,
+                    finished_at, file_path, attempts)
+               VALUES (%s, 'done', %s, now(), now(), now(), %s, 0)
+               RETURNING id""",
+            ([listing_id], requested_by or None, rel),
+        )
+        job_id = int(cur.fetchone()["id"])
+        conn.commit()
+    return {"ok": True, "job_id": job_id, "file_path": rel, "name": safe,
+            "size": len(data)}
+
+
+@router.post("/listing-doc-delete/{job_id}")
+def listing_doc_delete(job_id: int, _auth: None = Depends(require_token)) -> dict:
+    """Dzēš pievienoto PDF (tikai `listings/<id>/docs/` vai `listings/<id>/source/`
+    failus — brošūras no rindas `pdf_jobs/<id>.pdf` šeit NEdzēš). Noņem arī pdf_jobs rindu;
+    LP `pdf_on_lp` markeris paliek (bez faila LP to vienkārši vairs nerāda)."""
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, file_path, listing_ids FROM properties.pdf_jobs WHERE id = %s",
+                    (job_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "PDF nav atrasts")
+        rel = str(row.get("file_path") or "").replace("\\", "/").lstrip("/")
+        parts = rel.split("/")
+        if not (len(parts) == 4 and parts[0] == "listings" and parts[2] in ("docs", "source")
+                and ".." not in parts):
+            raise HTTPException(400, "Šo PDF šeit dzēst nevar (nav pievienots dokuments)")
+        path = STORAGE_ROOT / rel
+        try:
+            if path.is_file():
+                path.unlink()
+        except Exception as e:
+            raise HTTPException(500, f"Faila dzēšana neizdevās: {e}")
+        if parts[2] == "source":
+            # Avota PDF — notīra arī listinga atsauci, lai poga/sadaļa to vairs nerāda.
+            try:
+                cur.execute(
+                    """UPDATE properties.listings
+                          SET source_file_path = NULL, source_file_name = NULL
+                        WHERE source_file_path = %s""",
+                    (rel,),
+                )
+            except Exception:
+                conn.rollback()
+        cur.execute("DELETE FROM properties.pdf_jobs WHERE id = %s", (job_id,))
+        conn.commit()
+    return {"ok": True, "job_id": job_id}
+
+
 @router.get("/listing-source-file/{listing_id}")
 def listing_source_file(listing_id: int, _auth: None = Depends(require_token)):
     """Importētā listinga AVOTA PDF (oriģinālā brošūra) no volume."""
