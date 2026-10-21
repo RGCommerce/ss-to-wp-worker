@@ -431,7 +431,7 @@ def _copy_images(draft_images: list, listing_id: int) -> dict[str, str]:
 # IMPORTS (Raimonds 2026-10-15): īpašums no PDF / manuāla ievade — tikai DB, bez WP.
 # Sk. HANDOFF_2026-10-15_PDF_MANUAL_IMPORT_DESIGN.md (panelis, zars melna).
 # ---------------------------------------------------------------------------
-IMPORT_SOURCES = {"agent_pdf", "agent_manual"}
+IMPORT_SOURCES = {"agent_pdf", "agent_manual", "agent_partner"}  # agent_partner = partneru ieplūde (partner_intake.apply)
 
 # Potential_space_group atļautās vērtības (DB CHECK listings_potential_space_group_chk).
 _POTENTIAL_ALLOWED = {

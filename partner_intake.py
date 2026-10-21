@@ -1102,6 +1102,10 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     report = json.loads((d / "report.json").read_text(encoding="utf-8"))
     partner = report.get("partner") or {}
     result = {"created": [], "updated": [], "occupied": [], "errors": [], "images": [], "created_units": []}
+    # Atkārtota apstiprināšana (iepriekš bija kļūdas → status «partial»): jau izdarīto NEatkārto.
+    prev = (json.loads((d / "meta.json").read_text(encoding="utf-8")).get("apply_result") or {}) if dry_run is False else {}
+    prev_created_idx = {str(p[1]) for p in (prev.get("created_units") or [])}
+    prev_occupied = {int(x) for x in (prev.get("occupied") or [])}
     image_jobs: list = []
     unit_dec = decisions.get("units") or {}
     miss_dec = decisions.get("missing") or {}
@@ -1171,6 +1175,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
         for addr in report["addresses"]:
             for u in addr["units"]:
                 dec = unit_dec.get(str(u["idx"]), u.get("decision"))
+                if dec == "create" and str(u["idx"]) in prev_created_idx:
+                    continue  # jau izveidots iepriekšējā apstiprināšanā
                 if dec == "create":
                     try:
                         payload = _unit_to_anketa(u, addr, partner, report.get("list_date"))
@@ -1224,7 +1230,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.rollback()
                             result["errors"].append(f"atjaunot #{lid}: {type(e).__name__}: {str(e)[:150]}")
             for m in addr.get("missing_in_list") or []:
-                if miss_dec.get(str(m["id"])) == "occupied":
+                if miss_dec.get(str(m["id"])) == "occupied" and int(m["id"]) not in prev_occupied:
                     lid = int(m["id"])
                     try:
                         conn.execute("""UPDATE properties.listings SET occupancy_status='occupied', occupied_from=CURRENT_DATE,
@@ -1241,7 +1247,12 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         result["errors"].append(f"iznomāts #{lid}: {type(e).__name__}: {str(e)[:150]}")
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
-    meta["status"] = "applied"
+    if prev:
+        meta.setdefault("apply_history", []).append(prev)
+        for k in ("created", "updated", "occupied", "created_units"):
+            result[k] = list(prev.get(k) or []) + [x for x in result[k] if x not in (prev.get(k) or [])]
+    # kļūdas → «partial»: panelis ļauj labot un apstiprināt vēlreiz (izveidotie netiek dublēti)
+    meta["status"] = "partial" if result["errors"] else "applied"
     meta["applied_at"] = _now().isoformat()
     meta["apply_result"] = result
     meta["images_status"] = "processing" if image_jobs else None
