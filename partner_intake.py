@@ -256,6 +256,7 @@ def _parse_message(raw: bytes) -> dict:
         "body": body[:MAX_TEXT_CHARS],
         "orig_sender": orig,
         "attachments_raw": attachments,
+        "raw": raw,
         "date": str(msg.get("Date", "") or ""),
     }
 
@@ -289,7 +290,47 @@ def _store_intake(parsed: dict, source: str = "imap") -> dict:
     }
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     (d / "body.txt").write_text(parsed.get("body", ""), encoding="utf-8")
+    if parsed.get("raw"):
+        # oriģinālā vēstule — lai var atjaunot/pārsūtīt, ja kas noiet greizi (2026-10-21 mācība)
+        (d / "raw.eml").write_bytes(parsed["raw"])
     return meta
+
+
+def _ensure_processed_folder(m: imaplib.IMAP4) -> str | None:
+    """Atrod/izveido arhīva mapi. Mēģina `Processed`, tad `INBOX<delim>Processed`
+    (inbox.eu u.c. serveri mapes pieļauj tikai zem INBOX). Atgriež mapes vārdu vai None."""
+    cached = getattr(m, "_rgc_processed", None)
+    if cached is not None:
+        return cached or None
+    delim = "/"
+    try:
+        typ, boxes = m.list()
+        if typ == "OK":
+            for b in boxes or []:
+                line = b.decode(errors="ignore") if isinstance(b, bytes) else str(b)
+                mm = re.search(r'\) "?([^" ]+)"? ', line)
+                if mm and mm.group(1) != "NIL":
+                    delim = mm.group(1)
+                    break
+    except Exception:
+        pass
+    candidates = [IMAP_PROCESSED]
+    if not IMAP_PROCESSED.upper().startswith("INBOX"):
+        candidates.append(f"INBOX{delim}{IMAP_PROCESSED}")
+    for name in candidates:
+        for op in ("select", "create"):
+            try:
+                typ, _ = m.select(name, readonly=True) if op == "select" else m.create(name)
+            except Exception:
+                typ = "NO"
+            if typ == "OK":
+                m.select(IMAP_FOLDER)
+                m._rgc_processed = name  # type: ignore[attr-defined]
+                return name
+    m.select(IMAP_FOLDER)
+    m._rgc_processed = ""  # type: ignore[attr-defined]
+    logger.warning("partner_intake: nevar izveidot arhīva mapi %s — vēstules paliek INBOX kā izlasītas", IMAP_PROCESSED)
+    return None
 
 
 def fetch_new_intakes() -> list[dict]:
@@ -306,6 +347,7 @@ def fetch_new_intakes() -> list[dict]:
             raise RuntimeError(f"IMAP select {IMAP_FOLDER} neizdevās")
         typ, ids = m.search(None, "UNSEEN")
         uids = ids[0].split() if typ == "OK" and ids and ids[0] else []
+        moved = False
         for num in uids:
             typ, data = m.fetch(num, "(RFC822)")
             if typ != "OK" or not data or not isinstance(data[0], tuple):
@@ -329,20 +371,21 @@ def fetch_new_intakes() -> list[dict]:
             meta = _store_intake(parsed, "imap")
             out.append(meta)
             m.store(num, "+FLAGS", "\\Seen")
-            # pārvieto uz Processed (best-effort)
+            # pārvieto uz Processed — TIKAI ja kopija tiešām izdevās (imaplib uz "NO" nemet kļūdu;
+            # inbox.eu mapes ir tikai zem INBOX/ → bez pārbaudes vēstule tiktu izdzēsta, 2026-10-21)
+            folder = _ensure_processed_folder(m)
+            if folder:
+                typ, _ = m.copy(num, folder)
+                if typ == "OK":
+                    m.store(num, "+FLAGS", "\\Deleted")
+                    moved = True
+                else:
+                    logger.warning("partner_intake: copy uz %s neizdevās (%s) — vēstule paliek INBOX kā izlasīta", folder, typ)
+        if moved:
             try:
-                m.create(IMAP_PROCESSED)
+                m.expunge()
             except Exception:
                 pass
-            try:
-                m.copy(num, IMAP_PROCESSED)
-                m.store(num, "+FLAGS", "\\Deleted")
-            except Exception:
-                pass
-        try:
-            m.expunge()
-        except Exception:
-            pass
     finally:
         try:
             m.logout()
