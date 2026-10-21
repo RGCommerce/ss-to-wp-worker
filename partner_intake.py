@@ -1101,7 +1101,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     d = INTAKE_DIR / intake_id
     report = json.loads((d / "report.json").read_text(encoding="utf-8"))
     partner = report.get("partner") or {}
-    result = {"created": [], "updated": [], "occupied": [], "errors": [], "images": []}
+    result = {"created": [], "updated": [], "occupied": [], "errors": [], "images": [], "created_units": []}
+    image_jobs: list = []
     unit_dec = decisions.get("units") or {}
     miss_dec = decisions.get("missing") or {}
     addr_dec = decisions.get("addresses") or {}
@@ -1189,7 +1190,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.commit()
                         except Exception:
                             conn.rollback()
-                        result["images"].append(_attach_images(conn, lid, u, intake_id))
+                        image_jobs.append((lid, u))
+                        result["created_units"].append([lid, u["idx"]])
                     except agent_publish.DuplicateListingError as e:
                         result["errors"].append(f"telpa #{u['idx']}: {e}")
                     except Exception as e:
@@ -1242,78 +1244,117 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     meta["status"] = "applied"
     meta["applied_at"] = _now().isoformat()
     meta["apply_result"] = result
+    meta["images_status"] = "processing" if image_jobs else None
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    # bildes (ss.lv lejupielāde + Seedream) aizņem minūtes → fonā, lai apstiprināšana atbild uzreiz
+    start_images_job(intake_id, image_jobs)
+    result["images_status"] = "processing" if image_jobs else None
     return result
 
 
+CLEAN_PREFIX = "img_user_"   # tīri avoti (PDF plāni/foto, mūsu apstrādātā fasāde) → ai_ready bez Seedream
+SSLV_MAX_PHOTOS = int(os.getenv("PARTNER_SSLV_MAX_PHOTOS", "15"))
+
+
 def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
-    """Bilžu kaskāde pēc INSERT: PDF foto/plāni → raw/ (+manifests plāniem); ss.lv inbox → JPG bildes lauks
-    (image_download_poller lejupielādē); mūsu listingi → fasāde (1. bilde no pirmā ar bildēm)."""
+    """Bilžu kaskāde pēc INSERT (Raimonds 2026-10-21: «bildes iet kopā un iziet caur AI»).
+
+    VISAS atrastās bildes apvieno VIENĀ listinga galerijā:
+      1) ss.lv «tā pati telpa» → galerija lejupielādēta UZREIZ uz raw/ (img_001.jpg…);
+      2) PDF foto + plāni → raw/img_user_* (tīri);
+      3) ja nav neviena foto → mūsu listinga fasāde no tās pašas ēkas.
+    local_image_paths_raw = foto → fasāde → plāni (plāns pēdējais); images_downloaded_at=now(),
+    lai image_download_poller NEpārraksta sarakstu ar tikai ss.lv bildēm (agrāk tā plāns pazuda).
+    Pēc tam `_process_images`: klasifikācija + ai_ready — ss.lv bildes caur Seedream
+    (ūdenszīmes), tīrās kopē tieši → local_image_paths_processed (publish vārts izpildīts)."""
     import image_classify
-    out = {"listing_id": listing_id, "pdf": 0, "plans": 0, "sslv": 0, "own": 0}
-    raw_dir = STORAGE_ROOT / "listings" / str(listing_id) / "raw"
+    out: dict = {"listing_id": listing_id, "pdf": 0, "plans": 0, "sslv": 0, "own": 0}
+    ldir = STORAGE_ROOT / "listings" / str(listing_id)
+    raw_dir = ldir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[str] = []
+    photos: list[str] = []
+    plans: list[str] = []
+    facade: list[str] = []
     types: dict[str, str] = {}
     imgs = (u.get("images") or {}).get("pdf") or {}
-    for rel in imgs.get("photos", []):
-        src = STORAGE_ROOT / rel
-        if src.is_file():
-            fn = f"img_user_{uuid.uuid4().hex}.png"
-            shutil.copy2(src, raw_dir / fn)
-            paths.append(f"listings/{listing_id}/raw/{fn}")
-            out["pdf"] += 1
-    for rel in imgs.get("plans", []):
-        src = STORAGE_ROOT / rel
-        if src.is_file():
-            fn = f"img_user_{uuid.uuid4().hex}.png"
-            shutil.copy2(src, raw_dir / fn)
-            paths.append(f"listings/{listing_id}/raw/{fn}")
-            types[fn] = "plans"
-            out["plans"] += 1
-    # ss.lv tā pati telpa → galerijas URL → JPG bildes (poller lejupielādē + Seedream publicējot)
+
+    # 1) ss.lv — vispirms (download_images var tīrīt img_*.* mapē, ja mainās URL saraksts)
     sslv = (u.get("images") or {}).get("sslv_inbox") or []
-    if not imgs.get("photos") and sslv:
-        best = sslv[0]
+    for cand in sslv[:2]:
         try:
             import ai_text_helpers as helpers
+            import download_images
             import sslv_import
-            info = sslv_import.parse_sslv_url(best["link"])
+            info = sslv_import.parse_sslv_url(cand["link"])
             html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
-            gallery = helpers.extract_gallery_urls(html_doc)
-            if gallery:
-                conn.execute('UPDATE properties.listings SET "JPG bildes" = %s WHERE id = %s',
-                             (sslv_import._format_jpg_field(gallery), listing_id))
-                conn.commit()
-                out["sslv"] = len(gallery)
+            gallery = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+            if not gallery:
+                continue
+            jpg_field = sslv_import._format_jpg_field(gallery)
+            download_images.STORAGE_ROOT = STORAGE_ROOT
+            res = download_images.process_listing(conn, listing_id, jpg_field)
+            got = res.get("saved_paths") or []
+            if not got:
+                continue
+            photos.extend(got)
+            conn.execute('UPDATE properties.listings SET "JPG bildes" = %s WHERE id = %s', (jpg_field, listing_id))
+            conn.commit()
+            out["sslv"] = len(got)
+            out["sslv_link"] = cand["link"]
+            break
         except Exception as e:
             conn.rollback()
-            out["sslv_error"] = f"{type(e).__name__}"
-    # mūsu listingi tai pašā ēkā → fasāde (pirmā bilde)
+            out["sslv_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+
+    # 2) PDF foto + plāni (tīri)
+    for kind in ("photos", "plans"):
+        for rel in imgs.get(kind, []):
+            src = STORAGE_ROOT / rel
+            if not src.is_file():
+                continue
+            fn = f"{CLEAN_PREFIX}{uuid.uuid4().hex}{src.suffix.lower() or '.png'}"
+            shutil.copy2(src, raw_dir / fn)
+            p = f"listings/{listing_id}/raw/{fn}"
+            if kind == "plans":
+                plans.append(p)
+                types[fn] = "plans"
+                out["plans"] += 1
+            else:
+                photos.append(p)
+                out["pdf"] += 1
+
+    # 3) fasāde no mūsu listinga tajā pašā ēkā — tikai ja nav neviena foto
     own = (u.get("images") or {}).get("own_listings_with_images") or []
-    if not imgs.get("photos") and not out["sslv"] and own:
+    if not photos and own:
         try:
-            row = conn.execute("SELECT local_image_paths_processed, local_image_paths_raw FROM properties.listings WHERE id=%s", (own[0],)).fetchone()
+            row = conn.execute("SELECT local_image_paths_processed, local_image_paths_raw FROM properties.listings WHERE id=%s",
+                               (own[0],)).fetchone()
+            clean = bool(row and row["local_image_paths_processed"])
             arr = (row["local_image_paths_processed"] or row["local_image_paths_raw"] or []) if row else []
             if arr:
                 rel = str(arr[0]).replace("\\", "/")
                 rel = rel[rel.index("listings/"):] if "listings/" in rel else rel
                 src = STORAGE_ROOT / rel
                 if src.is_file():
-                    fn = f"img_user_{uuid.uuid4().hex}{src.suffix.lower() or '.jpg'}"
+                    # apstrādāta → tīra; raw (ss.lv ūdenszīme) → img_fac_* iet caur Seedream
+                    fn = f"{CLEAN_PREFIX if clean else 'img_fac_'}{uuid.uuid4().hex}{src.suffix.lower() or '.jpg'}"
                     shutil.copy2(src, raw_dir / fn)
-                    paths.append(f"listings/{listing_id}/raw/{fn}")
+                    facade.append(f"listings/{listing_id}/raw/{fn}")
                     types[fn] = "fasade"
                     out["own"] = 1
         except Exception:
             conn.rollback()
+
+    paths = photos + facade + plans
     if paths:
         try:
-            conn.execute("UPDATE properties.listings SET local_image_paths_raw = COALESCE(local_image_paths_raw,'{}'::text[]) || %s::text[] WHERE id=%s",
-                         (paths, listing_id))
+            conn.execute("""UPDATE properties.listings
+                            SET local_image_paths_raw = %s::text[], images_downloaded_at = now()
+                            WHERE id = %s""", (paths, listing_id))
             conn.commit()
-        except Exception:
+        except Exception as e:
             conn.rollback()
+            out["db_error"] = f"{type(e).__name__}"
         if types:
             try:
                 man = image_classify.load_manifest(STORAGE_ROOT, listing_id)
@@ -1323,7 +1364,102 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
                 image_classify.save_manifest(STORAGE_ROOT, listing_id, man)
             except Exception:
                 pass
+    out["raw_paths"] = len(paths)
     return out
+
+
+def _process_images(listing_id: int) -> dict:
+    """AI posms vienam listingam. Klasificē neklasificētās (ss.lv) bildes, tad ai_ready:
+    img_user_* → kopija, pārējās → Seedream + ūdenszīmes pārbaude. Raksta
+    local_image_paths_processed tajā pašā secībā kā raw (foto → fasāde → plāni).
+    Idempotents (esošos ai_ready failus izlaiž)."""
+    import image_classify
+    import image_pipeline
+    out: dict = {"listing_id": listing_id, "processed": 0, "failed": 0}
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        row = conn.execute("SELECT local_image_paths_raw FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
+        raws = [str(p).replace("\\", "/") for p in ((row or {}).get("local_image_paths_raw") or [])]
+        if not raws:
+            out["status"] = "no_images"
+            return out
+        ldir = STORAGE_ROOT / "listings" / str(listing_id)
+        files = [STORAGE_ROOT / (r[r.index("listings/"):] if "listings/" in r else r) for r in raws]
+        files = [f for f in files if f.is_file()]
+        try:
+            image_classify.ensure_classified(STORAGE_ROOT, listing_id, raw_files=files)
+        except BaseException as e:  # bez OPENAI atslēgas met SystemExit — klasifikācija nav obligāta
+            out["classify_error"] = f"{type(e).__name__}"
+        ai_dir = ldir / "ai_ready"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+        processed: list[str] = []
+        for f in files:
+            dst = ai_dir / f.name
+            try:
+                if not dst.exists():
+                    if f.name.startswith(CLEAN_PREFIX):
+                        shutil.copy2(f, dst)
+                    else:
+                        data = image_pipeline.process_bytes_checked(f.read_bytes(), f.name)
+                        if data is None:
+                            out["failed"] += 1
+                            continue
+                        dst.write_bytes(data)
+                processed.append(f"listings/{listing_id}/ai_ready/{f.name}")
+            except Exception as e:
+                logger.warning("partner_intake: bilde %s/%s neizdevās: %s", listing_id, f.name, e)
+                out["failed"] += 1
+        if processed:
+            conn.execute("UPDATE properties.listings SET local_image_paths_processed = %s::text[] WHERE id=%s",
+                         (processed, listing_id))
+            conn.commit()
+        out["processed"] = len(processed)
+        out["status"] = "ok" if processed else "failed"
+    return out
+
+
+def _images_job(intake_id: str, jobs: list) -> None:
+    """Fona pavediens: bildes katram jaunajam listingam → meta.json images_result/images_status."""
+    results: list[dict] = []
+    for lid, u in jobs:
+        r: dict = {"listing_id": lid}
+        try:
+            with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+                r.update(_attach_images(conn, lid, u, intake_id))
+            r["ai"] = _process_images(lid)
+        except Exception as e:
+            r["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        results.append(r)
+        try:
+            meta_p = INTAKE_DIR / intake_id / "meta.json"
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+            meta["images_result"] = results
+            meta["images_status"] = "done" if len(results) == len(jobs) else f"{len(results)}/{len(jobs)}"
+            meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        except Exception:
+            pass
+    logger.info("partner_intake: bildes %s gatavas: %s", intake_id, results)
+
+
+def start_images_job(intake_id: str, jobs: list) -> None:
+    import threading
+    if jobs:
+        threading.Thread(target=_images_job, args=(intake_id, jobs), name=f"pi-images-{intake_id}", daemon=True).start()
+
+
+def reprocess_listing_images(intake_id: str, listing_id: int) -> dict:
+    """Labošanai: atrod telpu pēc apply rezultāta (created_units) un pārlaiž bildes sinhroni."""
+    d = INTAKE_DIR / intake_id
+    report = json.loads((d / "report.json").read_text(encoding="utf-8"))
+    meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    pairs = (meta.get("apply_result") or {}).get("created_units") or []
+    idx = next((p[1] for p in pairs if int(p[0]) == int(listing_id)), None)
+    unit = next((u for a in report["addresses"] for u in a["units"] if str(u["idx"]) == str(idx)), None)
+    if unit is None:
+        raise ApplyError(f"listings {listing_id} nav atrasts šīs ieplūdes apply rezultātā")
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        r = _attach_images(conn, listing_id, unit, intake_id)
+    r["ai"] = _process_images(listing_id)
+    return r
 
 
 # ───────────────────────────── saraksts / CLI / pollers ─────────────────────────────

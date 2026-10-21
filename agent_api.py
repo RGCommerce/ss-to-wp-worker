@@ -1597,6 +1597,20 @@ def partner_intake_reprocess(intake_id: str, _auth: None = Depends(require_token
         raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
 
 
+@router.post("/partner-intake/{intake_id}/images/{listing_id}")
+def partner_intake_images(intake_id: str, listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    """Pārlaist bilžu soli (ss.lv + PDF + fasāde → AI) vienam jau izveidotam listingam."""
+    import partner_intake
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
+        raise HTTPException(400, "Nederīgs intake_id")
+    try:
+        return {"ok": True, **partner_intake.reprocess_listing_images(intake_id, listing_id)}
+    except partner_intake.ApplyError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
+
+
 class PartnerUploadReq(BaseModel):
     pass
 
