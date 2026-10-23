@@ -106,7 +106,7 @@ def _claim_next() -> Optional[dict]:
                    bp.has_conference_room    AS bp_has_conference_room
             FROM properties.listings l
             LEFT JOIN properties.building_profiles bp ON bp.id = l.building_profile_id
-            WHERE l.source LIKE %s
+            WHERE (l.source LIKE %s OR l.source = 'agent_partner')
               AND l."Debug_status" IS NULL
             ORDER BY l.id
             LIMIT 1
@@ -176,6 +176,8 @@ def _build_text_from_listing(row: Dict[str, Any]) -> str:
         parts.append(f"Ēkas apraksts (no aģenta): {row['bp_building_description']}")
     if row.get("Agent_comment"):
         parts.append(f"Aģenta komentārs: {row['Agent_comment']}")
+    if row.get("Agent_text_extra"):
+        parts.append(f"Papildu informācija: {row['Agent_text_extra']}")
 
     return "\n".join(parts) if parts else "Aģenta anketa bez teksta — analizē tikai bildes."
 
@@ -328,6 +330,11 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             result["Debug_status"] = "ok"
         else:
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
+            if row.get("source") == "agent_partner":
+                # Partnera piedāvājums = mūsu apstiprināts sadarbības avots. ss.lv filtra
+                # klasifikācija (agent_detected/low_evidence — bildes nāk no cita brokera
+                # ss.lv sludinājuma) te nav derīga un izmestu listingu no match (gaida 'ok').
+                result["Debug_status"] = "ok"
     except Exception as e:
         return False, f"OpenAI kļūda: {type(e).__name__}: {str(e)[:300]}"
 

@@ -1035,6 +1035,19 @@ class ApplyError(ValueError):
     pass
 
 
+def _partner_locked(unit: dict) -> list[str]:
+    """Lock TIKAI to, ko partneris tiešām iedeva (cena/platība/stāvs/tips/apraksts + skaidri
+    minētās pazīmes). Pārējo (ēkas tips/klase, stāvoklis, logi, apkure, Potential_space_group…)
+    aizpilda ss.lv AI analizators no bildēm — importa FULL lock to bloķēja (2026-10-23)."""
+    import agent_publish
+    locked = list(agent_publish.EASY_LOCKED_FIELDS) + ["phone_numbers"]
+    # Investiciju_strategija: AI parastai nomai mēdz likt «Value-Add» (tests 111701) → lock, ja mēs to noteicām
+    for k in ("Balkons_check", "Treifelis_Pacelajs", "Space_condition", "Mebeleta_telpa", "Griestu_augstums", "Investiciju_strategija"):
+        if unit.get(k):
+            locked.append(k)
+    return locked
+
+
 def _derived_fields(u: dict) -> dict:
     """AI teksta pazīmes → listinga enum lauki (DB enum vērtības verificētas 2026-10-23).
     Liek TIKAI, ja pazīme skaidri minēta — nezināmais paliek NULL (AI/aģents var papildināt)."""
@@ -1272,10 +1285,11 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         try:
                             conn.execute("""UPDATE properties.listings SET partner_id=%s, partner_unit_ref=%s, partner_list_id=%s,
                                             "Debug_note" = %s,
-                                            "Agent_text_extra" = COALESCE(NULLIF(%s, ''), "Agent_text_extra") WHERE id=%s""",
+                                            "Agent_text_extra" = COALESCE(NULLIF(%s, ''), "Agent_text_extra"),
+                                            agent_locked_fields = %s WHERE id=%s""",
                                          (partner_id, u.get("ref"), list_id,
                                           f"Partneris: {partner.get('company') or partner.get('email') or '?'}; saraksts {report.get('list_date') or report.get('received_at','')[:10]}; ref {u.get('ref') or '-'}",
-                                          payload["unit"].get("Agent_text_extra") or "", lid))
+                                          payload["unit"].get("Agent_text_extra") or "", _partner_locked(payload["unit"]), lid))
                             conn.commit()
                         except Exception:
                             conn.rollback()
@@ -1505,7 +1519,12 @@ def _process_images(listing_id: int) -> dict:
         if processed:
             conn.execute("UPDATE properties.listings SET local_image_paths_processed = %s::text[] WHERE id=%s",
                          (processed, listing_id))
+            # partnera listingi → ss.lv AI analizators (agent_ai_poller paņem Debug_status NULL,
+            # aizpilda neaizslēgtos laukus no bildēm + teksta, atliek 'ok')
+            conn.execute("""UPDATE properties.listings SET "Debug_status" = NULL
+                            WHERE id=%s AND source='agent_partner'""", (listing_id,))
             conn.commit()
+            out["ai_analyze"] = "queued"
         out["processed"] = len(processed)
         out["status"] = "ok" if processed else "failed"
     return out
