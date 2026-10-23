@@ -1933,7 +1933,7 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
     return out
 
 
-def _candidate_types(d: Path, keys: list[str], prepare: bool = False) -> dict:
+def _candidate_types(d: Path, keys: list[str], prepare: bool = False, limit: int = 40, workers: int = 6) -> dict:
     """Importa stadijai: kuras kandidātbildes ir fasāde (image_classify, kešots intake mapē).
     Lai aģentam PIEDĀVĀTU ēkas fasādi, ja izvēlētajās nav nevienas. ~0,1 ¢/bilde, paralēli.
     prepare=False → tikai kešs (panelis nedrīkst gaidīt OpenAI); prepare=True → fona sagatavošana."""
@@ -1960,8 +1960,8 @@ def _candidate_types(d: Path, keys: list[str], prepare: bool = False) -> dict:
                 except Exception:
                     return key, None
 
-            with ThreadPoolExecutor(max_workers=6) as ex:
-                for k, t in ex.map(_one, todo[:40]):
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for k, t in ex.map(_one, todo[:limit]):
                     if t:
                         cache[k] = t
             cache_p.write_text(json.dumps(cache), encoding="utf-8")
@@ -1976,14 +1976,27 @@ def prepare_unit_images(intake_id: str) -> dict:
     d = INTAKE_DIR / intake_id
     report = json.loads((d / "report.json").read_text(encoding="utf-8"))
     done, errs = 0, 0
+    # 1) ss.lv galerijas (kešs) + visu telpu kandidātu atslēgas; 2) VIENA klasifikācija visām reizē
+    #    (10 paralēli, atslēgas, kas kopīgas vairākām telpām — vienreiz)
+    keys: list[str] = []
     for a in report.get("addresses", []):
         for u in a.get("units", []):
             try:
-                unit_image_candidates(intake_id, str(u["idx"]), prepare=True)
+                c = unit_image_candidates(intake_id, str(u["idx"]), prepare=False)
+                if c.get("sslv_pending"):
+                    c = _prep_sslv(d, u) or c
+                keys.extend(c.get("sslv") or [])
+                keys.extend((c["pdf"].get("photos") or []) + (c["links"].get("photos") or [])[:20])
                 done += 1
             except Exception as e:
                 errs += 1
                 logger.info("partner_intake: prep %s/%s: %s", intake_id, u.get("idx"), e)
+    keys = list(dict.fromkeys(keys))
+    try:
+        _candidate_types(d, keys, prepare=True, limit=600, workers=10)
+    except Exception as e:
+        errs += 1
+        logger.warning("partner_intake: prep tipi %s: %s", intake_id, e)
     try:
         meta_p = d / "meta.json"
         meta = json.loads(meta_p.read_text(encoding="utf-8"))
@@ -1992,6 +2005,28 @@ def prepare_unit_images(intake_id: str) -> dict:
     except Exception:
         pass
     return {"units": done, "errors": errs}
+
+
+def _prep_sslv(d: Path, unit: dict) -> Optional[dict]:
+    """Telpas ss.lv galerija → kešs (sslv_gallery_cache.json). Atgriež {sslv: [...]} vai None."""
+    cands = (unit.get("images") or {}).get("sslv_inbox") or []
+    if not cands:
+        return None
+    link = cands[0]["link"]
+    cache_p = d / "sslv_gallery_cache.json"
+    cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
+    if link not in cache:
+        try:
+            import ai_text_helpers as helpers
+            import sslv_import
+            info = sslv_import.parse_sslv_url(link)
+            html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
+            cache[link] = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+        except Exception:
+            cache[link] = []
+        cache_p.write_text(json.dumps(cache), encoding="utf-8")
+    imgs = unit.get("images") or {}
+    return {"sslv": cache.get(link) or [], "pdf": imgs.get("pdf") or {"photos": []}, "links": imgs.get("links") or {"photos": []}}
 
 
 def start_prepare_unit_images(intake_id: str) -> None:

@@ -128,6 +128,19 @@ def save_manifest(storage_root: Path, listing_id: int, images: dict) -> None:
 def _classify_one(image_bytes: bytes, filename: str) -> dict | None:
     """gpt-4o-mini vision call. Atgriež dict ar type/quality/reason vai
     None ja kļūda."""
+    # detail=low = 512 px modeļa pusē → lielas bildes (Drive 1,8 MP ≈ 300 KB+) sūtīt pilnā izmērā ir tikai
+    # lēna augšupielāde (partneru ieplūde: 40 bildes 12 min). Samazina līdz 1024 px pirms base64.
+    if len(image_bytes) > 200_000:
+        try:
+            from PIL import Image
+            import io as _io
+            im = Image.open(_io.BytesIO(image_bytes))
+            im.thumbnail((1024, 1024))
+            buf = _io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=85)
+            image_bytes = buf.getvalue()
+        except Exception:
+            pass
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:image/jpeg;base64,{b64}"
     body = {
