@@ -1035,6 +1035,35 @@ class ApplyError(ValueError):
     pass
 
 
+def _derived_fields(u: dict) -> dict:
+    """AI teksta pazīmes → listinga enum lauki (DB enum vērtības verificētas 2026-10-23).
+    Liek TIKAI, ja pazīme skaidri minēta — nezināmais paliek NULL (AI/aģents var papildināt)."""
+    out: dict = {}
+    feats = " | ".join(str(x) for x in (u.get("features") or [])).lower()
+    text = (feats + " | " + str(u.get("condition") or "") + " | " + str(u.get("description_lv") or "")).lower()
+    if re.search(r"balkon|terase|terasē|lodžij", feats):
+        out["Balkons_check"] = "checked"
+    if re.search(r"bez lift", text):
+        out["Treifelis_Pacelajs"] = "not checked"
+    elif re.search(r"(^|[^a-zāēīū])lift(s|u|a|ā)?([^a-zāēīū]|$)", feats):
+        out["Treifelis_Pacelajs"] = "checked"
+    cond = str(u.get("condition") or "").lower()
+    if cond:
+        if re.search(r"kapitāl", cond):
+            out["Space_condition"] = "Kapitālais remonts"
+        elif re.search(r"nepieciešams remont|jāremontē|bez remonta|remontējam", cond):
+            out["Space_condition"] = "Nepieciešams remonts"
+        elif re.search(r"nepabeigt|pelēk|white box|baltā apdare", cond):
+            out["Space_condition"] = "Nepabeigts"
+        elif re.search(r"jaun|renovēt|pēc remonta|svaig", cond):
+            out["Space_condition"] = "Jauns"
+        elif re.search(r"lab|kopt|kosmētisk", cond):
+            out["Space_condition"] = "Labs"
+    if (u.get("space_type") or "") != "Investīciju objekts":
+        out["Investiciju_strategija"] = "Nav investīciju objekts"
+    return out
+
+
 def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]) -> dict:
     area = _num(u.get("area_m2"))
     rate = u.get("rent_per_m2_min")
@@ -1057,7 +1086,14 @@ def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]
         extra_bits.append(f"pieejams no {u['available_from']}")
     if u.get("condition"):
         extra_bits.append(str(u["condition"]))
-    extra_bits.extend(u.get("features") or [])
+    # pazīmes bez atkārtojumiem (stāvs jau ir laukā; «balkons» jau ir «+ balkons 4,40 m²»)
+    for f in (u.get("features") or []):
+        fl = str(f).strip()
+        if not fl or re.fullmatch(r"\d+\.?\s*stāvs", fl.lower()):
+            continue
+        if fl.lower() in " ".join(extra_bits).lower():
+            continue
+        extra_bits.append(fl)
     papildu = "; ".join(x for x in [u.get("utilities_note"), u.get("vat_note")] if x)
     unit = {
         "space_group": u.get("space_type") or "Birojs",
@@ -1081,6 +1117,7 @@ def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]
         "Agent_text_extra": ", ".join(extra_bits)[:900],
         "buildings": [], "investment_income": "", "investment_yield": "",
     }
+    unit.update(_derived_fields(u))   # _insert_listing (import = full režīms) tos ieraksta
     if unit["space_group"] == "Zeme" and area:
         unit["Zemes_gabals_m2"] = _numstr(area)
     building = {
@@ -1234,9 +1271,11 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         result["created"].append(lid)
                         try:
                             conn.execute("""UPDATE properties.listings SET partner_id=%s, partner_unit_ref=%s, partner_list_id=%s,
-                                            "Debug_note" = %s WHERE id=%s""",
+                                            "Debug_note" = %s,
+                                            "Agent_text_extra" = COALESCE(NULLIF(%s, ''), "Agent_text_extra") WHERE id=%s""",
                                          (partner_id, u.get("ref"), list_id,
-                                          f"Partneris: {partner.get('company') or partner.get('email') or '?'}; saraksts {report.get('list_date') or report.get('received_at','')[:10]}; ref {u.get('ref') or '-'}", lid))
+                                          f"Partneris: {partner.get('company') or partner.get('email') or '?'}; saraksts {report.get('list_date') or report.get('received_at','')[:10]}; ref {u.get('ref') or '-'}",
+                                          payload["unit"].get("Agent_text_extra") or "", lid))
                             conn.commit()
                         except Exception:
                             conn.rollback()
