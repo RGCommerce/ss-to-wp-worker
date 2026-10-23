@@ -1093,6 +1093,46 @@ def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]
     return {"building": building, "unit": unit}
 
 
+def _guess_district(conn, street: Optional[str], city: Optional[str], bp_id: Optional[int]) -> str:
+    """Rajons, ja partneris to nenorāda (bieži): 1) ēkas profils; 2) mūsu listingi tajā ēkā;
+    3) citi listingi TAJĀ PAŠĀ mājā (iela + numurs); 4) iela bez numura — TIKAI ja ≥75 % ielas listingu
+    ir vienā rajonā (garām ielām kā Brīvības gatve minējums būtu nepareizs → labāk tukšs).
+    Tukšs rajons = listings neparādās lokācijas filtros/match (PEBO 2026-10-23)."""
+    def _canon(d: str) -> str:
+        d = (d or "").strip()
+        return d[:1].upper() + d[1:] if d else ""
+    try:
+        if bp_id:
+            r = conn.execute("SELECT district FROM properties.building_profiles WHERE id=%s", (bp_id,)).fetchone()
+            if r and (r["district"] or "").strip():
+                return _canon(r["district"])
+            r = conn.execute("""SELECT lower(btrim(district)) d, count(*) n FROM properties.listings
+                                WHERE building_profile_id=%s AND coalesce(btrim(district),'') <> ''
+                                GROUP BY 1 ORDER BY n DESC LIMIT 1""", (bp_id,)).fetchone()
+            if r:
+                return _canon(r["d"])
+        city_sql = "translate(lower(coalesce(city,'')),'āēīōūčšžģķļņŗ','aeiouczsgklnr') = translate(lower(%s),'āēīōūčšžģķļņŗ','aeiouczsgklnr')"
+        street_sql = "translate(lower(street),'āēīōūčšžģķļņŗ','aeiouczsgklnr') ~ %s"
+        full = _street_like(street or "")
+        if full and any(ch.isdigit() for ch in (street or "")):
+            r = conn.execute(f"""SELECT lower(btrim(district)) d, count(*) n FROM properties.listings
+                                 WHERE coalesce(btrim(district),'') <> '' AND {city_sql} AND {street_sql}
+                                 GROUP BY 1 ORDER BY n DESC LIMIT 1""", (city or "Rīga", full)).fetchone()
+            if r:
+                return _canon(r["d"])
+        toks = [t for t in _street_key(street or "").split() if not any(ch.isdigit() for ch in t)]
+        if toks:
+            rows = conn.execute(f"""SELECT lower(btrim(district)) d, count(*) n FROM properties.listings
+                                    WHERE coalesce(btrim(district),'') <> '' AND {city_sql} AND {street_sql}
+                                    GROUP BY 1 ORDER BY n DESC""", (city or "Rīga", _street_like(" ".join(toks)))).fetchall()
+            total = sum(int(r["n"]) for r in rows)
+            if rows and total >= 3 and int(rows[0]["n"]) / total >= 0.75:
+                return _canon(rows[0]["d"])
+    except Exception:
+        conn.rollback()
+    return ""
+
+
 def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_id: int = 0,
           dry_run: bool = False) -> dict:
     """decisions = {"units": {"<idx>": "create"|"update"|"skip"|"keep"}, "missing": {"<listing_id>": "occupied"|"skip"},
@@ -1179,6 +1219,9 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                     continue  # jau izveidots iepriekšējā apstiprināšanā
                 if dec == "create":
                     try:
+                        if not (addr.get("district") or "").strip():
+                            addr["district"] = _guess_district(conn, addr.get("street"), addr.get("city"),
+                                                               (addr.get("bp") or {}).get("id"))
                         payload = _unit_to_anketa(u, addr, partner, report.get("list_date"))
                         res = agent_publish.publish_anketa({
                             "mode": "full", "wp_user_id": wp_user_id, "requested_by_email": requested_by,
