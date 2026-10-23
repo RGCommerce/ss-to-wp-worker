@@ -1576,6 +1576,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     plans: list[str] = []
     facade: list[str] = []
     types: dict[str, str] = {}
+    keymap: dict[str, str] = {}   # kandidāta atslēga (URL / rel / fn) → raw faila nosaukums (secībai)
     imgs = (u.get("images") or {}).get("pdf") or {}
     # Aģenta izvēle importa stadijā (decisions.images[idx]); None = automātiski (viss atrastais)
     sel = u.get("_img_sel") or {}
@@ -1609,6 +1610,8 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             if not got:
                 continue
             photos.extend(got)
+            for gi, gurl in enumerate(gallery):
+                keymap[gurl] = f"img_{gi + 1:03d}.jpg"
             conn.execute('UPDATE properties.listings SET "JPG bildes" = %s WHERE id = %s', (jpg_field, listing_id))
             conn.commit()
             out["sslv"] = len(got)
@@ -1648,6 +1651,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
                 continue
             fn = f"{CLEAN_PREFIX}{uuid.uuid4().hex}{src.suffix.lower() or '.png'}"
             shutil.copy2(src, raw_dir / fn)
+            keymap[str(rel)] = fn
             p = f"listings/{listing_id}/raw/{fn}"
             if kind in ("plans", "link_plans"):
                 plans.append(p)
@@ -1701,6 +1705,14 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             except Exception:
                 pass
     out["raw_paths"] = len(paths)
+    # aģenta secība (1 = titulbilde) → _order.json; piemēro _process_images beigās (pēc ēkas bildēm)
+    order = [k for k in (sel.get("order") or []) if isinstance(k, str)]
+    if order:
+        try:
+            (ldir / "_order.json").write_text(json.dumps({"order": order, "keymap": keymap}, ensure_ascii=False), encoding="utf-8")
+            out["order"] = len(order)
+        except Exception:
+            pass
     return out
 
 
@@ -1780,14 +1792,20 @@ def _process_images(listing_id: int, building_mode: str = "never", building_fns:
                 except Exception:
                     conn.rollback()
                 if building_mode != "never" and building_fns:   # tikai aģenta izvēlētās — nekad automātiski
+                    _has_order = (ldir / "_order.json").is_file()
                     out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
-                                                                       "always", building_fns)
+                                                                       "always", building_fns,
+                                                                       position="end" if _has_order else "front")
                 row2 = conn.execute("SELECT local_image_paths_processed FROM properties.listings WHERE id=%s",
                                     (listing_id,)).fetchone()
                 processed = [str(x) for x in ((row2 or {}).get("local_image_paths_processed") or [])]
         except Exception as e:
             conn.rollback()
             out["building_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        try:
+            processed = _apply_order(conn, listing_id, ldir, processed) or processed
+        except Exception as e:
+            logger.warning("partner_intake: secība %s: %s", listing_id, e)
         if processed:
             # partnera listingi → ss.lv AI analizators (agent_ai_poller paņem Debug_status NULL,
             # aizpilda neaizslēgtos laukus no bildēm + teksta, atliek 'ok')
@@ -1801,6 +1819,46 @@ def _process_images(listing_id: int, building_mode: str = "never", building_fns:
 
 
 _ACTIVE_IMAGE_JOBS: set[str] = set()
+
+
+def _apply_order(conn, listing_id: int, ldir: Path, processed: list[str]) -> Optional[list[str]]:
+    """Aģenta izvēlētā bilžu secība (importa stadijā «Secība»: 1 = titulbilde). Numurētās pirmās
+    norādītajā secībā, pārējās aiz tām automātiskajā kārtībā. Pārkārto raw + processed (WP ņem pirmo)."""
+    op = ldir / "_order.json"
+    if not op.is_file():
+        return None
+    o = json.loads(op.read_text(encoding="utf-8"))
+    keymap = o.get("keymap") or {}
+    first: list[str] = []
+    for k in o.get("order") or []:
+        fn = keymap.get(k) or (f"img_user_bp_{k[3:]}" if k.startswith("bp_") else None)
+        if fn and fn not in first:
+            first.append(fn)
+    if not first:
+        return None
+
+    def _sort(paths: list[str]) -> list[str]:
+        byname = {Path(str(p).replace("\\", "/")).name: p for p in paths}
+        ordered = [byname[f] for f in first if f in byname]
+        return ordered + [p for p in paths if p not in ordered]
+
+    row = conn.execute("SELECT local_image_paths_raw, local_image_paths_processed FROM properties.listings WHERE id=%s",
+                       (listing_id,)).fetchone()
+    raw = _sort([str(x) for x in (row["local_image_paths_raw"] or [])]) if row else None
+    proc = _sort([str(x) for x in (processed or (row["local_image_paths_processed"] if row else []) or [])])
+    conn.execute("UPDATE properties.listings SET local_image_paths_raw=%s::text[], local_image_paths_processed=%s::text[] WHERE id=%s",
+                 (raw, proc or None, listing_id))
+    conn.commit()
+    try:
+        import image_classify
+        man = image_classify.load_manifest(STORAGE_ROOT, listing_id) or {}
+        for fn, info in man.items():
+            if isinstance(info, dict):
+                info["featured"] = (fn == first[0])
+        image_classify.save_manifest(STORAGE_ROOT, listing_id, man)
+    except Exception:
+        pass
+    return proc
 
 
 def _images_job(intake_id: str, jobs: list, prior: Optional[list] = None) -> None:
