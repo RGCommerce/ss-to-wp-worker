@@ -1553,8 +1553,9 @@ def partner_intake_get(intake_id: str, _auth: None = Depends(require_token)) -> 
 
 
 @router.get("/partner-intake/{intake_id}/file/{rel:path}")
-def partner_intake_file(intake_id: str, rel: str, _auth: None = Depends(require_token)):
-    """Pielikums (att/<fails>) vai izvilkta bilde (img/<idx>/<fails>) priekšskatam panelī."""
+def partner_intake_file(intake_id: str, rel: str, w: int = 0, _auth: None = Depends(require_token)):
+    """Pielikums (att/<fails>) vai izvilkta bilde (img/<idx>/<fails>) priekšskatam panelī.
+    ?w=320 → sīktēls (kešots _thumbs/) — pilnas Drive bildes (300 KB+) × 14 telpai lika panelim karāties."""
     import partner_intake
     from fastapi.responses import FileResponse
     if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id) or ".." in rel.split("/"):
@@ -1568,6 +1569,20 @@ def partner_intake_file(intake_id: str, rel: str, _auth: None = Depends(require_
         raise HTTPException(400, "Nederīgs ceļš")
     if not p.is_file():
         raise HTTPException(404, "Fails nav")
+    if w and 64 <= w <= 1024 and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+        import hashlib
+        tdir = base / "_thumbs"
+        tdir.mkdir(exist_ok=True)
+        tp = tdir / (hashlib.sha1(f"{rel}|{w}".encode()).hexdigest() + ".jpg")
+        if not tp.is_file():
+            try:
+                from PIL import Image
+                im = Image.open(p)
+                im.thumbnail((w, w))
+                im.convert("RGB").save(tp, "JPEG", quality=80)
+            except Exception:
+                return FileResponse(str(p))
+        return FileResponse(str(tp), media_type="image/jpeg")
     return FileResponse(str(p))
 
 

@@ -518,7 +518,8 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
     for fl in found_links:
         if not link_media.classify_url(fl["url"]):
             continue   # tikai atbalstītās (Drive) — mailto/web lapas neinteresē
-        same = next((x for x in links if x["url"] == fl["url"]), None)
+        key = link_media.classify_url(fl["url"])
+        same = next((x for x in links if link_media.classify_url(x["url"]) == key), None)
         if same:
             same.setdefault("rows", []).append(fl["row_text"])
             continue
@@ -562,6 +563,8 @@ def _schema() -> dict:
             "attachment_hint": _nullable("string"),
             "page_hint": _nullable("string"),
             "link_ids": {"type": "array", "items": {"type": "string"}},
+            "partner_notes": {"type": "string"},
+            "offer_type": {"type": "string", "enum": ["standard", "flex", "project"]},
             "evidence": {"type": "string"},
             "confidence": {"type": "number"},
         },
@@ -650,6 +653,14 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
     Ja izmēri uzskaitīti atsevišķi (73,45 / 108,67 / 182,12 m²) — katrs ir sava telpa.
 9e. Vēl neuzbūvēts objekts / «pēc pieprasījuma» / BTS (build-to-suit) — VIENA telpa ar kopējo aprakstu,
     cena null, `condition`=«projekts/būvniecībā», warning; neveido atsevišķu telpu katrai diapazona robežai.
+9f. `partner_notes` — partnera PAŠA piezīmes par šo telpu VERBATIM (tabulas «Piezīmes» kolonna, rindas
+    teksts, e-pasta rinda) latviski kā oriģinālā, bez pārfrāzēšanas un bez tavām piebildēm, līdz ~400 zīmēm;
+    "" ja nav. Aģents to lasa kā «ko partneris teica».
+9g. `offer_type`: "flex" = coworking / serviced office / privātais kabinets coworkingā / darba vietas, kur cena ir
+    KOPĒJĀ mēneša maksa ar visu iekļautu (nevis €/m²) — tad `rent_total` = tā maksa, `rent_per_m2_min` = null;
+    "project" = vēl neuzbūvēts / BTS / «pēc pieprasījuma»; citādi "standard".
+9h. Cena «No 10.00» / «no 10 €/m²» nozīmē: 10 IR cena (telpa «kā ir»; ar pielāgojumiem var būt vairāk) →
+    `rent_per_m2_min` = 10, `rent_per_m2_max` = null, BEZ warning par to.
 10. `looks_complete` = vai dokuments izskatās kā PILNS šī partnera brīvo telpu saraksts (vakanču saraksts,
     «aktuālais piedāvājums», mēneša lapa) — true; vai tikai dažas telpas/viena brošūra — false.
 11. `is_vacancy_offer=false`, ja e-pasts nav telpu piedāvājums (rēķins, sarakste, spams) — tad units tukšs.
@@ -1198,6 +1209,10 @@ def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]
     else:
         price = u.get("sale_price")
     extra_bits = []
+    if u.get("offer_type") == "flex":
+        extra_bits.append("Flex / coworking birojs — cena ir kopējā mēneša maksa ar visu iekļautu (ne €/m²)")
+    elif u.get("offer_type") == "project":
+        extra_bits.append("Projekts / būvniecībā — nosacījumi pēc pieprasījuma")
     if u.get("building_part"):
         extra_bits.append(str(u["building_part"]))
     if u.get("ref"):
@@ -1225,7 +1240,7 @@ def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]
         "area_m2": _numstr(area),
         "floor": _floor_norm(u.get("floor")),
         "price": _numstr(price),
-        "price_per_m2": _numstr(rate) if deal == "rent" else "",
+        "price_per_m2": _numstr(rate) if (deal == "rent" and u.get("offer_type") != "flex") else "",
         "price_type": "monthly" if deal == "rent" else "regular",
         "Apsaimniekosanas_maksa": (f"{_numstr(u['maintenance_per_m2'])} €/m²" if u.get("maintenance_per_m2") is not None else ""),
         "Papildu_maksas": papildu,
@@ -1420,7 +1435,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.rollback()
                         if isinstance(img_dec.get(str(u["idx"])), dict):
                             u["_img_sel"] = img_dec[str(u["idx"])]
-                        image_jobs.append((lid, u, bool(web_dec.get(str(u["idx"])))))
+                        # flex/coworking (cena par vietu/mēn ar visu iekļautu) — NEKAD uz mājaslapu pa tiešo
+                        image_jobs.append((lid, u, bool(web_dec.get(str(u["idx"]))) and u.get("offer_type") != "flex"))
                         result["created_units"].append([lid, u["idx"]])
                     except agent_publish.DuplicateListingError as e:
                         result["errors"].append(f"telpa #{u['idx']}: {e}")
@@ -1846,7 +1862,7 @@ def resume_pending_images() -> int:
     return started
 
 
-def unit_image_candidates(intake_id: str, idx: str) -> dict:
+def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> dict:
     """Importa stadijai: ko pievienos šai telpai — ss.lv galerija (dzīvā, kešota), PDF foto/plāni,
     aģenta augšupielādes, ēkas noklusējuma bildes, mūsu listinga fasāde."""
     d = INTAKE_DIR / intake_id
@@ -1868,7 +1884,7 @@ def unit_image_candidates(intake_id: str, idx: str) -> dict:
     if cands:
         link = cands[0]["link"]
         out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
-        if link not in cache:
+        if link not in cache and prepare:
             try:
                 import ai_text_helpers as helpers
                 import sslv_import
@@ -1879,8 +1895,11 @@ def unit_image_candidates(intake_id: str, idx: str) -> dict:
             except Exception as e:
                 out["sslv_error"] = f"{type(e).__name__}"
         out["sslv"] = cache.get(link) or []
+        out["sslv_pending"] = link not in cache
     out["links"] = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
-    out["types"] = _candidate_types(d, out["sslv"], (out["pdf"].get("photos") or []) + (out["links"].get("photos") or [])[:20])
+    want = out["sslv"] + (out["pdf"].get("photos") or []) + (out["links"].get("photos") or [])[:20]
+    out["types"] = _candidate_types(d, want, prepare)
+    out["types_pending"] = bool(out.get("sslv_pending")) or any(k not in out["types"] for k in want)
     up = d / "uploads" / str(unit["idx"])
     if up.is_dir():
         out["uploads"] = sorted(f"partner_intake/{intake_id}/uploads/{unit['idx']}/{f.name}" for f in up.iterdir() if f.is_file())
@@ -1892,12 +1911,13 @@ def unit_image_candidates(intake_id: str, idx: str) -> dict:
     return out
 
 
-def _candidate_types(d: Path, sslv_urls: list[str], pdf_rels: list[str]) -> dict:
+def _candidate_types(d: Path, keys: list[str], prepare: bool = False) -> dict:
     """Importa stadijai: kuras kandidātbildes ir fasāde (image_classify, kešots intake mapē).
-    Lai aģentam PIEDĀVĀTU ēkas fasādi, ja izvēlētajās nav nevienas. ~0,1 ¢/bilde, paralēli."""
+    Lai aģentam PIEDĀVĀTU ēkas fasādi, ja izvēlētajās nav nevienas. ~0,1 ¢/bilde, paralēli.
+    prepare=False → tikai kešs (panelis nedrīkst gaidīt OpenAI); prepare=True → fona sagatavošana."""
     cache_p = d / "image_types_cache.json"
     cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
-    todo = [k for k in list(sslv_urls) + list(pdf_rels) if k not in cache]
+    todo = [k for k in keys if k not in cache] if prepare else []
     if todo:
         try:
             import image_classify
@@ -1925,7 +1945,36 @@ def _candidate_types(d: Path, sslv_urls: list[str], pdf_rels: list[str]) -> dict
             cache_p.write_text(json.dumps(cache), encoding="utf-8")
         except Exception as e:
             logger.warning("partner_intake: bilžu tipi: %s", e)
-    return {k: cache[k] for k in list(sslv_urls) + list(pdf_rels) if k in cache}
+    return {k: cache[k] for k in keys if k in cache}
+
+
+def prepare_unit_images(intake_id: str) -> dict:
+    """Fonā pēc reconcile: visām telpām ss.lv galerija + bilžu tipi (fasāde?) → kešs, lai panelis atver
+    «mainīt bildes» uzreiz (agrāk katra atvēršana sauca OpenAI un karājās 20–40 s)."""
+    d = INTAKE_DIR / intake_id
+    report = json.loads((d / "report.json").read_text(encoding="utf-8"))
+    done, errs = 0, 0
+    for a in report.get("addresses", []):
+        for u in a.get("units", []):
+            try:
+                unit_image_candidates(intake_id, str(u["idx"]), prepare=True)
+                done += 1
+            except Exception as e:
+                errs += 1
+                logger.info("partner_intake: prep %s/%s: %s", intake_id, u.get("idx"), e)
+    try:
+        meta_p = d / "meta.json"
+        meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        meta["images_prep"] = "done"
+        meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    except Exception:
+        pass
+    return {"units": done, "errors": errs}
+
+
+def start_prepare_unit_images(intake_id: str) -> None:
+    import threading
+    threading.Thread(target=prepare_unit_images, args=(intake_id,), name=f"pi-prep-{intake_id}", daemon=True).start()
 
 
 def save_unit_upload(intake_id: str, idx: str, filename: str, data: bytes) -> str:
@@ -2044,7 +2093,25 @@ def _link_images_for_unit(d: Path, intake_id: str, unit: dict) -> dict:
                 (plans if re.search(r"pl[aā]n|layout|floor", fn, re.I) else photos).append(rel)
             elif f.get("type") == "pdf" and (d / "links" / lid / (fn + ".plan.png")).is_file():
                 plans.append(rel + ".plan.png")
-    return {"photos": list(dict.fromkeys(photos)), "plans": list(dict.fromkeys(plans)), "errors": errors}
+    return {"photos": _dedupe_files(photos), "plans": _dedupe_files(plans), "errors": errors}
+
+
+def _dedupe_files(rels: list[str]) -> list[str]:
+    """Tie paši faili no dažādām saitēm (tā pati Drive mape divreiz, kopijas) → viens."""
+    import hashlib
+    seen: set[str] = set()
+    out: list[str] = []
+    for rel in dict.fromkeys(rels):
+        p = STORAGE_ROOT / rel
+        try:
+            h = hashlib.sha1(p.read_bytes()).hexdigest() if p.is_file() else rel
+        except Exception:
+            h = rel
+        if h in seen:
+            continue
+        seen.add(h)
+        out.append(rel)
+    return out
 
 
 def process_intake(intake_id: str, do_notify: bool = True) -> dict:
@@ -2058,6 +2125,7 @@ def process_intake(intake_id: str, do_notify: bool = True) -> dict:
         except Exception as e:
             logger.warning("partner_intake %s: saišu lejupielāde: %s", intake_id, e)
         report = reconcile(intake_id, analysis)
+        start_prepare_unit_images(intake_id)
         if do_notify:
             report["telegram_sent"] = notify(report)
         return report
