@@ -1109,6 +1109,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                                                      for k, v in match.items()} if match else None,
                                  "candidates": [int(c["id"]) for c in cands] if status == "ambiguous" else [],
                                  "diff": diff, "reactivate": reactivate, "images": images, "has_photo_source": has_photo,
+                                 "link_source": u.get("link_source"),
                                  "needs_review": needs_review})
                 a_out["units"].append(unit_out)
                 report["summary"]["units"] += 1
@@ -1421,6 +1422,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
             result["errors"].append(f"partneru reģistrs: {type(e).__name__} (migrācija?) — turpinu bez tā")
             partner_id, list_id = None, None
 
+        result["undo"] = {"updated": [], "occupied": [], "partner_list_id": list_id}
         for ai_, addr in enumerate(report["addresses"]):
             addr_phone = _fmt_phone(phone_dec.get(str(ai_))) if phone_dec.get(str(ai_)) else None
             if not addr_phone and str(ai_) not in phone_dec:
@@ -1492,6 +1494,10 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             sets.append("""agent_locked_fields = (SELECT ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(agent_locked_fields,'{}'::text[]) || ARRAY['price','price_per_m2']) x))""")
                         sets.append("updated_at = now()")
                         try:
+                            snap = conn.execute("""SELECT id, price, price_per_m2, agent_locked_fields, partner_id, partner_unit_ref, partner_list_id,
+                                                          occupancy_status, occupied_from, occupied_note, occupancy_set_by, occupancy_set_at, wp_post_id
+                                                   FROM properties.listings WHERE id=%s""", (lid,)).fetchone()
+                            result["undo"]["updated"].append({k: (str(v) if isinstance(v, datetime) else v) for k, v in dict(snap).items()} if snap else {"id": lid})
                             conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
                             try:
                                 conn.execute("UPDATE properties.listings SET partner_id=COALESCE(%s,partner_id), partner_unit_ref=COALESCE(%s,partner_unit_ref), partner_list_id=%s WHERE id=%s",
@@ -1511,6 +1517,9 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                 if miss_dec.get(str(m["id"])) == "occupied" and int(m["id"]) not in prev_occupied:
                     lid = int(m["id"])
                     try:
+                        snap = conn.execute("""SELECT id, occupancy_status, occupied_from, occupied_note, occupancy_set_by, occupancy_set_at, wp_post_id, on_website
+                                               FROM properties.listings WHERE id=%s""", (lid,)).fetchone()
+                        result["undo"]["occupied"].append({k: (str(v) if isinstance(v, (datetime,)) else v) for k, v in dict(snap).items()} if snap else {"id": lid})
                         conn.execute("""UPDATE properties.listings SET occupancy_status='occupied', occupied_from=CURRENT_DATE,
                                         occupied_note=%s, occupancy_set_by=%s, occupancy_set_at=now(), updated_at=now() WHERE id=%s""",
                                      (f"Nav partnera ({partner.get('company') or '?'}) vakanču sarakstā {report.get('list_date') or report.get('received_at','')[:10]}",
@@ -2083,9 +2092,41 @@ def rollback(intake_id: str, requested_by: Optional[str]) -> dict:
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
     ar = meta.get("apply_result") or {}
     created = [int(x) for x in (ar.get("created") or [])]
-    out = {"deleted_queued": 0, "already_gone": 0, "kept_updated": len(ar.get("updated") or []),
-           "kept_occupied": len(ar.get("occupied") or [])}
+    undo = ar.get("undo") or {}
+    out = {"deleted_queued": 0, "already_gone": 0, "reverted_updated": 0, "reverted_occupied": 0, "republished": 0}
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        # atjaunotie → vecās vērtības (cena, lock, partner_*)
+        for sn in undo.get("updated") or []:
+            if not sn.get("id") or "price" not in sn:
+                continue
+            conn.execute("""UPDATE properties.listings SET price=%s, price_per_m2=%s, agent_locked_fields=%s, partner_id=%s,
+                            partner_unit_ref=%s, partner_list_id=%s, occupancy_status=%s, occupied_from=%s, occupied_note=%s,
+                            occupancy_set_by=%s, updated_at=now() WHERE id=%s""",
+                         (sn.get("price"), sn.get("price_per_m2"), sn.get("agent_locked_fields"), sn.get("partner_id"),
+                          sn.get("partner_unit_ref"), sn.get("partner_list_id"), sn.get("occupancy_status"), sn.get("occupied_from"),
+                          sn.get("occupied_note"), sn.get("occupancy_set_by"), sn["id"]))
+            if sn.get("wp_post_id"):
+                conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by) VALUES (%s,'pending',%s)
+                                ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING""", (sn["id"], requested_by or "rollback"))
+            out["reverted_updated"] += 1
+        # iznomātie → atpakaļ brīvi (+ atpakaļ mājaslapā, ja tur bija)
+        for sn in undo.get("occupied") or []:
+            if not sn.get("id"):
+                continue
+            conn.execute("""UPDATE properties.listings SET occupancy_status=%s, occupied_from=%s, occupied_note=%s, occupancy_set_by=%s,
+                            partner_id=NULL, partner_unit_ref=NULL, partner_list_id=NULL, updated_at=now() WHERE id=%s""",
+                         (sn.get("occupancy_status"), sn.get("occupied_from"), sn.get("occupied_note"), sn.get("occupancy_set_by"), sn["id"]))
+            out["reverted_occupied"] += 1
+            if sn.get("wp_post_id") or sn.get("on_website"):
+                conn.execute("UPDATE properties.wp_export_queue SET status='cancelled' WHERE listing_id=%s AND status IN ('pending','processing')", (sn["id"],))
+                conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by) VALUES (%s,'pending',%s)""",
+                             (sn["id"], requested_by or "rollback (atpakaļ webā)"))
+                out["republished"] += 1
+        if undo.get("partner_list_id"):
+            try:
+                conn.execute("DELETE FROM properties.partner_lists WHERE id=%s", (undo["partner_list_id"],))
+            except Exception:
+                conn.rollback()
         for lid in created:
             row = conn.execute("SELECT id, wp_post_id FROM properties.listings WHERE id=%s AND source='agent_partner'", (lid,)).fetchone()
             if not row:
@@ -2178,7 +2219,19 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
     if not (d / "links.json").is_file():
         return {}
     links = json.loads((d / "links.json").read_text(encoding="utf-8"))
-    stats = {"geometry": 0, "ai": 0, "none": 0}
+    # mapes failu nosaukumos minētās platības (neatkarīgs signāls, der arī PDF bez tabulas līnijām)
+    for l in links:
+        names = []
+        mp = d / "links" / l["id"] / "_files.json"
+        if mp.is_file():
+            try:
+                names = [f.get("name") or "" for f in json.loads(mp.read_text(encoding="utf-8")).get("files") or []]
+            except Exception:
+                names = []
+        l["name_areas"] = sorted({float(m.group(1).replace(",", ".")) for n in names
+                                  for m in re.finditer(r"(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv\.?m|kvm)", n, re.I)})
+        l["name_floors"] = sorted({int(m.group(1)) for n in names for m in re.finditer(r"(?<![\d.])(\d{1,2})\.?\s*st(?:āvs|avs|\.|_|)", n, re.I)})
+    stats = {"geometry": 0, "folder": 0, "ai": 0, "none": 0}
     for a in analysis.get("addresses") or []:
         for u in a.get("units") or []:
             area = _num(u.get("area_m2"))
@@ -2190,10 +2243,14 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
             best: list[tuple[int, str]] = []
             for l in links:
                 score = 0
+                if any(abs(x - area) <= max(0.06, 0.005 * area) for x in l.get("name_areas") or []):
+                    score = 6   # mapes failu nosaukumā šī platība
+                    if fl is not None and l.get("name_floors"):
+                        score += 2 if fl in l["name_floors"] else -4
                 for g in l.get("geo") or []:
                     if not any(abs(x - area) <= max(0.06, 0.005 * area) for x in g.get("areas") or []):
                         continue
-                    sc = 10
+                    sc = 10 + (6 if score == 6 else 0)
                     gf = _floor_num(g.get("floor"))
                     if fl is not None and gf is not None:
                         sc += 3 if gf == fl else -5
@@ -2207,8 +2264,8 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
                 top = best[0][0]
                 chosen = [lid for sc, lid in best if sc == top]
                 u["link_ids"] = chosen[:1] if len(chosen) > 1 and fl is None else chosen
-                u["link_source"] = "geometry"
-                stats["geometry"] += 1
+                u["link_source"] = "geometry" if top >= 10 else "folder"
+                stats[u["link_source"]] += 1
             else:
                 u["link_source"] = "ai" if u.get("link_ids") else "none"
                 stats["ai" if u.get("link_ids") else "none"] += 1
@@ -2217,12 +2274,17 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
     return stats
 
 
-def fetch_unit_links(intake_id: str, analysis: dict) -> dict:
-    """Telpām piesaistītās saites (Drive mapes) → links/<Lid>/ (bildes + plānu PDF → PNG)."""
+MAX_LINKS_FETCH = int(os.getenv("PARTNER_MAX_LINKS", "40"))
+
+
+def fetch_unit_links(intake_id: str, analysis: dict, all_links: bool = False) -> dict:
+    """Saites (Drive mapes) → links/<Lid>/ (bildes + plānu PDF → PNG). all_links=True — visas (līdz
+    MAX_LINKS_FETCH), lai mapju failu nosaukumi («3.st 58.40m2», «MCU_1.st 56.2m2») var kalpot piesaistei."""
     import link_media
     d = INTAKE_DIR / intake_id
     links = json.loads((d / "links.json").read_text(encoding="utf-8")) if (d / "links.json").is_file() else []
-    used = {lid for a in analysis.get("addresses") or [] for u in a.get("units") or [] for lid in (u.get("link_ids") or [])}
+    used = ({l["id"] for l in links[:MAX_LINKS_FETCH]} if all_links else
+            {lid for a in analysis.get("addresses") or [] for u in a.get("units") or [] for lid in (u.get("link_ids") or [])})
     out = {}
     from concurrent.futures import ThreadPoolExecutor
     todo = [l for l in links if l["id"] in used]
@@ -2286,13 +2348,17 @@ def process_intake(intake_id: str, do_notify: bool = True) -> dict:
     try:
         analysis = analyze(intake_id)
         try:
-            _assign_links_by_geometry(intake_id, analysis)
-        except Exception as e:
-            logger.warning("partner_intake %s: saišu ģeometrija: %s", intake_id, e)
-        try:
-            fetch_unit_links(intake_id, analysis)
+            fetch_unit_links(intake_id, analysis, all_links=True)   # vispirms VISAS (mapes nosaukumi = signāls)
         except Exception as e:
             logger.warning("partner_intake %s: saišu lejupielāde: %s", intake_id, e)
+        try:
+            _assign_links_by_geometry(intake_id, analysis)
+        except Exception as e:
+            logger.warning("partner_intake %s: saišu piesaiste: %s", intake_id, e)
+        try:
+            fetch_unit_links(intake_id, analysis)   # plāni (PDF → PNG) piesaistītajām
+        except Exception as e:
+            logger.warning("partner_intake %s: saišu plāni: %s", intake_id, e)
         report = reconcile(intake_id, analysis)
         start_prepare_unit_images(intake_id)
         if do_notify:
