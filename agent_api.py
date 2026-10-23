@@ -1725,7 +1725,53 @@ def building_photos_apply(bp_id: int, req: BuildingPhotosApplyReq, _auth: None =
     import building_photos
     from psycopg.rows import dict_row
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        return {"ok": True, **building_photos.apply_to_building(conn, bp_id, req.requested_by)}
+        h = building_photos.harvest_from_listings(conn, bp_id)
+        return {"ok": True, "harvested": h.get("added", 0), **building_photos.apply_to_building(conn, bp_id, req.requested_by)}
+
+
+@router.post("/building-photos/{bp_id}/harvest")
+def building_photos_harvest(bp_id: int, _auth: None = Depends(require_token)) -> dict:
+    """Savāc ēkas listingu jau atpazītās fasādes ēkas bibliotēkā (bez AI izmaksām)."""
+    import building_photos
+    from psycopg.rows import dict_row
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        return {"ok": True, **building_photos.harvest_from_listings(conn, bp_id)}
+
+
+class HarvestAllReq(BaseModel):
+    dry_run: bool = True
+    limit: Optional[int] = None
+
+
+_HARVEST_STATE: dict = {"running": False}
+
+
+@router.post("/building-photos-harvest-all")
+def building_photos_harvest_all(req: HarvestAllReq, _auth: None = Depends(require_token)) -> dict:
+    """Masveidā visām ēkām (fonā). dry_run=True — tikai saskaita. Statuss: GET tas pats ceļš."""
+    import threading
+    import building_photos
+    from psycopg.rows import dict_row
+    if _HARVEST_STATE.get("running"):
+        raise HTTPException(409, "Jau notiek")
+
+    def _run():
+        _HARVEST_STATE.update({"running": True, "started": __import__("datetime").datetime.now().isoformat(), "result": None, "error": None})
+        try:
+            with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+                _HARVEST_STATE["result"] = building_photos.harvest_all(conn, req.dry_run, req.limit)
+        except Exception as e:
+            _HARVEST_STATE["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+        finally:
+            _HARVEST_STATE["running"] = False
+
+    threading.Thread(target=_run, daemon=True, name="bp-harvest-all").start()
+    return {"ok": True, "started": True, "dry_run": req.dry_run}
+
+
+@router.get("/building-photos-harvest-all")
+def building_photos_harvest_all_status(_auth: None = Depends(require_token)) -> dict:
+    return dict(_HARVEST_STATE)
 
 
 class PartnerUploadReq(BaseModel):

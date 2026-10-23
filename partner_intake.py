@@ -1514,6 +1514,10 @@ def _process_images(listing_id: int, building_mode: str = "auto", building_fns: 
                 import building_photos
                 bp = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
                 if bp and bp["building_profile_id"] and building_mode != "never":
+                    try:  # bez AI izmaksām: ēkas citu listingu jau atpazītās fasādes → ēkas bibliotēkā
+                        out["harvest"] = building_photos.harvest_from_listings(conn, int(bp["building_profile_id"])).get("added", 0)
+                    except Exception:
+                        conn.rollback()
                     out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
                                                                        building_mode or "auto", building_fns)
                     if out["building"].get("added"):
@@ -1564,6 +1568,10 @@ def _process_images(listing_id: int, building_mode: str = "auto", building_fns: 
             import building_photos
             bp = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
             if bp and bp["building_profile_id"]:
+                try:  # bez AI izmaksām: ēkas citu listingu jau atpazītās fasādes → ēkas bibliotēkā
+                    out["harvest"] = building_photos.harvest_from_listings(conn, int(bp["building_profile_id"])).get("added", 0)
+                except Exception:
+                    conn.rollback()
                 out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
                                                                    building_mode or "auto", building_fns)
                 row2 = conn.execute("SELECT local_image_paths_processed FROM properties.listings WHERE id=%s",

@@ -66,7 +66,8 @@ def file_path(bp_id: int, fn: str) -> Optional[Path]:
     return p if p.is_file() else None
 
 
-def add_photo(bp_id: int, data: bytes, filename: str, ptype: str = "fasade", by: Optional[str] = None) -> dict:
+def add_photo(bp_id: int, data: bytes, filename: str, ptype: str = "fasade", by: Optional[str] = None,
+              source_listing: Optional[int] = None) -> dict:
     if ptype not in TYPES:
         raise ValueError(f"Nederīgs tips: {ptype}")
     if not data or len(data) > MAX_BYTES:
@@ -86,11 +87,18 @@ def add_photo(bp_id: int, data: bytes, filename: str, ptype: str = "fasade", by:
             data, ext = buf.getvalue(), ".jpg"
     except Exception as e:
         raise ValueError(f"Nav derīga bilde: {type(e).__name__}")
+    import hashlib
+    sha1 = hashlib.sha1(data).hexdigest()
+    items = list_photos(bp_id)
+    dup = next((it for it in items if it.get("sha1") == sha1), None)
+    if dup:
+        return {**dup, "duplicate": True}
     fn = f"bp_{uuid.uuid4().hex}{ext}"
     _dir(bp_id).mkdir(parents=True, exist_ok=True)
     (_dir(bp_id) / fn).write_bytes(data)
-    items = list_photos(bp_id)
-    item = {"fn": fn, "type": ptype, "added_at": datetime.now(timezone.utc).isoformat(), "by": by}
+    item = {"fn": fn, "type": ptype, "added_at": datetime.now(timezone.utc).isoformat(), "by": by, "sha1": sha1}
+    if source_listing:
+        item["source_listing"] = int(source_listing)
     items.append(item)
     _save(bp_id, items)
     return item
@@ -211,13 +219,24 @@ def apply_to_listing(conn, listing_id: int, bp_id: int, mode: str = "auto",
     return out
 
 
-def apply_to_building(conn, bp_id: int, by: Optional[str] = None) -> dict:
+def apply_to_building(conn, bp_id: int, by: Optional[str] = None, classified_only: bool = False) -> dict:
     """Visiem mūsu listingiem ēkā bez fasādes. Mājaslapā esošos pārpublicē (wp_export_queue)."""
     rows = conn.execute("""SELECT id, wp_post_id FROM properties.listings
                            WHERE building_profile_id=%s AND coalesce(occupancy_status,'') <> 'occupied'
                            ORDER BY id""", (bp_id,)).fetchall()
     res = {"bp_id": bp_id, "listings": [], "added_to": 0, "republish": 0}
+    import image_classify
     for r in rows:
+        if classified_only:
+            man = image_classify.load_manifest(STORAGE_ROOT, int(r["id"])) or {}
+            if not man:
+                # nav klasificēts: drīkst tikai, ja listingam vispār nav bilžu
+                rr = conn.execute("""SELECT coalesce(array_length(local_image_paths_raw,1),0)
+                                          + coalesce(array_length(local_image_paths_processed,1),0) n
+                                     FROM properties.listings WHERE id=%s""", (r["id"],)).fetchone()
+                if rr and rr["n"]:
+                    res["listings"].append({"listing_id": r["id"], "skipped": "nav klasificēts"})
+                    continue
         try:
             o = apply_to_listing(conn, int(r["id"]), bp_id, "auto")
         except Exception as e:
@@ -236,4 +255,86 @@ def apply_to_building(conn, bp_id: int, by: Optional[str] = None) -> dict:
                     res["republish"] += 1
                 except Exception:
                     conn.rollback()
+    return res
+
+
+# ───────────────────────────── automātiska fasāžu vākšana ─────────────────────────────
+
+HARVEST_MAX = int(os.getenv("BUILDING_HARVEST_MAX", "3"))
+
+
+def harvest_from_listings(conn, bp_id: int, max_new: int = HARVEST_MAX) -> dict:
+    """Ēkas listingu bildes, ko image_classify jau atzinis par «fasade» (BEZ jaunām AI izmaksām),
+    → ēkas bilžu bibliotēkā. Ņem TIKAI tīrās (ai_ready = Seedream/aģenta, wp_raw = jau mūsu mājaslapā),
+    nekad ss.lv raw (ūdenszīmes). Dublikātus atmet pēc sha1; ēkas pašas bildes (img_user_bp_) izlaiž."""
+    import image_classify
+    out = {"bp_id": bp_id, "added": 0, "checked_listings": 0, "candidates": 0}
+    have = list_photos(bp_id)
+    if sum(1 for h in have if h.get("type") == "fasade") >= max_new:
+        out["skipped"] = "ēkai jau pietiek fasāžu"
+        return out
+    rows = conn.execute("""SELECT id, local_image_paths_processed, local_image_paths_wp_raw
+                           FROM properties.listings WHERE building_profile_id=%s ORDER BY id DESC""",
+                        (bp_id,)).fetchall()
+    for r in rows:
+        man = image_classify.load_manifest(STORAGE_ROOT, int(r["id"])) or {}
+        if not man:
+            continue
+        out["checked_listings"] += 1
+        for col in ("local_image_paths_processed", "local_image_paths_wp_raw"):
+            for pth in (r[col] or []):
+                name = Path(_rel(pth)).name
+                if name.startswith("img_user_bp_") or (man.get(name) or {}).get("type") != "fasade":
+                    continue
+                src = STORAGE_ROOT / _rel(pth)
+                if not src.is_file():
+                    continue
+                out["candidates"] += 1
+                try:
+                    it = add_photo(bp_id, src.read_bytes(), name, "fasade", "auto: ēkas listingi", int(r["id"]))
+                except ValueError:
+                    continue
+                if not it.get("duplicate"):
+                    out["added"] += 1
+                    if sum(1 for h in list_photos(bp_id) if h.get("type") == "fasade") >= max_new:
+                        return out
+    return out
+
+
+def harvest_all(conn, dry_run: bool = True, limit: Optional[int] = None) -> dict:
+    """Visām ēkām: savāc fasādes no klasificētajām bildēm, tad ieliek listingiem bez fasādes.
+    dry_run=True — tikai saskaita (neko nekopē)."""
+    import image_classify
+    bps = conn.execute("""SELECT DISTINCT building_profile_id AS bp FROM properties.listings
+                          WHERE building_profile_id IS NOT NULL ORDER BY 1""").fetchall()
+    res = {"dry_run": dry_run, "buildings": 0, "buildings_with_facade": 0, "photos_added": 0,
+           "listings_without_facade": 0, "listings_filled": 0, "republish": 0}
+    for i, b in enumerate(bps):
+        if limit and i >= limit:
+            break
+        bp_id = int(b["bp"])
+        res["buildings"] += 1
+        rows = conn.execute("""SELECT id, local_image_paths_processed, local_image_paths_raw, local_image_paths_wp_raw
+                               FROM properties.listings WHERE building_profile_id=%s
+                                 AND coalesce(occupancy_status,'') <> 'occupied'""", (bp_id,)).fetchall()
+        facade_src, missing = 0, 0
+        for r in rows:
+            man = image_classify.load_manifest(STORAGE_ROOT, int(r["id"])) or {}
+            paths = (r["local_image_paths_processed"] or []) + (r["local_image_paths_wp_raw"] or [])
+            names = {Path(_rel(x)).name for x in paths}
+            if any((man.get(n) or {}).get("type") == "fasade" for n in names):
+                facade_src += 1
+            elif man or not (r["local_image_paths_raw"] or paths):
+                missing += 1   # klasificēts bez fasādes VAI vispār bez bildēm
+        if facade_src or list_photos(bp_id):
+            res["buildings_with_facade"] += 1
+            res["listings_without_facade"] += missing
+        if dry_run or not missing:
+            continue
+        if facade_src:
+            res["photos_added"] += harvest_from_listings(conn, bp_id).get("added", 0)
+        if list_photos(bp_id):
+            a = apply_to_building(conn, bp_id, "auto: fasāžu vākšana", classified_only=True)
+            res["listings_filled"] += a["added_to"]
+            res["republish"] += a["republish"]
     return res
