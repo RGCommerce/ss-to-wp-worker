@@ -779,7 +779,7 @@ def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: 
     if not like or area is None:
         return []
     rows = conn.execute(
-        """SELECT id, street, area_m2, floor, price, link, is_agent, date_posted, last_updated, skip_reason
+        """SELECT id, street, area_m2, floor, price, link, is_agent, date_posted, last_updated, skip_reason, phone_numbers
              FROM properties.scrape_inbox
             WHERE translate(lower(street),'āēīōūčšžģķļņŗ','aeiouczsgklnr') ~ %s
               AND (%s = '' OR lower(coalesce(city,'')) LIKE %s)
@@ -802,11 +802,80 @@ def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: 
             score += 0.3
         out.append({"inbox_id": int(r["id"]), "street": r["street"], "area_m2": r["area_m2"], "floor": r["floor"],
                     "price": r["price"], "link": r["link"], "is_agent": str(r["is_agent"]).lower() == "true",
+                    "phone": r.get("phone_numbers"),
                     "last_updated": str(r["last_updated"])[:10] if r["last_updated"] else None,
                     "same_room_score": round(score, 2), "floor_ok": floor_ok})
     out.sort(key=lambda x: (-x["same_room_score"], x["last_updated"] or ""), reverse=False)
     out.sort(key=lambda x: x["same_room_score"], reverse=True)
     return out[:4]
+
+
+
+# ───────────────────────────── kontakta numurs ─────────────────────────────
+
+def _fmt_phone(raw) -> Optional[str]:
+    """«29188067», «+371 29 188 067», «(+371) 29188067» → «+371 29 188 067» (aģentu formāts). Tikai LV mobilie/fiksētie."""
+    if not raw:
+        return None
+    first = re.split(r"[,;/]| un ", str(raw))[0]
+    dg = re.sub(r"\D", "", first)
+    if dg.startswith("00371"):
+        dg = dg[5:]
+    elif dg.startswith("371") and len(dg) == 11:
+        dg = dg[3:]
+    if len(dg) != 8 or dg[0] not in "2679":
+        return None
+    return f"+371 {dg[:2]} {dg[2:5]} {dg[5:]}"
+
+
+def _resolve_contact_phone(conn, partner: dict, bp: Optional[dict], ours: list[dict], units: list[dict]) -> dict:
+    """Kuru numuru likt partnera listingiem (Raimonds 2026-10-23): 1) numurs no partnera e-pasta/PDF;
+    2) ja tur nav — mūsu DB (partneru reģistrs → ēkas apstiprinātie/īpašnieka numuri → mūsu listingi ēkā);
+    3) tad ss.lv tā pati telpa (privātpersona pirms aģenta). Atgriež izvēlēto + alternatīvas aģentam."""
+    alts: list[dict] = []
+
+    def add(phone, source):
+        f = _fmt_phone(phone)
+        if f and all(a["phone"] != f for a in alts):
+            alts.append({"phone": f, "source": source})
+
+    add((partner or {}).get("phone"), "partnera e-pasts / PDF")
+    try:
+        em = ((partner or {}).get("email") or "").lower()
+        dom = em.split("@")[-1] if "@" in em else ""
+        if em or dom:
+            r = conn.execute("""SELECT phone FROM properties.partner_sources
+                                WHERE lower(coalesce(contact_email,'')) = %s OR (%s <> '' AND lower(coalesce(email_domain,'')) = %s)
+                                ORDER BY id LIMIT 1""", (em, dom, dom)).fetchone()
+            if r:
+                add(r["phone"], "partneru reģistrs")
+    except Exception:
+        conn.rollback()
+    if bp and bp.get("id"):
+        try:
+            r = conn.execute("""SELECT auto_publish_phones, primary_phone, secondary_phone
+                                FROM properties.building_profiles WHERE id=%s""", (bp["id"],)).fetchone()
+            if r:
+                for k, label in (("auto_publish_phones", "ēkas apstiprinātais nr."), ("primary_phone", "ēkas galvenais nr."),
+                                 ("secondary_phone", "ēkas otrais nr.")):
+                    for ph in re.split(r"[,;]", str(r[k] or "")):
+                        add(ph, label)
+        except Exception:
+            conn.rollback()
+        try:
+            ids = [int(l["id"]) for l in ours]
+            if ids:
+                for row in conn.execute("""SELECT phone_numbers, count(*) n FROM properties.listings
+                                           WHERE id = ANY(%s) AND coalesce(phone_numbers,'') <> ''
+                                           GROUP BY 1 ORDER BY n DESC LIMIT 3""", (ids,)).fetchall():
+                    add(row["phone_numbers"], "mūsu listingi šajā ēkā")
+        except Exception:
+            conn.rollback()
+    inbox = [c for u in units for c in ((u.get("images") or {}).get("sslv_inbox") or [])]
+    for c in sorted(inbox, key=lambda c: bool(c.get("is_agent"))):
+        add(c.get("phone"), "ss.lv " + ("aģents" if c.get("is_agent") else "privātpersona"))
+    return {"phone": alts[0]["phone"] if alts else None, "source": alts[0]["source"] if alts else None,
+            "alternatives": alts}
 
 
 def _pdf_images_for_unit(intake_dir: Path, meta: dict, unit: dict) -> dict:
@@ -977,6 +1046,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     report["summary"]["needs_review"] += 1
                 elif status == "new":
                     report["summary"]["ready"] += 1
+            a_out["contact_phone"] = _resolve_contact_phone(conn, report.get("partner") or {}, bp, ours, a_out["units"])
             if report["looks_complete"] and bp:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied":
@@ -1207,7 +1277,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     image_jobs: list = []
     unit_dec = decisions.get("units") or {}
     web_dec = decisions.get("web") or {}   # {idx: true} — «Arī mājaslapā» (pēc bilžu apstrādes)
-    img_dec = decisions.get("images") or {}  # {idx: {sslv, pdf, uploads, own, building, building_fns}} — aģenta bilžu izvēle
+    img_dec = decisions.get("images") or {}
+    phone_dec = decisions.get("phones") or {}   # {addr_index: "+371 ..."} — aģenta izvēlētais kontakta nr.  # {idx: {sslv, pdf, uploads, own, building, building_fns}} — aģenta bilžu izvēle
     miss_dec = decisions.get("missing") or {}
     addr_dec = decisions.get("addresses") or {}
     unit_fields = decisions.get("unit_fields") or {}   # {idx: {space_type: ...}} — aģenta labojumi
@@ -1272,7 +1343,18 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
             result["errors"].append(f"partneru reģistrs: {type(e).__name__} (migrācija?) — turpinu bez tā")
             partner_id, list_id = None, None
 
-        for addr in report["addresses"]:
+        for ai_, addr in enumerate(report["addresses"]):
+            addr_phone = _fmt_phone(phone_dec.get(str(ai_))) if phone_dec.get(str(ai_)) else None
+            if not addr_phone and str(ai_) not in phone_dec:
+                cp = addr.get("contact_phone")
+                if cp is None:   # vecs reports (pirms numura loģikas) — aprēķina tagad
+                    try:
+                        bp_ = addr.get("bp")
+                        cp = _resolve_contact_phone(conn, partner, bp_, _our_listings_safe(conn, bp_["id"]) if bp_ else [], addr["units"])
+                    except Exception:
+                        conn.rollback()
+                        cp = {}
+                addr_phone = (cp or {}).get("phone")
             for u in addr["units"]:
                 dec = unit_dec.get(str(u["idx"]), u.get("decision"))
                 if dec == "create" and str(u["idx"]) in prev_created_idx:
@@ -1295,10 +1377,11 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.execute("""UPDATE properties.listings SET partner_id=%s, partner_unit_ref=%s, partner_list_id=%s,
                                             "Debug_note" = %s,
                                             "Agent_text_extra" = COALESCE(NULLIF(%s, ''), "Agent_text_extra"),
+                                            phone_numbers = COALESCE(%s, phone_numbers),
                                             agent_locked_fields = %s WHERE id=%s""",
                                          (partner_id, u.get("ref"), list_id,
                                           f"Partneris: {partner.get('company') or partner.get('email') or '?'}; saraksts {report.get('list_date') or report.get('received_at','')[:10]}; ref {u.get('ref') or '-'}",
-                                          payload["unit"].get("Agent_text_extra") or "", _partner_locked(payload["unit"]), lid))
+                                          payload["unit"].get("Agent_text_extra") or "", addr_phone, _partner_locked(payload["unit"]), lid))
                             conn.commit()
                         except Exception:
                             conn.rollback()
