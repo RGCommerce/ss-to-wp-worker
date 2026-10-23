@@ -520,10 +520,12 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
             continue   # tikai atbalstītās (Drive) — mailto/web lapas neinteresē
         key = link_media.classify_url(fl["url"])
         same = next((x for x in links if link_media.classify_url(x["url"]) == key), None)
+        geo = {"areas": fl.get("row_areas") or [], "floor": fl.get("row_floor"), "rents": fl.get("row_rents") or []}
         if same:
             same.setdefault("rows", []).append(fl["row_text"])
+            same.setdefault("geo", []).append(geo)
             continue
-        links.append({**fl, "id": f"L{len(links) + 1}", "rows": [fl["row_text"]]})
+        links.append({**fl, "id": f"L{len(links) + 1}", "rows": [fl["row_text"]], "geo": [geo]})
     (intake_dir / "links.json").write_text(json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8")
     if links:
         parts.append("SAITES UZ BILDĒM/PLĀNIEM (piesaisti katru telpai laukā `link_ids`; viena saite var būt vairākām telpām):\n"
@@ -1342,6 +1344,9 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     d = INTAKE_DIR / intake_id
     report = json.loads((d / "report.json").read_text(encoding="utf-8"))
     partner = report.get("partner") or {}
+    want_at = (decisions.get("report_at") or "").strip()
+    if want_at and report.get("generated_at") and want_at != report["generated_at"]:
+        raise ApplyError("Reports pa to laiku pārlasīts — pārlādē lapu un pārskati lēmumus vēlreiz")
     result = {"created": [], "updated": [], "occupied": [], "errors": [], "images": [], "created_units": []}
     # Atkārtota apstiprināšana (iepriekš bija kļūdas → status «partial»): jau izdarīto NEatkārto.
     prev = (json.loads((d / "meta.json").read_text(encoding="utf-8")).get("apply_result") or {}) if dry_run is False else {}
@@ -1525,6 +1530,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
         for k in ("created", "updated", "occupied", "created_units"):
             result[k] = list(prev.get(k) or []) + [x for x in result[k] if x not in (prev.get(k) or [])]
     # kļūdas → «partial»: panelis ļauj labot un apstiprināt vēlreiz (izveidotie netiek dublēti)
+    meta["decisions"] = decisions   # audits: ko aģents tiešām izvēlējās
     meta["status"] = "partial" if result["errors"] else "applied"
     meta["applied_at"] = _now().isoformat()
     meta["apply_result"] = result
@@ -1606,6 +1612,14 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     # 2) PDF foto + plāni (tīri) + partnera saišu (Drive) foto/plāni + aģenta augšupielādētās
     links = (u.get("images") or {}).get("links") or {}
     sel_links = sel.get("links")          # list[rel] | None = visas
+    # secība pēc AI tipa (image_types_cache): fasāde → interjers → cits (tualete/tehniskās pēdējās) — galvenā
+    # bilde mājaslapā = pirmā (prod MCITY 36,3 m² titulbilde bija pods)
+    try:
+        _tp = json.loads((INTAKE_DIR / intake_id / "image_types_cache.json").read_text(encoding="utf-8"))
+    except Exception:
+        _tp = {}
+    _rank = {"fasade": 0, "interjers": 1, "cits": 3, "plans": 4}
+    links = {**links, "photos": sorted(links.get("photos") or [], key=lambda r: _rank.get(_tp.get(r, "interjers"), 2))}
     for kind in ("link_photos", "photos", "plans", "link_plans", "uploads"):
         if kind == "uploads":
             rels = sel_uploads
@@ -2060,6 +2074,37 @@ def save_unit_upload(intake_id: str, idx: str, filename: str, data: bytes) -> st
     return f"partner_intake/{intake_id}/uploads/{idx}/{fn}"
 
 
+def rollback(intake_id: str, requested_by: Optional[str]) -> dict:
+    """Atsauc apstiprināšanu: IZVEIDOTOS listingus dzēš pilnībā (queue action=delete → worker: WP posts,
+    bildes, pdf, rinda); atjaunotos/iznomātos NEaiztiek (partnera dati paliek). Meta → «ready», lai var
+    apstiprināt vēlreiz. Raimonds 2026-10-23 (MCITY nepareizas bildes)."""
+    d = INTAKE_DIR / intake_id
+    meta_p = d / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    ar = meta.get("apply_result") or {}
+    created = [int(x) for x in (ar.get("created") or [])]
+    out = {"deleted_queued": 0, "already_gone": 0, "kept_updated": len(ar.get("updated") or []),
+           "kept_occupied": len(ar.get("occupied") or [])}
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        for lid in created:
+            row = conn.execute("SELECT id, wp_post_id FROM properties.listings WHERE id=%s AND source='agent_partner'", (lid,)).fetchone()
+            if not row:
+                out["already_gone"] += 1
+                continue
+            conn.execute("UPDATE properties.wp_export_queue SET status='cancelled' WHERE listing_id=%s AND status IN ('pending','processing')", (lid,))
+            conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, action, status, wp_post_id, requested_by)
+                            VALUES (%s,'delete','pending',%s,%s)""", (lid, row["wp_post_id"], requested_by or "partner_intake rollback"))
+            out["deleted_queued"] += 1
+        conn.commit()
+    hist = meta.setdefault("rollback_history", [])
+    hist.append({"at": _now().isoformat(), "by": requested_by, "apply_result": ar, "decisions": meta.get("decisions")})
+    for k in ("apply_result", "applied_at", "images_status", "images_result", "image_jobs", "decisions", "apply_history"):
+        meta.pop(k, None)
+    meta["status"] = "ready"
+    meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    return out
+
+
 def reprocess_listing_images(intake_id: str, listing_id: int) -> dict:
     """Labošanai: atrod telpu pēc apply rezultāta (created_units) un pārlaiž bildes sinhroni."""
     d = INTAKE_DIR / intake_id
@@ -2112,6 +2157,64 @@ def list_intakes(limit: int = 50) -> list[dict]:
         if len(out) >= limit:
             break
     return out
+
+
+def _floor_num(x) -> Optional[int]:
+    m = re.search(r"\d+", str(x or ""))
+    if m:
+        return int(m.group(0))
+    s = str(x or "").lower()
+    if "pagrab" in s or "cokol" in s or s.strip().startswith("0"):
+        return 0
+    return None
+
+
+def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
+    """Telpa ↔ saite PĒC PDF TABULAS ĢEOMETRIJAS (links.json geo: rindas platības/stāvs/noma), nevis AI.
+    AI piesaiste ir nestabila (prod: 36,3 m² ← 388 m² mape ar 36 foto, 77,2 m² ← cita mape). Ja tieši
+    viena saite satur telpas platību (±0,06 m² vai ±0,5 %) — tā; ja vairākas — stāvs + nomas likme izšķir;
+    ja neviena — paliek AI izvēle. Saglabā `link_source` (geometry|ai)."""
+    d = INTAKE_DIR / intake_id
+    if not (d / "links.json").is_file():
+        return {}
+    links = json.loads((d / "links.json").read_text(encoding="utf-8"))
+    stats = {"geometry": 0, "ai": 0, "none": 0}
+    for a in analysis.get("addresses") or []:
+        for u in a.get("units") or []:
+            area = _num(u.get("area_m2"))
+            if not area:
+                stats["ai" if u.get("link_ids") else "none"] += 1
+                continue
+            fl = _floor_num(u.get("floor"))
+            rate = _num(u.get("rent_per_m2_min"))
+            best: list[tuple[int, str]] = []
+            for l in links:
+                score = 0
+                for g in l.get("geo") or []:
+                    if not any(abs(x - area) <= max(0.06, 0.005 * area) for x in g.get("areas") or []):
+                        continue
+                    sc = 10
+                    gf = _floor_num(g.get("floor"))
+                    if fl is not None and gf is not None:
+                        sc += 3 if gf == fl else -5
+                    if rate and any(abs(x - rate) < 0.01 for x in g.get("rents") or []):
+                        sc += 2
+                    score = max(score, sc)
+                if score > 0:
+                    best.append((score, l["id"]))
+            if best:
+                best.sort(key=lambda t: -t[0])
+                top = best[0][0]
+                chosen = [lid for sc, lid in best if sc == top]
+                u["link_ids"] = chosen[:1] if len(chosen) > 1 and fl is None else chosen
+                u["link_source"] = "geometry"
+                stats["geometry"] += 1
+            else:
+                u["link_source"] = "ai" if u.get("link_ids") else "none"
+                stats["ai" if u.get("link_ids") else "none"] += 1
+    (d / "analysis.json").write_text(json.dumps(analysis, ensure_ascii=False, indent=1), encoding="utf-8")
+    logger.info("partner_intake %s: saišu piesaiste %s", intake_id, stats)
+    return stats
 
 
 def fetch_unit_links(intake_id: str, analysis: dict) -> dict:
@@ -2182,6 +2285,10 @@ def process_intake(intake_id: str, do_notify: bool = True) -> dict:
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
     try:
         analysis = analyze(intake_id)
+        try:
+            _assign_links_by_geometry(intake_id, analysis)
+        except Exception as e:
+            logger.warning("partner_intake %s: saišu ģeometrija: %s", intake_id, e)
         try:
             fetch_unit_links(intake_id, analysis)
         except Exception as e:

@@ -1599,10 +1599,30 @@ def partner_intake_apply(intake_id: str, req: PartnerApplyReq, _auth: None = Dep
         raise HTTPException(400, "Nederīgs intake_id")
     try:
         return {"ok": True, **partner_intake.apply(intake_id, req.decisions, req.requested_by, req.wp_user_id)}
+    except partner_intake.ApplyError as e:
+        raise HTTPException(409, str(e))
     except FileNotFoundError:
         raise HTTPException(404, "Reports nav gatavs")
     except Exception as e:
         raise HTTPException(500, f"Apstiprināšana neizdevās: {type(e).__name__}: {str(e)[:300]}")
+
+
+class PartnerRollbackReq(BaseModel):
+    requested_by: Optional[str] = None
+
+
+@router.post("/partner-intake/{intake_id}/rollback")
+def partner_intake_rollback(intake_id: str, req: PartnerRollbackReq, _auth: None = Depends(require_token)) -> dict:
+    """Atsaukt apstiprināšanu: dzēš izveidotos listingus (WP+bildes+DB caur queue), meta → ready."""
+    import partner_intake
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
+        raise HTTPException(400, "Nederīgs intake_id")
+    try:
+        return {"ok": True, **partner_intake.rollback(intake_id, req.requested_by)}
+    except FileNotFoundError:
+        raise HTTPException(404, "Ieplūde nav atrasta")
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
 
 
 @router.post("/partner-intake/{intake_id}/reprocess")

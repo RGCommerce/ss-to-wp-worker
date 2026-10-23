@@ -150,9 +150,55 @@ def fetch_link(intake_dir: Path, link_id: str, url: str) -> dict:
     return res
 
 
+_NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def _nums(text: str) -> list[float]:
+    out = []
+    for m in _NUM_RE.finditer(text or ""):
+        try:
+            out.append(float(m.group(0).replace(",", ".")))
+        except ValueError:
+            pass
+    return out
+
+
+def _row_bands(page) -> list[float]:
+    """Tabulas rindu robežas = garas horizontālas līnijas (zīmējumi)."""
+    ys = set()
+    try:
+        for d in page.get_drawings():
+            for it in d.get("items") or []:
+                if it[0] == "l":
+                    p1, p2 = it[1], it[2]
+                    if abs(p1.y - p2.y) < 0.6 and abs(p1.x - p2.x) > 150:
+                        ys.add(round(p1.y, 1))
+                elif it[0] == "re":
+                    r = it[1]
+                    if r.height < 1.5 and r.width > 150:
+                        ys.add(round(r.y0, 1))
+    except Exception:
+        pass
+    return sorted(ys)
+
+
+def _header_cols(words) -> dict:
+    """Kolonnu x-diapazoni pēc galvenes vārdiem (Stāvs / Platība / Nomas maksa / Apsaimniekošanas)."""
+    cols = {}
+    for w in words:
+        t = w[4].lower()
+        for key, pats in (("floor", ("stāvs", "stavs", "floor")), ("area", ("platība", "platiba", "m2", "m²", "area")),
+                          ("rent", ("nomas", "noma", "rent", "cena", "price")), ("maint", ("apsaimniekošanas", "apsaimn", "maint"))):
+            if key not in cols and any(t.startswith(p) for p in pats) and w[1] < 300:
+                cols[key] = (w[0] - 25, w[2] + 25)
+    return cols
+
+
 def links_from_pdf(pdf_bytes: bytes, source_name: str) -> list[dict]:
-    """PDF hipersaites + tās tabulas rindas teksts (vārdi tajā pašā horizontālajā joslā),
-    lai AI var piesaistīt saiti konkrētai telpai. → [{url, page, row_text}]"""
+    """PDF hipersaites + TĀS TABULAS RINDAS saturs (rinda = josla starp zīmētajām līnijām; ja līniju nav —
+    ±2 pt ap saiti). Katrai saitei arī strukturēti: row_areas (Platība kolonna), row_floor, row_rents —
+    lai telpa↔saite piesaisti var noteikt DETERMINISTISKI (AI kļūdījās: MCITY 36,3 m² dabūja 388 m² mapi).
+    → [{url, page, row_text, row_areas, row_floor, row_rents, y}]"""
     out: list[dict] = []
     try:
         import pymupdf
@@ -161,16 +207,30 @@ def links_from_pdf(pdf_bytes: bytes, source_name: str) -> list[dict]:
         return out
     for pno, page in enumerate(doc):
         words = page.get_text("words")  # x0,y0,x1,y1,text,...
+        bands = _row_bands(page)
+        cols = _header_cols(words)
         for l in page.get_links():
             uri = l.get("uri") or ""
             if not uri.startswith("http"):
                 continue
             r = l["from"]
-            y0, y1 = r.y0 - 2, r.y1 + 2
-            row = [w for w in words if not (w[3] < y0 or w[1] > y1)]
+            above = max([y for y in bands if y <= r.y0 + 0.5] or [r.y0 - 2])
+            below = min([y for y in bands if y >= r.y1 - 0.5] or [r.y1 + 2])
+            if below - above > 400:   # bez līnijām / pārāk plata josla → tikai saites rinda
+                above, below = r.y0 - 2, r.y1 + 2
+            row = [w for w in words if not (w[3] < above - 1 or w[1] > below + 1)]
             row.sort(key=lambda w: (round(w[1] / 4), w[0]))
-            out.append({"url": uri, "page": pno + 1, "source": source_name,
-                        "row_text": " ".join(w[4] for w in row)[:300]})
+
+            def _col(key):
+                c = cols.get(key)
+                return " ".join(w[4] for w in row if c and c[0] <= (w[0] + w[2]) / 2 <= c[1])
+
+            area_txt, floor_txt, rent_txt = _col("area"), _col("floor"), _col("rent")
+            out.append({"url": uri, "page": pno + 1, "source": source_name, "y": round(r.y0, 1),
+                        "row_text": " ".join(w[4] for w in row)[:400],
+                        "row_areas": _nums(area_txt) if cols.get("area") else [],
+                        "row_floor": floor_txt.strip() or None,
+                        "row_rents": _nums(rent_txt) if cols.get("rent") else []})
     return out
 
 
