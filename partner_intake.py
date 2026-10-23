@@ -949,7 +949,10 @@ def _pdf_images_for_unit(intake_dir: Path, meta: dict, unit: dict) -> dict:
                 continue
             img_dir.mkdir(parents=True, exist_ok=True)
             text = (page.get_text() or "").lower()
-            is_plan_page = single_plan_doc or any(k in text for k in ("plān", "plan", "layout"))
+            # Plāna lapa = maz teksta (PEBO: «3.st 58.40m2 birojs»). Piedāvājuma TABULA ar saitēm «bildes un
+            # plānojums» (MCITY, 3000+ zīmes) NAV plāns — agrāk visa lapa tika renderēta kā «plāns».
+            short = len(text.strip()) < 400
+            is_plan_page = (single_plan_doc and short) or (short and any(k in text for k in ("plān", "plan", "layout")))
             got = 0
             for im in page.get_images(full=True):
                 xref, w, h = im[0], im[2], im[3]
@@ -1918,7 +1921,9 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
                 out["sslv_error"] = f"{type(e).__name__}"
         out["sslv"] = cache.get(link) or []
         out["sslv_pending"] = link not in cache
-    out["links"] = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
+    L = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
+    # dublikāti arī rādot (vecie reporti pirms Drive-ID dedupe)
+    out["links"] = {"photos": _dedupe_files(L.get("photos") or []), "plans": _dedupe_files(L.get("plans") or []), "errors": L.get("errors") or []}
     want = out["sslv"] + (out["pdf"].get("photos") or []) + (out["links"].get("photos") or [])[:20]
     out["types"] = _candidate_types(d, want, prepare)
     out["types_pending"] = bool(out.get("sslv_pending")) or any(k not in out["types"] for k in want)
