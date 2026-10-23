@@ -1148,6 +1148,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     prev_occupied = {int(x) for x in (prev.get("occupied") or [])}
     image_jobs: list = []
     unit_dec = decisions.get("units") or {}
+    web_dec = decisions.get("web") or {}   # {idx: true} — «Arī mājaslapā» (pēc bilžu apstrādes)
     miss_dec = decisions.get("missing") or {}
     addr_dec = decisions.get("addresses") or {}
     unit_fields = decisions.get("unit_fields") or {}   # {idx: {space_type: ...}} — aģenta labojumi
@@ -1239,7 +1240,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.commit()
                         except Exception:
                             conn.rollback()
-                        image_jobs.append((lid, u))
+                        image_jobs.append((lid, u, bool(web_dec.get(str(u["idx"])))))
                         result["created_units"].append([lid, u["idx"]])
                     except agent_publish.DuplicateListingError as e:
                         result["errors"].append(f"telpa #{u['idx']}: {e}")
@@ -1474,12 +1475,16 @@ def _process_images(listing_id: int) -> dict:
 def _images_job(intake_id: str, jobs: list) -> None:
     """Fona pavediens: bildes katram jaunajam listingam → meta.json images_result/images_status."""
     results: list[dict] = []
-    for lid, u in jobs:
-        r: dict = {"listing_id": lid}
+    for job in jobs:
+        lid, u = job[0], job[1]
+        web = bool(job[2]) if len(job) > 2 else False
+        r: dict = {"listing_id": lid, "web": web}
         try:
             with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
                 r.update(_attach_images(conn, lid, u, intake_id))
             r["ai"] = _process_images(lid)
+            if web:
+                r["web_queued"] = _queue_web(lid, intake_id)
         except Exception as e:
             r["error"] = f"{type(e).__name__}: {str(e)[:200]}"
         results.append(r)
@@ -1492,6 +1497,22 @@ def _images_job(intake_id: str, jobs: list) -> None:
         except Exception:
             pass
     logger.info("partner_intake: bildes %s gatavas: %s", intake_id, results)
+
+
+def _queue_web(listing_id: int, intake_id: str) -> str:
+    """«Arī mājaslapā»: publicē TIKAI ar AI-apstrādātām bildēm (publish vārts) → wp_export_queue."""
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        row = conn.execute("SELECT coalesce(array_length(local_image_paths_processed,1),0) n FROM properties.listings WHERE id=%s",
+                           (listing_id,)).fetchone()
+        if not row or not row["n"]:
+            return "nav bilžu — mājaslapā nelikts (pievieno bildes un «Eksportēt uz WP»)"
+        cur = conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by)
+                              VALUES (%s, 'pending', %s)
+                              ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING
+                              RETURNING id""", (listing_id, f"partner_intake:{intake_id}"))
+        got = cur.fetchone()
+        conn.commit()
+        return "rindā" if got else "jau rindā"
 
 
 def start_images_job(intake_id: str, jobs: list) -> None:
