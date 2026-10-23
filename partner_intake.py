@@ -482,6 +482,8 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
              "E-PASTA TEKSTS:\n" + body]
     images: list[dict] = []
     budget = {"images": MAX_VISION_IMAGES}
+    import link_media
+    found_links: list[dict] = link_media.links_from_text(body, "e-pasta teksts")
     for a in meta.get("attachments", []):
         p = STORAGE_ROOT / a["path"]
         if not p.is_file():
@@ -491,6 +493,10 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
             t, imgs = _pdf_parts(p, budget)
             parts.append(f"PIELIKUMS PDF «{p.name}»:\n{t}")
             images.extend(imgs)
+            try:
+                found_links.extend(link_media.links_from_pdf(p.read_bytes(), p.name))
+            except Exception:
+                pass
         elif ext in (".xlsx", ".xlsm", ".xls"):
             parts.append(f"PIELIKUMS EXCEL «{p.name}»:\n{_xlsx_text(p)}")
         elif ext in (".csv", ".txt"):
@@ -507,6 +513,21 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
                 parts.append(f"PIELIKUMS DOCX «{p.name}»:\n{_html_to_text(xml)[:20000]}")
             except Exception:
                 parts.append(f"[{p.name}: docx nenolasās]")
+    # saites uz bildēm (Google Drive u.c.) — katrai ID + tabulas rinda, lai AI piesaista telpai (link_ids)
+    links: list[dict] = []
+    for fl in found_links:
+        if not link_media.classify_url(fl["url"]):
+            continue   # tikai atbalstītās (Drive) — mailto/web lapas neinteresē
+        same = next((x for x in links if x["url"] == fl["url"]), None)
+        if same:
+            same.setdefault("rows", []).append(fl["row_text"])
+            continue
+        links.append({**fl, "id": f"L{len(links) + 1}", "rows": [fl["row_text"]]})
+    (intake_dir / "links.json").write_text(json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8")
+    if links:
+        parts.append("SAITES UZ BILDĒM/PLĀNIEM (piesaisti katru telpai laukā `link_ids`; viena saite var būt vairākām telpām):\n"
+                     + "\n".join(f"{x['id']} [{x['source']}{', ' + str(x['page']) + '. lapa' if x.get('page') else ''}] rinda: "
+                                  + " ‖ ".join(dict.fromkeys(x["rows"]))[:400] for x in links))
     text = "\n\n".join(parts)
     if len(text) > MAX_TEXT_CHARS:
         text = text[:MAX_TEXT_CHARS] + "\n[... teksts apgriezts ...]"
@@ -540,6 +561,7 @@ def _schema() -> dict:
             "description_lv": {"type": "string"},
             "attachment_hint": _nullable("string"),
             "page_hint": _nullable("string"),
+            "link_ids": {"type": "array", "items": {"type": "string"}},
             "evidence": {"type": "string"},
             "confidence": {"type": "number"},
         },
@@ -618,6 +640,16 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
 8. `description_lv` — 2–5 teikumi latviski par telpu (bez kontaktiem, bez partnera zīmola, bez saukļiem).
 9. `attachment_hint` — kurš pielikums/lapa attiecas uz šo telpu (plāns/foto), piem. «KV33 18.pdf» vai
    «NPP_vacancy.pdf 7.-9. lapa»; `page_hint` — lapas numuri.
+9b. `link_ids` — saišu ID (L1, L2…) no bloka «SAITES UZ BILDĒM/PLĀNIEM», kuru tabulas rinda/teksts atbilst
+    šai telpai (stāvs + platība + cena tajā pašā rindā). Ja saites nav vai nav skaidrs — tukšs saraksts.
+    Ja vairākas telpas vienā rindā (piem. 46 / 45,8 / 77,2 m² ar vienu saiti) — tā pati saite visām.
+9c. Tabula, kas TURPINĀS nākamajā lapā bez jauna sadaļas/ēkas virsraksta (atkārtota tikai galvene) — tās
+    rindas pieder PĒDĒJAI iepriekšējā lapā redzētajai ēkai/adresei (nevis jaunai «nezināmai» ēkai).
+9d. Platības DIAPAZONS bez atsevišķi uzskaitītiem izmēriem («500–730», «~388», «750–1500») = VIENA telpa:
+    `area_m2` = mazākā vērtība, `area_approx`=true, `area_note` = «500–730 m², plānojumu var pielāgot».
+    Ja izmēri uzskaitīti atsevišķi (73,45 / 108,67 / 182,12 m²) — katrs ir sava telpa.
+9e. Vēl neuzbūvēts objekts / «pēc pieprasījuma» / BTS (build-to-suit) — VIENA telpa ar kopējo aprakstu,
+    cena null, `condition`=«projekts/būvniecībā», warning; neveido atsevišķu telpu katrai diapazona robežai.
 10. `looks_complete` = vai dokuments izskatās kā PILNS šī partnera brīvo telpu saraksts (vakanču saraksts,
     «aktuālais piedāvājums», mēneša lapa) — true; vai tikai dažas telpas/viena brošūra — false.
 11. `is_vacancy_offer=false`, ja e-pasts nav telpu piedāvājums (rēķins, sarakste, spams) — tad units tukšs.
@@ -1022,10 +1054,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 elif len(cands) > 1:
                     status = "ambiguous"
                 images = {"pdf": _pdf_images_for_unit(d, meta, u) if addr.get("street") or addr.get("building_name") else {"photos": [], "plans": []},
+                          "links": _link_images_for_unit(d, intake_id, u),
                           "own_listings_with_images": [int(l["id"]) for l in ours if (l.get("n_processed") or 0) + (l.get("n_raw") or 0) > 0][:5],
                           "sslv_inbox": _inbox_candidates(conn, addr.get("street") or "", addr.get("city"), floor, area, approx)
                           if addr.get("street") else []}
-                has_photo = bool(images["pdf"]["photos"]) or bool(images["sslv_inbox"]) or (match and ((match.get("n_processed") or 0) + (match.get("n_raw") or 0) > 0))
+                has_photo = bool(images["pdf"]["photos"]) or bool(images["links"]["photos"]) or bool(images["sslv_inbox"]) or (match and ((match.get("n_processed") or 0) + (match.get("n_raw") or 0) > 0))
                 conf = float(u.get("confidence") or 0)
                 needs_review = (status == "ambiguous" or conf < 0.6 or not u.get("space_type")
                                 or (u.get("deal") == "rent" and u.get("rent_per_m2_min") is None and u.get("rent_total") is None)
@@ -1498,6 +1531,8 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     sslv = (u.get("images") or {}).get("sslv_inbox") or []
     if sel_sslv is not None:
         sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no 1. kandidāta galerijas
+    elif ((u.get("images") or {}).get("links") or {}).get("photos"):
+        sslv = []   # partnerim ir savas (Drive) bildes — ss.lv (ar ūdenszīmēm) pēc noklusējuma neņem
     for cand in sslv[:2]:
         try:
             import ai_text_helpers as helpers
@@ -1527,11 +1562,20 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             conn.rollback()
             out["sslv_error"] = f"{type(e).__name__}: {str(e)[:120]}"
 
-    # 2) PDF foto + plāni (tīri) + aģenta augšupielādētās (importa stadijā)
-    for kind in ("photos", "plans", "uploads"):
-        rels = sel_uploads if kind == "uploads" else imgs.get(kind, [])
-        if kind != "uploads" and sel_pdf is not None:
-            rels = [r for r in rels if r in set(sel_pdf)]
+    # 2) PDF foto + plāni (tīri) + partnera saišu (Drive) foto/plāni + aģenta augšupielādētās
+    links = (u.get("images") or {}).get("links") or {}
+    sel_links = sel.get("links")          # list[rel] | None = visas
+    for kind in ("link_photos", "photos", "plans", "link_plans", "uploads"):
+        if kind == "uploads":
+            rels = sel_uploads
+        elif kind.startswith("link_"):
+            rels = links.get(kind[5:], [])
+            if sel_links is not None:
+                rels = [r for r in rels if r in set(sel_links)]
+        else:
+            rels = imgs.get(kind, [])
+            if sel_pdf is not None:
+                rels = [r for r in rels if r in set(sel_pdf)]
         for rel in rels:
             if ".." in str(rel).split("/") or not str(rel).startswith("partner_intake/"):
                 continue
@@ -1541,7 +1585,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             fn = f"{CLEAN_PREFIX}{uuid.uuid4().hex}{src.suffix.lower() or '.png'}"
             shutil.copy2(src, raw_dir / fn)
             p = f"listings/{listing_id}/raw/{fn}"
-            if kind == "plans":
+            if kind in ("plans", "link_plans"):
                 plans.append(p)
                 types[fn] = "plans"
                 out["plans"] += 1
@@ -1835,7 +1879,8 @@ def unit_image_candidates(intake_id: str, idx: str) -> dict:
             except Exception as e:
                 out["sslv_error"] = f"{type(e).__name__}"
         out["sslv"] = cache.get(link) or []
-    out["types"] = _candidate_types(d, out["sslv"], (out["pdf"].get("photos") or []))
+    out["links"] = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
+    out["types"] = _candidate_types(d, out["sslv"], (out["pdf"].get("photos") or []) + (out["links"].get("photos") or [])[:20])
     up = d / "uploads" / str(unit["idx"])
     if up.is_dir():
         out["uploads"] = sorted(f"partner_intake/{intake_id}/uploads/{unit['idx']}/{f.name}" for f in up.iterdir() if f.is_file())
@@ -1958,12 +2003,60 @@ def list_intakes(limit: int = 50) -> list[dict]:
     return out
 
 
+def fetch_unit_links(intake_id: str, analysis: dict) -> dict:
+    """Telpām piesaistītās saites (Drive mapes) → links/<Lid>/ (bildes + plānu PDF → PNG)."""
+    import link_media
+    d = INTAKE_DIR / intake_id
+    links = json.loads((d / "links.json").read_text(encoding="utf-8")) if (d / "links.json").is_file() else []
+    used = {lid for a in analysis.get("addresses") or [] for u in a.get("units") or [] for lid in (u.get("link_ids") or [])}
+    out = {}
+    from concurrent.futures import ThreadPoolExecutor
+    todo = [l for l in links if l["id"] in used]
+    with ThreadPoolExecutor(max_workers=4) as ex:   # mapes paralēli (katrā vēl 6 faili paralēli)
+        fetched = dict(zip([l["id"] for l in todo], ex.map(lambda l: link_media.fetch_link(d, l["id"], l["url"]), todo)))
+    for l in todo:
+        res = fetched[l["id"]]
+        for f in res.get("files") or []:
+            if f.get("type") == "pdf" and f.get("file"):
+                png = d / "links" / l["id"] / (f["file"] + ".plan.png")
+                if not png.exists():
+                    link_media.render_pdf_first_page((d / "links" / l["id"] / f["file"]).read_bytes(), png)
+        out[l["id"]] = {"files": len(res.get("files") or []), "error": res.get("error")}
+    return out
+
+
+def _link_images_for_unit(d: Path, intake_id: str, unit: dict) -> dict:
+    """Telpas saišu bildes: foto (partnera paša — tīras) un plāni (PDF 1. lapa / faila nosaukumā «plān»)."""
+    photos, plans, errors = [], [], []
+    for lid in unit.get("link_ids") or []:
+        man_p = d / "links" / lid / "_files.json"
+        if not man_p.is_file():
+            continue
+        man = json.loads(man_p.read_text(encoding="utf-8"))
+        if man.get("error"):
+            errors.append(f"{lid}: {man['error']}")
+        for f in man.get("files") or []:
+            fn = f.get("file")
+            if not fn:
+                continue
+            rel = f"partner_intake/{intake_id}/links/{lid}/{fn}"
+            if f.get("type") == "image":
+                (plans if re.search(r"pl[aā]n|layout|floor", fn, re.I) else photos).append(rel)
+            elif f.get("type") == "pdf" and (d / "links" / lid / (fn + ".plan.png")).is_file():
+                plans.append(rel + ".plan.png")
+    return {"photos": list(dict.fromkeys(photos)), "plans": list(dict.fromkeys(plans)), "errors": errors}
+
+
 def process_intake(intake_id: str, do_notify: bool = True) -> dict:
     d = INTAKE_DIR / intake_id
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
     try:
         analysis = analyze(intake_id)
+        try:
+            fetch_unit_links(intake_id, analysis)
+        except Exception as e:
+            logger.warning("partner_intake %s: saišu lejupielāde: %s", intake_id, e)
         report = reconcile(intake_id, analysis)
         if do_notify:
             report["telegram_sent"] = notify(report)

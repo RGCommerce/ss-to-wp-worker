@@ -1564,7 +1564,7 @@ def partner_intake_file(intake_id: str, rel: str, _auth: None = Depends(require_
     base = (partner_intake.INTAKE_DIR / intake_id).resolve()
     p = (base / rel).resolve()
     # tikai šīs ieplūdes att/ un img/ (zaļās audits 2026-10-21: absolūts rel izlēca no mapes)
-    if base not in p.parents or p.relative_to(base).parts[0] not in ("att", "img", "uploads"):
+    if base not in p.parents or p.relative_to(base).parts[0] not in ("att", "img", "uploads", "links"):
         raise HTTPException(400, "Nederīgs ceļš")
     if not p.is_file():
         raise HTTPException(404, "Fails nav")
