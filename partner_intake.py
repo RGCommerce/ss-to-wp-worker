@@ -1601,7 +1601,14 @@ def list_intakes(limit: int = 50) -> list[dict]:
         out.append({"intake_id": meta["intake_id"], "status": meta.get("status"), "received_at": meta.get("received_at"),
                     "forwarder": meta.get("forwarder_email"), "subject": meta.get("subject"),
                     "attachments": [a["name"] for a in meta.get("attachments", [])], "report": rep,
-                    "error": meta.get("error")})
+                    "error": meta.get("error"),
+                    # progresa josla panelī: apstiprināšana + bilžu fona darbs
+                    "applied_at": meta.get("applied_at"),
+                    "images_status": meta.get("images_status"),
+                    "images_total": len((meta.get("apply_result") or {}).get("created_units") or []),
+                    "images_done": len(meta.get("images_result") or []),
+                    "applied": {k: len((meta.get("apply_result") or {}).get(k) or []) for k in ("created", "updated", "occupied", "errors")}
+                               if meta.get("apply_result") else None})
         if len(out) >= limit:
             break
     return out
