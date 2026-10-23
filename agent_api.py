@@ -1570,19 +1570,9 @@ def partner_intake_file(intake_id: str, rel: str, w: int = 0, _auth: None = Depe
     if not p.is_file():
         raise HTTPException(404, "Fails nav")
     if w and 64 <= w <= 1024 and p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-        import hashlib
-        tdir = base / "_thumbs"
-        tdir.mkdir(exist_ok=True)
-        tp = tdir / (hashlib.sha1(f"{rel}|{w}".encode()).hexdigest() + ".jpg")
-        if not tp.is_file():
-            try:
-                from PIL import Image
-                im = Image.open(p)
-                im.thumbnail((w, w))
-                im.convert("RGB").save(tp, "JPEG", quality=80)
-            except Exception:
-                return FileResponse(str(p))
-        return FileResponse(str(tp), media_type="image/jpeg")
+        tp = partner_intake.make_thumb(base, rel, w)
+        if tp:
+            return FileResponse(str(tp), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400, immutable"})
     return FileResponse(str(p))
 
 

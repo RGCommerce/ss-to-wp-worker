@@ -2056,6 +2056,30 @@ def _candidate_types(d: Path, keys: list[str], prepare: bool = False, limit: int
     return {k: cache[k] for k in keys if k in cache}
 
 
+THUMB_W = 320
+
+
+def make_thumb(base: Path, rel: str, w: int = THUMB_W) -> Optional[Path]:
+    """Sīktēls intake mapē `_thumbs/<sha1(rel|w)>.jpg` (to pašu lieto agent_api file endpoint ?w=)."""
+    import hashlib
+    p = base / rel
+    if not p.is_file() or p.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+        return None
+    tdir = base / "_thumbs"
+    tdir.mkdir(exist_ok=True)
+    tp = tdir / (hashlib.sha1(f"{rel}|{w}".encode()).hexdigest() + ".jpg")
+    if tp.is_file():
+        return tp
+    try:
+        from PIL import Image
+        im = Image.open(p)
+        im.thumbnail((w, w))
+        im.convert("RGB").save(tp, "JPEG", quality=80)
+        return tp
+    except Exception:
+        return None
+
+
 def prepare_unit_images(intake_id: str) -> dict:
     """Fonā pēc reconcile: visām telpām ss.lv galerija + bilžu tipi (fasāde?) → kešs, lai panelis atver
     «mainīt bildes» uzreiz (agrāk katra atvēršana sauca OpenAI un karājās 20–40 s)."""
@@ -2078,6 +2102,17 @@ def prepare_unit_images(intake_id: str) -> dict:
                 errs += 1
                 logger.info("partner_intake: prep %s/%s: %s", intake_id, u.get("idx"), e)
     keys = list(dict.fromkeys(keys))
+    # sīktēli lokālajiem failiem jau tagad (panelis pirmo reizi atver uzreiz, ne pa vienam ģenerējot)
+    base = d.resolve()
+    prefix = f"partner_intake/{intake_id}/"
+    for k in keys:
+        if k.startswith(prefix):
+            make_thumb(base, k[len(prefix):])
+    for a in report.get("addresses", []):
+        for u in a.get("units", []):
+            for rel in (((u.get("images") or {}).get("links") or {}).get("plans") or []) + (((u.get("images") or {}).get("pdf") or {}).get("plans") or []):
+                if rel.startswith(prefix):
+                    make_thumb(base, rel[len(prefix):])
     try:
         _candidate_types(d, keys, prepare=True, limit=600, workers=10)
     except Exception as e:
