@@ -1729,6 +1729,25 @@ def building_photos_apply(bp_id: int, req: BuildingPhotosApplyReq, _auth: None =
         return {"ok": True, "harvested": h.get("added", 0), **building_photos.apply_to_building(conn, bp_id, req.requested_by)}
 
 
+class BuildingPhotosApplyListingReq(BaseModel):
+    fns: list[str]
+
+
+@router.post("/building-photos/{bp_id}/apply-listing/{listing_id}")
+def building_photos_apply_listing(bp_id: int, listing_id: int, req: BuildingPhotosApplyListingReq,
+                                  _auth: None = Depends(require_token)) -> dict:
+    """Listinga redaktors «No ēkas bildēm»: izvēlētās ēkas bildes → listinga beigās (tīras, bez Seedream)."""
+    import building_photos
+    from psycopg.rows import dict_row
+    if not req.fns:
+        raise HTTPException(400, "Nav izvēlētu bilžu")
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        r = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Listings nav")
+        return {"ok": True, **building_photos.apply_to_listing(conn, listing_id, bp_id, "always", req.fns, position="end")}
+
+
 @router.post("/building-photos/{bp_id}/harvest")
 def building_photos_harvest(bp_id: int, _auth: None = Depends(require_token)) -> dict:
     """Savāc ēkas listingu jau atpazītās fasādes ēkas bibliotēkā (bez AI izmaksām)."""

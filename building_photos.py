@@ -143,7 +143,7 @@ def listing_has_facade(listing_id: int, paths: list[str]) -> bool:
 
 
 def apply_to_listing(conn, listing_id: int, bp_id: int, mode: str = "auto",
-                     fns: Optional[list[str]] = None) -> dict:
+                     fns: Optional[list[str]] = None, position: str = "front") -> dict:
     """Pievieno ēkas bildes listingam.
     mode: "auto" — tikai ja listingam NAV fasādes; "always" — vienmēr; "never" — neko.
     fns: ja dots — tikai šīs (aģenta izvēle importa stadijā), citādi visas ēkas bildes.
@@ -210,12 +210,19 @@ def apply_to_listing(conn, listing_id: int, bp_id: int, mode: str = "auto",
         rest = [p for p in cur if p not in plans]
         return front + rest[:1] + mid + rest[1:] + plans
 
-    new_raw = _merge(raw, new_front_raw, new_mid_raw)
-    new_proc = _merge(proc, new_front_proc, new_mid_proc) if (proc or not raw) else proc
+    if position == "end":
+        # manuāli no listinga redaktora — beigās (kā «No citiem listingiem»), galveno izvēlas redaktorā
+        new_raw = raw + new_front_raw + new_mid_raw
+        new_proc = (proc + new_front_proc + new_mid_proc) if (proc or not raw) else proc
+    else:
+        new_raw = _merge(raw, new_front_raw, new_mid_raw)
+        new_proc = _merge(proc, new_front_proc, new_mid_proc) if (proc or not raw) else proc
     conn.execute("""UPDATE properties.listings SET local_image_paths_raw=%s::text[],
                         local_image_paths_processed=%s::text[], updated_at=now() WHERE id=%s""",
                  (new_raw, new_proc or None, listing_id))
     conn.commit()
+    out["raw_names"] = [Path(x).name for x in new_raw]
+    out["proc_names"] = [Path(x).name for x in (new_proc or [])]
     return out
 
 
@@ -329,12 +336,9 @@ def harvest_all(conn, dry_run: bool = True, limit: Optional[int] = None) -> dict
         if facade_src or list_photos(bp_id):
             res["buildings_with_facade"] += 1
             res["listings_without_facade"] += missing
-        if dry_run or not missing:
+        if dry_run or not facade_src:
             continue
-        if facade_src:
-            res["photos_added"] += harvest_from_listings(conn, bp_id).get("added", 0)
-        if list_photos(bp_id):
-            a = apply_to_building(conn, bp_id, "auto: fasāžu vākšana", classified_only=True)
-            res["listings_filled"] += a["added_to"]
-            res["republish"] += a["republish"]
+        # TIKAI savāc ēkas profilā — listingiem NEKO nepievieno (Raimonds 2026-10-23: pievieno cilvēks
+        # pats — importa stadijā vai listinga redaktorā «No ēkas bildēm»)
+        res["photos_added"] += harvest_from_listings(conn, bp_id).get("added", 0)
     return res
