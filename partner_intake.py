@@ -741,7 +741,6 @@ def _our_listings(conn, bp_id: int) -> list[dict]:
                   cardinality(local_image_paths_raw) AS n_raw
              FROM properties.listings
             WHERE building_profile_id = %s AND "Debug_status" = 'ok'
-              AND occupancy_status IS DISTINCT FROM 'occupied'
               AND source = ANY(%s)
             ORDER BY id DESC""",
         (bp_id, list(OUR_SOURCES)),
@@ -761,7 +760,6 @@ def _our_listings_safe(conn, bp_id: int) -> list[dict]:
                       cardinality(local_image_paths_raw) AS n_raw
                  FROM properties.listings
                 WHERE building_profile_id = %s AND "Debug_status" = 'ok'
-                  AND occupancy_status IS DISTINCT FROM 'occupied'
                   AND source = ANY(%s)
                 ORDER BY id DESC""",
             (bp_id, list(OUR_SOURCES)),
@@ -906,7 +904,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             matched_ids: set[int] = set()
             a_out = {"street": addr.get("street"), "city": addr.get("city") or "Rīga", "district": addr.get("district"),
                      "building_name": addr.get("building_name"), "address_known": bool(addr.get("address_known", True)),
-                     "bp": bp, "new_building": bp is None, "our_count": len(ours), "units": [], "missing_in_list": []}
+                     "bp": bp, "new_building": bp is None,
+                     "our_count": sum(1 for l in ours if l.get("occupancy_status") != "occupied"),
+                     "units": [], "missing_in_list": []}
             for u in addr.get("units") or []:
                 idx += 1
                 u = dict(u)
@@ -927,9 +927,15 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     if fd and lf and fd != lf:
                         continue
                     cands.append(l)
+                # vairāki kandidāti, bet tikai viens brīvs → tas (iznomātais = vēsturisks dvīnis)
+                if len(cands) > 1:
+                    free = [c for c in cands if c.get("occupancy_status") != "occupied"]
+                    if len(free) == 1:
+                        cands = free
                 status = "new"
                 match = None
                 diff = {}
+                reactivate = False
                 if len(cands) == 1:
                     status = "match"
                     match = cands[0]
@@ -942,6 +948,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     old_total = _num(match.get("price"))
                     if new_total and old_total and abs(new_total - old_total) > max(5.0, 0.02 * old_total):
                         diff["price"] = {"old": old_total, "new": round(new_total, 2)}
+                    # atzīmēts «iznomāts», bet partneris to atkal piedāvā → atjaunot kā brīvu
+                    reactivate = match.get("occupancy_status") == "occupied"
                 elif len(cands) > 1:
                     status = "ambiguous"
                 images = {"pdf": _pdf_images_for_unit(d, meta, u) if addr.get("street") or addr.get("building_name") else {"photos": [], "plans": []},
@@ -953,14 +961,14 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 needs_review = (status == "ambiguous" or conf < 0.6 or not u.get("space_type")
                                 or (u.get("deal") == "rent" and u.get("rent_per_m2_min") is None and u.get("rent_total") is None)
                                 or not a_out["address_known"])
-                decision = ("review" if needs_review else ("update" if (status == "match" and diff) else
+                decision = ("review" if needs_review else ("update" if (status == "match" and (diff or reactivate)) else
                             ("keep" if status == "match" else "create")))
                 unit_out = {k: v for k, v in u.items() if not k.startswith("_")}
                 unit_out.update({"idx": idx, "floor_norm": floor, "status": status, "decision": decision,
                                  "matched_listing": {k: (str(v) if isinstance(v, datetime) else v)
                                                      for k, v in match.items()} if match else None,
                                  "candidates": [int(c["id"]) for c in cands] if status == "ambiguous" else [],
-                                 "diff": diff, "images": images, "has_photo_source": has_photo,
+                                 "diff": diff, "reactivate": reactivate, "images": images, "has_photo_source": has_photo,
                                  "needs_review": needs_review})
                 a_out["units"].append(unit_out)
                 report["summary"]["units"] += 1
@@ -971,8 +979,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     report["summary"]["ready"] += 1
             if report["looks_complete"] and bp:
                 for l in ours:
-                    if int(l["id"]) in matched_ids:
-                        continue
+                    if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied":
+                        continue   # jau iznomātos nepiedāvā vēlreiz atzīmēt
                     a_out["missing_in_list"].append({
                         "id": int(l["id"]), "street": l["street"], "area_m2": l["area_m2"], "floor": l["floor"],
                         "price": l["price"], "source": l["source"], "on_website": l["on_website"],
@@ -1310,8 +1318,16 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         sets.append("price = %s"); vals.append(_numstr(diff["price"]["new"]))
                     if "price_per_m2" in diff:
                         sets.append("price_per_m2 = %s"); vals.append(_numstr(diff["price_per_m2"]["new"]))
+                    reactivate = bool(u.get("reactivate")) or (u["matched_listing"].get("occupancy_status") == "occupied")
+                    if reactivate:
+                        sets.append("occupancy_status = NULL"); sets.append("occupied_from = NULL")
+                        sets.append("occupied_note = %s"); vals.append(
+                            f"Atkal brīvs — partnera ({partner.get('company') or '?'}) sarakstā {report.get('list_date') or report.get('received_at','')[:10]}")
+                        sets.append("occupancy_set_by = %s"); vals.append(requested_by)
+                        sets.append("occupancy_set_at = now()")
                     if sets:
-                        sets.append("""agent_locked_fields = (SELECT ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(agent_locked_fields,'{}'::text[]) || ARRAY['price','price_per_m2']) x))""")
+                        if diff:
+                            sets.append("""agent_locked_fields = (SELECT ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(agent_locked_fields,'{}'::text[]) || ARRAY['price','price_per_m2']) x))""")
                         sets.append("updated_at = now()")
                         try:
                             conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
@@ -1452,8 +1468,8 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
 
     # 3) fasāde no mūsu listinga tajā pašā ēkā — tikai ja nav neviena foto
     own = (u.get("images") or {}).get("own_listings_with_images") or []
-    if sel.get("own") is False:
-        own = []
+    if sel.get("own") is not True:
+        own = []   # nekad automātiski — tikai ja aģents importa stadijā izvēlējās
     if not photos and own:
         try:
             row = conn.execute("SELECT local_image_paths_processed, local_image_paths_raw FROM properties.listings WHERE id=%s",
@@ -1497,7 +1513,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     return out
 
 
-def _process_images(listing_id: int, building_mode: str = "auto", building_fns: Optional[list] = None) -> dict:
+def _process_images(listing_id: int, building_mode: str = "never", building_fns: Optional[list] = None) -> dict:
     """AI posms vienam listingam. Klasificē neklasificētās (ss.lv) bildes, tad ai_ready:
     img_user_* → kopija, pārējās → Seedream + ūdenszīmes pārbaude. Raksta
     local_image_paths_processed tajā pašā secībā kā raw (foto → fasāde → plāni).
@@ -1513,7 +1529,7 @@ def _process_images(listing_id: int, building_mode: str = "auto", building_fns: 
             try:
                 import building_photos
                 bp = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
-                if bp and bp["building_profile_id"] and building_mode != "never":
+                if bp and bp["building_profile_id"] and building_mode != "never" and building_fns:
                     try:  # bez AI izmaksām: ēkas citu listingu jau atpazītās fasādes → ēkas bibliotēkā
                         out["harvest"] = building_photos.harvest_from_listings(conn, int(bp["building_profile_id"])).get("added", 0)
                     except Exception:
@@ -1572,8 +1588,9 @@ def _process_images(listing_id: int, building_mode: str = "auto", building_fns: 
                     out["harvest"] = building_photos.harvest_from_listings(conn, int(bp["building_profile_id"])).get("added", 0)
                 except Exception:
                     conn.rollback()
-                out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
-                                                                   building_mode or "auto", building_fns)
+                if building_mode != "never" and building_fns:   # tikai aģenta izvēlētās — nekad automātiski
+                    out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
+                                                                       "always", building_fns)
                 row2 = conn.execute("SELECT local_image_paths_processed FROM properties.listings WHERE id=%s",
                                     (listing_id,)).fetchone()
                 processed = [str(x) for x in ((row2 or {}).get("local_image_paths_processed") or [])]
@@ -1620,7 +1637,8 @@ def _images_job_inner(intake_id: str, jobs: list, results: list, total: int) -> 
                 else:
                     r.update(_attach_images(conn, lid, u, intake_id))
             sel = u.get("_img_sel") or {}
-            r["ai"] = _process_images(lid, sel.get("building") or "auto", sel.get("building_fns"))
+            fns = sel.get("building_fns") or []
+            r["ai"] = _process_images(lid, "always" if fns else "never", fns or None)
             if web:
                 r["web_queued"] = _queue_web(lid, intake_id)
         except Exception as e:
@@ -1734,6 +1752,7 @@ def unit_image_candidates(intake_id: str, idx: str) -> dict:
             except Exception as e:
                 out["sslv_error"] = f"{type(e).__name__}"
         out["sslv"] = cache.get(link) or []
+    out["types"] = _candidate_types(d, out["sslv"], (out["pdf"].get("photos") or []))
     up = d / "uploads" / str(unit["idx"])
     if up.is_dir():
         out["uploads"] = sorted(f"partner_intake/{intake_id}/uploads/{unit['idx']}/{f.name}" for f in up.iterdir() if f.is_file())
@@ -1743,6 +1762,42 @@ def unit_image_candidates(intake_id: str, idx: str) -> dict:
         out["bp_id"] = int(bp_id)
         out["building"] = building_photos.list_photos(int(bp_id))
     return out
+
+
+def _candidate_types(d: Path, sslv_urls: list[str], pdf_rels: list[str]) -> dict:
+    """Importa stadijai: kuras kandidātbildes ir fasāde (image_classify, kešots intake mapē).
+    Lai aģentam PIEDĀVĀTU ēkas fasādi, ja izvēlētajās nav nevienas. ~0,1 ¢/bilde, paralēli."""
+    cache_p = d / "image_types_cache.json"
+    cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
+    todo = [k for k in list(sslv_urls) + list(pdf_rels) if k not in cache]
+    if todo:
+        try:
+            import image_classify
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _one(key: str):
+                try:
+                    if key.startswith("http"):
+                        import download_images
+                        data = download_images.download_one(key)
+                    else:
+                        p = STORAGE_ROOT / key
+                        data = p.read_bytes() if p.is_file() else None
+                    if not data:
+                        return key, None
+                    r = image_classify._classify_one(data, key.rsplit("/", 1)[-1])
+                    return key, (r or {}).get("type")
+                except Exception:
+                    return key, None
+
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                for k, t in ex.map(_one, todo[:40]):
+                    if t:
+                        cache[k] = t
+            cache_p.write_text(json.dumps(cache), encoding="utf-8")
+        except Exception as e:
+            logger.warning("partner_intake: bilžu tipi: %s", e)
+    return {k: cache[k] for k in list(sslv_urls) + list(pdf_rels) if k in cache}
 
 
 def save_unit_upload(intake_id: str, idx: str, filename: str, data: bytes) -> str:
