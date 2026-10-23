@@ -66,6 +66,53 @@ def file_path(bp_id: int, fn: str) -> Optional[Path]:
     return p if p.is_file() else None
 
 
+DUP_DISTANCE = int(os.getenv("BUILDING_PHOTO_DUP_DISTANCE", "6"))  # dHash Hamminga attālums (0–64)
+
+
+def _dhash(data: bytes) -> Optional[int]:
+    """64-bitu dHash: pelēktoņi 9×8 → blakus pikseļu salīdzinājums. Izturīgs pret izmēru,
+    JPEG kompresiju, nelielu krāsu maiņu; atšķiras citam leņķim/citai ēkai."""
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data)).convert("L").resize((9, 8), Image.LANCZOS)
+        px = list(im.getdata())
+        v = 0
+        for row in range(8):
+            for col in range(8):
+                v = (v << 1) | (1 if px[row * 9 + col] > px[row * 9 + col + 1] else 0)
+        return v
+    except Exception:
+        return None
+
+
+def _item_dhash(bp_id: int, it: dict) -> Optional[int]:
+    if it.get("dhash") is not None:
+        return int(it["dhash"], 16) if isinstance(it["dhash"], str) else int(it["dhash"])
+    p = _dir(bp_id) / it.get("fn", "")
+    if not p.is_file():
+        return None
+    h = _dhash(p.read_bytes())
+    if h is not None:
+        it["dhash"] = f"{h:016x}"
+    return h
+
+
+def find_duplicate(bp_id: int, data: bytes, items: Optional[list[dict]] = None) -> Optional[dict]:
+    """Esoša ēkas bilde, kas ir TĀ PATI (sha1 vai vizuāli gandrīz identiska). Dažādi leņķi ≠ dublikāts."""
+    import hashlib
+    items = items if items is not None else list_photos(bp_id)
+    sha1 = hashlib.sha1(data).hexdigest()
+    h = _dhash(data)
+    for it in items:
+        if it.get("sha1") == sha1:
+            return it
+        if h is not None:
+            ih = _item_dhash(bp_id, it)
+            if ih is not None and bin(h ^ ih).count("1") <= DUP_DISTANCE:
+                return it
+    return None
+
+
 def add_photo(bp_id: int, data: bytes, filename: str, ptype: str = "fasade", by: Optional[str] = None,
               source_listing: Optional[int] = None) -> dict:
     if ptype not in TYPES:
@@ -90,13 +137,16 @@ def add_photo(bp_id: int, data: bytes, filename: str, ptype: str = "fasade", by:
     import hashlib
     sha1 = hashlib.sha1(data).hexdigest()
     items = list_photos(bp_id)
-    dup = next((it for it in items if it.get("sha1") == sha1), None)
+    dup = find_duplicate(bp_id, data, items)
     if dup:
+        _save(bp_id, items)   # saglabā dhash, ko find_duplicate aprēķināja vecajām bildēm
         return {**dup, "duplicate": True}
     fn = f"bp_{uuid.uuid4().hex}{ext}"
     _dir(bp_id).mkdir(parents=True, exist_ok=True)
     (_dir(bp_id) / fn).write_bytes(data)
-    item = {"fn": fn, "type": ptype, "added_at": datetime.now(timezone.utc).isoformat(), "by": by, "sha1": sha1}
+    h = _dhash(data)
+    item = {"fn": fn, "type": ptype, "added_at": datetime.now(timezone.utc).isoformat(), "by": by, "sha1": sha1,
+            "dhash": f"{h:016x}" if h is not None else None}
     if source_listing:
         item["source_listing"] = int(source_listing)
     items.append(item)
@@ -156,6 +206,9 @@ def apply_to_listing(conn, listing_id: int, bp_id: int, mode: str = "auto",
     if fns is not None:
         want = set(fns)
         photos = [p for p in photos if p["fn"] in want]
+    else:
+        # bez cilvēka izvēles — tikai PIRMĀ fasāde (bibliotēkā var būt daudz leņķu/ēku; pārējās izvēlas cilvēks)
+        photos = [p for p in photos if p.get("type") == "fasade"][:1]
     if not photos:
         out["skipped"] = "ēkai nav bilžu"
         return out
@@ -267,19 +320,13 @@ def apply_to_building(conn, bp_id: int, by: Optional[str] = None, classified_onl
 
 # ───────────────────────────── automātiska fasāžu vākšana ─────────────────────────────
 
-HARVEST_MAX = int(os.getenv("BUILDING_HARVEST_MAX", "3"))
-
-
-def harvest_from_listings(conn, bp_id: int, max_new: int = HARVEST_MAX) -> dict:
+def harvest_from_listings(conn, bp_id: int) -> dict:
     """Ēkas listingu bildes, ko image_classify jau atzinis par «fasade» (BEZ jaunām AI izmaksām),
     → ēkas bilžu bibliotēkā. Ņem TIKAI tīrās (ai_ready = Seedream/aģenta, wp_raw = jau mūsu mājaslapā),
-    nekad ss.lv raw (ūdenszīmes). Dublikātus atmet pēc sha1; ēkas pašas bildes (img_user_bp_) izlaiž."""
+    nekad ss.lv raw (ūdenszīmes). BEZ skaita griestiem (dažādi leņķi, vairākas ēkas — izvēlas cilvēks);
+    dublikātus (sha1 vai vizuāli tā pati bilde) atmet; ēkas pašas bildes (img_user_bp_) izlaiž."""
     import image_classify
-    out = {"bp_id": bp_id, "added": 0, "checked_listings": 0, "candidates": 0}
-    have = list_photos(bp_id)
-    if sum(1 for h in have if h.get("type") == "fasade") >= max_new:
-        out["skipped"] = "ēkai jau pietiek fasāžu"
-        return out
+    out = {"bp_id": bp_id, "added": 0, "checked_listings": 0, "candidates": 0, "duplicates": 0}
     rows = conn.execute("""SELECT id, local_image_paths_processed, local_image_paths_wp_raw
                            FROM properties.listings WHERE building_profile_id=%s ORDER BY id DESC""",
                         (bp_id,)).fetchall()
@@ -301,11 +348,28 @@ def harvest_from_listings(conn, bp_id: int, max_new: int = HARVEST_MAX) -> dict:
                     it = add_photo(bp_id, src.read_bytes(), name, "fasade", "auto: ēkas listingi", int(r["id"]))
                 except ValueError:
                     continue
-                if not it.get("duplicate"):
+                if it.get("duplicate"):
+                    out["duplicates"] += 1
+                else:
                     out["added"] += 1
-                    if sum(1 for h in list_photos(bp_id) if h.get("type") == "fasade") >= max_new:
-                        return out
     return out
+
+
+def dedupe_library(bp_id: int) -> int:
+    """Izmet no ēkas bibliotēkas vizuāli identiskas bildes (paliek pirmā). Atgriež izmesto skaitu."""
+    items = list_photos(bp_id)
+    keep: list[dict] = []
+    removed = 0
+    for it in items:
+        ih = _item_dhash(bp_id, it)
+        if ih is not None and any((kh := _item_dhash(bp_id, k)) is not None and bin(ih ^ kh).count("1") <= DUP_DISTANCE
+                                  for k in keep):
+            (_dir(bp_id) / it["fn"]).unlink(missing_ok=True)
+            removed += 1
+            continue
+        keep.append(it)
+    _save(bp_id, keep)
+    return removed
 
 
 def harvest_all(conn, dry_run: bool = True, limit: Optional[int] = None) -> dict:
@@ -336,7 +400,11 @@ def harvest_all(conn, dry_run: bool = True, limit: Optional[int] = None) -> dict
         if facade_src or list_photos(bp_id):
             res["buildings_with_facade"] += 1
             res["listings_without_facade"] += missing
-        if dry_run or not facade_src:
+        if dry_run:
+            continue
+        if list_photos(bp_id):
+            res["dupes_removed"] = res.get("dupes_removed", 0) + dedupe_library(bp_id)
+        if not facade_src:
             continue
         # TIKAI savāc ēkas profilā — listingiem NEKO nepievieno (Raimonds 2026-10-23: pievieno cilvēks
         # pats — importa stadijā vai listinga redaktorā «No ēkas bildēm»)
