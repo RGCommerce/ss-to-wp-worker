@@ -102,13 +102,19 @@ def fetch_link(intake_dir: Path, link_id: str, url: str) -> dict:
     """Lejupielādē saites saturu (bildes + PDF/DOCX) → links/<link_id>/. Idempotents (manifests)."""
     d = intake_dir / "links" / link_id
     man_p = d / "_files.json"
+    kind = classify_url(url)
     if man_p.is_file():
         try:
-            return json.loads(man_p.read_text(encoding="utf-8"))
+            man = json.loads(man_p.read_text(encoding="utf-8"))
+            # Kešs pēc L-numura, bet pārlasot numerācija mainās (prod MCITY: L9 bija 388 m² mape, tagad
+            # 36,3 m²) → derīgs TIKAI, ja tā pati Drive mape; citādi mapi izmet un lejupielādē no jauna
+            if classify_url(man.get("url") or "") == kind:
+                return man
         except Exception:
             pass
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
     d.mkdir(parents=True, exist_ok=True)
-    kind = classify_url(url)
     res: dict = {"link_id": link_id, "url": url, "kind": kind[0] if kind else None, "files": [], "error": None}
     if not kind:
         res["error"] = "neatbalstīta saite"
