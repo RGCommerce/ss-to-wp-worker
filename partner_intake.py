@@ -1199,6 +1199,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     image_jobs: list = []
     unit_dec = decisions.get("units") or {}
     web_dec = decisions.get("web") or {}   # {idx: true} — «Arī mājaslapā» (pēc bilžu apstrādes)
+    img_dec = decisions.get("images") or {}  # {idx: {sslv, pdf, uploads, own, building, building_fns}} — aģenta bilžu izvēle
     miss_dec = decisions.get("missing") or {}
     addr_dec = decisions.get("addresses") or {}
     unit_fields = decisions.get("unit_fields") or {}   # {idx: {space_type: ...}} — aģenta labojumi
@@ -1293,6 +1294,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.commit()
                         except Exception:
                             conn.rollback()
+                        if isinstance(img_dec.get(str(u["idx"])), dict):
+                            u["_img_sel"] = img_dec[str(u["idx"])]
                         image_jobs.append((lid, u, bool(web_dec.get(str(u["idx"])))))
                         result["created_units"].append([lid, u["idx"]])
                     except agent_publish.DuplicateListingError as e:
@@ -1353,7 +1356,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     meta["applied_at"] = _now().isoformat()
     meta["apply_result"] = result
     meta["images_status"] = "processing" if image_jobs else None
-    meta["image_jobs"] = [[j[0], j[1].get("idx"), bool(j[2])] for j in image_jobs]
+    meta["image_jobs"] = [[j[0], j[1].get("idx"), bool(j[2]), j[1].get("_img_sel")] for j in image_jobs]
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     # bildes (ss.lv lejupielāde + Seedream) aizņem minūtes → fonā, lai apstiprināšana atbild uzreiz
     start_images_job(intake_id, image_jobs)
@@ -1386,9 +1389,16 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     facade: list[str] = []
     types: dict[str, str] = {}
     imgs = (u.get("images") or {}).get("pdf") or {}
+    # Aģenta izvēle importa stadijā (decisions.images[idx]); None = automātiski (viss atrastais)
+    sel = u.get("_img_sel") or {}
+    sel_sslv = sel.get("sslv")            # list[url] | None
+    sel_pdf = sel.get("pdf")              # list[rel] | None
+    sel_uploads = sel.get("uploads") or []
 
     # 1) ss.lv — vispirms (download_images var tīrīt img_*.* mapē, ja mainās URL saraksts)
     sslv = (u.get("images") or {}).get("sslv_inbox") or []
+    if sel_sslv is not None:
+        sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no 1. kandidāta galerijas
     for cand in sslv[:2]:
         try:
             import ai_text_helpers as helpers
@@ -1397,6 +1407,9 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             info = sslv_import.parse_sslv_url(cand["link"])
             html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
             gallery = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+            if sel_sslv is not None:
+                want = set(sel_sslv)
+                gallery = [g for g in gallery if g in want] or [g for g in sel_sslv if g.startswith("http")]
             if not gallery:
                 continue
             jpg_field = sslv_import._format_jpg_field(gallery)
@@ -1415,9 +1428,14 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             conn.rollback()
             out["sslv_error"] = f"{type(e).__name__}: {str(e)[:120]}"
 
-    # 2) PDF foto + plāni (tīri)
-    for kind in ("photos", "plans"):
-        for rel in imgs.get(kind, []):
+    # 2) PDF foto + plāni (tīri) + aģenta augšupielādētās (importa stadijā)
+    for kind in ("photos", "plans", "uploads"):
+        rels = sel_uploads if kind == "uploads" else imgs.get(kind, [])
+        if kind != "uploads" and sel_pdf is not None:
+            rels = [r for r in rels if r in set(sel_pdf)]
+        for rel in rels:
+            if ".." in str(rel).split("/") or not str(rel).startswith("partner_intake/"):
+                continue
             src = STORAGE_ROOT / rel
             if not src.is_file():
                 continue
@@ -1434,6 +1452,8 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
 
     # 3) fasāde no mūsu listinga tajā pašā ēkā — tikai ja nav neviena foto
     own = (u.get("images") or {}).get("own_listings_with_images") or []
+    if sel.get("own") is False:
+        own = []
     if not photos and own:
         try:
             row = conn.execute("SELECT local_image_paths_processed, local_image_paths_raw FROM properties.listings WHERE id=%s",
@@ -1477,7 +1497,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     return out
 
 
-def _process_images(listing_id: int) -> dict:
+def _process_images(listing_id: int, building_mode: str = "auto", building_fns: Optional[list] = None) -> dict:
     """AI posms vienam listingam. Klasificē neklasificētās (ss.lv) bildes, tad ai_ready:
     img_user_* → kopija, pārējās → Seedream + ūdenszīmes pārbaude. Raksta
     local_image_paths_processed tajā pašā secībā kā raw (foto → fasāde → plāni).
@@ -1489,6 +1509,24 @@ def _process_images(listing_id: int) -> dict:
         row = conn.execute("SELECT local_image_paths_raw FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
         raws = [str(p).replace("\\", "/") for p in ((row or {}).get("local_image_paths_raw") or [])]
         if not raws:
+            # nav nevienas bildes — vismaz ēkas noklusējuma bildes (ja ēkai tādas ir)
+            try:
+                import building_photos
+                bp = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
+                if bp and bp["building_profile_id"] and building_mode != "never":
+                    out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
+                                                                       building_mode or "auto", building_fns)
+                    if out["building"].get("added"):
+                        conn.execute("""UPDATE properties.listings SET "Debug_status" = NULL
+                                        WHERE id=%s AND source='agent_partner'""", (listing_id,))
+                        conn.commit()
+                        out["processed"] = out["building"]["added"]
+                        out["ai_analyze"] = "queued"
+                        out["status"] = "ok"
+                        return out
+            except Exception as e:
+                conn.rollback()
+                out["building_error"] = f"{type(e).__name__}: {str(e)[:120]}"
             out["status"] = "no_images"
             return out
         ldir = STORAGE_ROOT / "listings" / str(listing_id)
@@ -1520,6 +1558,21 @@ def _process_images(listing_id: int) -> dict:
         if processed:
             conn.execute("UPDATE properties.listings SET local_image_paths_processed = %s::text[] WHERE id=%s",
                          (processed, listing_id))
+            conn.commit()
+        # ēkas noklusējuma bildes (fasāde/pagalms) — ja klasifikācija neatrada fasādi
+        try:
+            import building_photos
+            bp = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (listing_id,)).fetchone()
+            if bp and bp["building_profile_id"]:
+                out["building"] = building_photos.apply_to_listing(conn, listing_id, int(bp["building_profile_id"]),
+                                                                   building_mode or "auto", building_fns)
+                row2 = conn.execute("SELECT local_image_paths_processed FROM properties.listings WHERE id=%s",
+                                    (listing_id,)).fetchone()
+                processed = [str(x) for x in ((row2 or {}).get("local_image_paths_processed") or [])]
+        except Exception as e:
+            conn.rollback()
+            out["building_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        if processed:
             # partnera listingi → ss.lv AI analizators (agent_ai_poller paņem Debug_status NULL,
             # aizpilda neaizslēgtos laukus no bildēm + teksta, atliek 'ok')
             conn.execute("""UPDATE properties.listings SET "Debug_status" = NULL
@@ -1558,7 +1611,8 @@ def _images_job_inner(intake_id: str, jobs: list, results: list, total: int) -> 
                     r["resumed"] = True   # raw jau salikts (pārtraukts AI posmā) — nedublē plānus
                 else:
                     r.update(_attach_images(conn, lid, u, intake_id))
-            r["ai"] = _process_images(lid)
+            sel = u.get("_img_sel") or {}
+            r["ai"] = _process_images(lid, sel.get("building") or "auto", sel.get("building_fns"))
             if web:
                 r["web_queued"] = _queue_web(lid, intake_id)
         except Exception as e:
@@ -1618,11 +1672,15 @@ def resume_pending_images() -> int:
             prior = [r for r in (meta.get("images_result") or []) if not r.get("error")]
             done_ids = {int(r["listing_id"]) for r in prior}
             web_map = {int(j[0]): bool(j[2]) for j in (meta.get("image_jobs") or []) if len(j) > 2}
+            sel_map = {int(j[0]): j[3] for j in (meta.get("image_jobs") or []) if len(j) > 3 and isinstance(j[3], dict)}
             jobs = []
             for lid, idx in (meta.get("apply_result") or {}).get("created_units") or []:
                 if int(lid) in done_ids or str(idx) not in units:
                     continue
-                jobs.append((int(lid), units[str(idx)], web_map.get(int(lid), False)))
+                uu = dict(units[str(idx)])
+                if int(lid) in sel_map:
+                    uu["_img_sel"] = sel_map[int(lid)]
+                jobs.append((int(lid), uu, web_map.get(int(lid), False)))
             if jobs:
                 logger.info("partner_intake: atsāku bildes %s (%d telpas)", d.name, len(jobs))
                 start_images_job(d.name, jobs, prior)
@@ -1633,6 +1691,71 @@ def resume_pending_images() -> int:
         except Exception as e:
             logger.warning("partner_intake: resume %s: %s", d.name, e)
     return started
+
+
+def unit_image_candidates(intake_id: str, idx: str) -> dict:
+    """Importa stadijai: ko pievienos šai telpai — ss.lv galerija (dzīvā, kešota), PDF foto/plāni,
+    aģenta augšupielādes, ēkas noklusējuma bildes, mūsu listinga fasāde."""
+    d = INTAKE_DIR / intake_id
+    report = json.loads((d / "report.json").read_text(encoding="utf-8"))
+    addr, unit = None, None
+    for a in report.get("addresses", []):
+        for u in a.get("units", []):
+            if str(u.get("idx")) == str(idx):
+                addr, unit = a, u
+    if unit is None:
+        raise ApplyError("telpa nav atrasta")
+    imgs = unit.get("images") or {}
+    out: dict = {"idx": unit["idx"], "pdf": imgs.get("pdf") or {"photos": [], "plans": []},
+                 "sslv": [], "sslv_link": None, "uploads": [], "building": [], "bp_id": None,
+                 "own_listing": (imgs.get("own_listings_with_images") or [None])[0]}
+    cache_p = d / "sslv_gallery_cache.json"
+    cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
+    cands = imgs.get("sslv_inbox") or []
+    if cands:
+        link = cands[0]["link"]
+        out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
+        if link not in cache:
+            try:
+                import ai_text_helpers as helpers
+                import sslv_import
+                info = sslv_import.parse_sslv_url(link)
+                html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
+                cache[link] = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+                cache_p.write_text(json.dumps(cache), encoding="utf-8")
+            except Exception as e:
+                out["sslv_error"] = f"{type(e).__name__}"
+        out["sslv"] = cache.get(link) or []
+    up = d / "uploads" / str(unit["idx"])
+    if up.is_dir():
+        out["uploads"] = sorted(f"partner_intake/{intake_id}/uploads/{unit['idx']}/{f.name}" for f in up.iterdir() if f.is_file())
+    bp_id = (addr.get("bp") or {}).get("id")
+    if bp_id:
+        import building_photos
+        out["bp_id"] = int(bp_id)
+        out["building"] = building_photos.list_photos(int(bp_id))
+    return out
+
+
+def save_unit_upload(intake_id: str, idx: str, filename: str, data: bytes) -> str:
+    """Aģenta bilde konkrētai telpai importa stadijā → partner_intake/<id>/uploads/<idx>/."""
+    if not re.fullmatch(r"\d{1,4}", str(idx)):
+        raise ApplyError("nederīgs idx")
+    if not data or len(data) > 20 * 1024 * 1024:
+        raise ApplyError("fails tukšs vai par lielu")
+    try:
+        from PIL import Image
+        import io as _io
+        Image.open(_io.BytesIO(data)).verify()
+    except Exception:
+        raise ApplyError("nav derīga bilde")
+    ext = Path(filename or "").suffix.lower()
+    ext = ext if ext in (".jpg", ".jpeg", ".png", ".webp") else ".jpg"
+    d = INTAKE_DIR / intake_id / "uploads" / str(idx)
+    d.mkdir(parents=True, exist_ok=True)
+    fn = f"up_{uuid.uuid4().hex}{ext}"
+    (d / fn).write_bytes(data)
+    return f"partner_intake/{intake_id}/uploads/{idx}/{fn}"
 
 
 def reprocess_listing_images(intake_id: str, listing_id: int) -> dict:

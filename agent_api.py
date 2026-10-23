@@ -1564,7 +1564,7 @@ def partner_intake_file(intake_id: str, rel: str, _auth: None = Depends(require_
     base = (partner_intake.INTAKE_DIR / intake_id).resolve()
     p = (base / rel).resolve()
     # tikai šīs ieplūdes att/ un img/ (zaļās audits 2026-10-21: absolūts rel izlēca no mapes)
-    if base not in p.parents or p.relative_to(base).parts[0] not in ("att", "img"):
+    if base not in p.parents or p.relative_to(base).parts[0] not in ("att", "img", "uploads"):
         raise HTTPException(400, "Nederīgs ceļš")
     if not p.is_file():
         raise HTTPException(404, "Fails nav")
@@ -1615,6 +1615,117 @@ def partner_intake_images(intake_id: str, listing_id: int, _auth: None = Depends
         raise HTTPException(404, str(e))
     except Exception as e:
         raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
+
+
+_INTAKE_ID_RE = r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}"
+
+
+@router.get("/partner-intake/{intake_id}/unit-images/{idx}")
+def partner_intake_unit_images(intake_id: str, idx: str, _auth: None = Depends(require_token)) -> dict:
+    """Importa stadija: bilžu kandidāti telpai (ss.lv galerija, PDF, augšupielādes, ēkas bildes)."""
+    import partner_intake
+    if not re.fullmatch(_INTAKE_ID_RE, intake_id) or not re.fullmatch(r"\d{1,4}", idx):
+        raise HTTPException(400, "Nederīgs ceļš")
+    try:
+        return partner_intake.unit_image_candidates(intake_id, idx)
+    except FileNotFoundError:
+        raise HTTPException(404, "Reports nav gatavs")
+    except partner_intake.ApplyError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.post("/partner-intake/{intake_id}/unit-upload/{idx}")
+def partner_intake_unit_upload(intake_id: str, idx: str, files: list[UploadFile] = File(default=[]),
+                               _auth: None = Depends(require_token)) -> dict:
+    import partner_intake
+    if not re.fullmatch(_INTAKE_ID_RE, intake_id) or not re.fullmatch(r"\d{1,4}", idx):
+        raise HTTPException(400, "Nederīgs ceļš")
+    if not (partner_intake.INTAKE_DIR / intake_id / "report.json").is_file():
+        raise HTTPException(404, "Ieplūde nav atrasta")
+    saved, errors = [], []
+    for f in files[:30]:
+        try:
+            saved.append(partner_intake.save_unit_upload(intake_id, idx, f.filename or "", f.file.read()))
+        except partner_intake.ApplyError as e:
+            errors.append(f"{f.filename}: {e}")
+    return {"ok": True, "saved": saved, "errors": errors}
+
+
+@router.delete("/partner-intake/{intake_id}/unit-upload/{idx}/{fn}")
+def partner_intake_unit_upload_delete(intake_id: str, idx: str, fn: str, _auth: None = Depends(require_token)) -> dict:
+    import partner_intake
+    if (not re.fullmatch(_INTAKE_ID_RE, intake_id) or not re.fullmatch(r"\d{1,4}", idx)
+            or not re.fullmatch(r"up_[0-9a-f]{32}\.(jpg|jpeg|png|webp)", fn)):
+        raise HTTPException(400, "Nederīgs ceļš")
+    p = partner_intake.INTAKE_DIR / intake_id / "uploads" / idx / fn
+    p.unlink(missing_ok=True)
+    return {"ok": True}
+
+
+# ── Ēkas noklusējuma bildes (fasāde/pagalms) ──
+
+@router.get("/building-photos/{bp_id}")
+def building_photos_list(bp_id: int, _auth: None = Depends(require_token)) -> dict:
+    import building_photos
+    return {"bp_id": bp_id, "photos": building_photos.list_photos(bp_id)}
+
+
+@router.get("/building-photos/{bp_id}/file/{fn}")
+def building_photos_file(bp_id: int, fn: str, _auth: None = Depends(require_token)):
+    import building_photos
+    from fastapi.responses import FileResponse
+    p = building_photos.file_path(bp_id, fn)
+    if not p:
+        raise HTTPException(404, "Nav")
+    return FileResponse(str(p))
+
+
+@router.post("/building-photos/{bp_id}")
+def building_photos_upload(bp_id: int, files: list[UploadFile] = File(default=[]), ptype: str = Form("fasade"),
+                           by: str = Form(""), _auth: None = Depends(require_token)) -> dict:
+    import building_photos
+    with psycopg.connect(DATABASE_URL) as conn:
+        if not conn.execute("SELECT 1 FROM properties.building_profiles WHERE id=%s", (bp_id,)).fetchone():
+            raise HTTPException(404, "Ēka nav atrasta")
+    added, errors = [], []
+    for f in files[:30]:
+        try:
+            added.append(building_photos.add_photo(bp_id, f.file.read(), f.filename or "", ptype, by or None))
+        except ValueError as e:
+            errors.append(f"{f.filename}: {e}")
+    return {"ok": True, "added": added, "errors": errors}
+
+
+class BuildingPhotoTypeReq(BaseModel):
+    ptype: str
+
+
+@router.post("/building-photos/{bp_id}/type/{fn}")
+def building_photos_set_type(bp_id: int, fn: str, req: BuildingPhotoTypeReq, _auth: None = Depends(require_token)) -> dict:
+    import building_photos
+    try:
+        return {"ok": building_photos.set_type(bp_id, fn, req.ptype)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/building-photos/{bp_id}/{fn}")
+def building_photos_delete(bp_id: int, fn: str, _auth: None = Depends(require_token)) -> dict:
+    import building_photos
+    return {"ok": building_photos.delete_photo(bp_id, fn)}
+
+
+class BuildingPhotosApplyReq(BaseModel):
+    requested_by: Optional[str] = None
+
+
+@router.post("/building-photos/{bp_id}/apply")
+def building_photos_apply(bp_id: int, req: BuildingPhotosApplyReq, _auth: None = Depends(require_token)) -> dict:
+    """Ēkas bildes visiem listingiem ēkā, kuriem NAV fasādes (mājaslapā esošos pārpublicē)."""
+    import building_photos
+    from psycopg.rows import dict_row
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        return {"ok": True, **building_photos.apply_to_building(conn, bp_id, req.requested_by)}
 
 
 class PartnerUploadReq(BaseModel):
