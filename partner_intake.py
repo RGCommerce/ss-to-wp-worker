@@ -1353,6 +1353,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     meta["applied_at"] = _now().isoformat()
     meta["apply_result"] = result
     meta["images_status"] = "processing" if image_jobs else None
+    meta["image_jobs"] = [[j[0], j[1].get("idx"), bool(j[2])] for j in image_jobs]
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     # bildes (ss.lv lejupielāde + Seedream) aizņem minūtes → fonā, lai apstiprināšana atbild uzreiz
     start_images_job(intake_id, image_jobs)
@@ -1530,16 +1531,33 @@ def _process_images(listing_id: int) -> dict:
     return out
 
 
-def _images_job(intake_id: str, jobs: list) -> None:
-    """Fona pavediens: bildes katram jaunajam listingam → meta.json images_result/images_status."""
-    results: list[dict] = []
+_ACTIVE_IMAGE_JOBS: set[str] = set()
+
+
+def _images_job(intake_id: str, jobs: list, prior: Optional[list] = None) -> None:
+    """Fona pavediens: bildes katram jaunajam listingam → meta.json images_result/images_status.
+    `prior` = jau pabeigtie rezultāti (atsākšana pēc worker restarta)."""
+    results: list[dict] = list(prior or [])
+    total = len(results) + len(jobs)
+    try:
+        _images_job_inner(intake_id, jobs, results, total)
+    finally:
+        _ACTIVE_IMAGE_JOBS.discard(intake_id)
+
+
+def _images_job_inner(intake_id: str, jobs: list, results: list, total: int) -> None:
     for job in jobs:
         lid, u = job[0], job[1]
         web = bool(job[2]) if len(job) > 2 else False
         r: dict = {"listing_id": lid, "web": web}
         try:
             with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-                r.update(_attach_images(conn, lid, u, intake_id))
+                row = conn.execute("""SELECT coalesce(array_length(local_image_paths_raw,1),0) n, images_downloaded_at
+                                      FROM properties.listings WHERE id=%s""", (lid,)).fetchone()
+                if row and row["n"] and row["images_downloaded_at"]:
+                    r["resumed"] = True   # raw jau salikts (pārtraukts AI posmā) — nedublē plānus
+                else:
+                    r.update(_attach_images(conn, lid, u, intake_id))
             r["ai"] = _process_images(lid)
             if web:
                 r["web_queued"] = _queue_web(lid, intake_id)
@@ -1550,7 +1568,7 @@ def _images_job(intake_id: str, jobs: list) -> None:
             meta_p = INTAKE_DIR / intake_id / "meta.json"
             meta = json.loads(meta_p.read_text(encoding="utf-8"))
             meta["images_result"] = results
-            meta["images_status"] = "done" if len(results) == len(jobs) else f"{len(results)}/{len(jobs)}"
+            meta["images_status"] = "done" if len(results) >= total else f"{len(results)}/{total}"
             meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
         except Exception:
             pass
@@ -1573,10 +1591,48 @@ def _queue_web(listing_id: int, intake_id: str) -> str:
         return "rindā" if got else "jau rindā"
 
 
-def start_images_job(intake_id: str, jobs: list) -> None:
+def start_images_job(intake_id: str, jobs: list, prior: Optional[list] = None) -> None:
     import threading
-    if jobs:
-        threading.Thread(target=_images_job, args=(intake_id, jobs), name=f"pi-images-{intake_id}", daemon=True).start()
+    if jobs and intake_id not in _ACTIVE_IMAGE_JOBS:
+        _ACTIVE_IMAGE_JOBS.add(intake_id)
+        threading.Thread(target=_images_job, args=(intake_id, jobs, prior), name=f"pi-images-{intake_id}", daemon=True).start()
+
+
+def resume_pending_images() -> int:
+    """Worker restarts (deploy) nogalina bilžu pavedienu → images_status iesprūst «k/n».
+    Katrā ciklā: neaktīvām ieplūdēm ar nepabeigtu bilžu darbu turpina atlikušās telpas."""
+    if not INTAKE_DIR.is_dir():
+        return 0
+    started = 0
+    for d in INTAKE_DIR.iterdir():
+        mp = d / "meta.json"
+        if not mp.is_file() or d.name in _ACTIVE_IMAGE_JOBS:
+            continue
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            st = meta.get("images_status")
+            if not st or st == "done":
+                continue
+            report = json.loads((d / "report.json").read_text(encoding="utf-8"))
+            units = {str(u["idx"]): u for a in report.get("addresses", []) for u in a.get("units", [])}
+            prior = [r for r in (meta.get("images_result") or []) if not r.get("error")]
+            done_ids = {int(r["listing_id"]) for r in prior}
+            web_map = {int(j[0]): bool(j[2]) for j in (meta.get("image_jobs") or []) if len(j) > 2}
+            jobs = []
+            for lid, idx in (meta.get("apply_result") or {}).get("created_units") or []:
+                if int(lid) in done_ids or str(idx) not in units:
+                    continue
+                jobs.append((int(lid), units[str(idx)], web_map.get(int(lid), False)))
+            if jobs:
+                logger.info("partner_intake: atsāku bildes %s (%d telpas)", d.name, len(jobs))
+                start_images_job(d.name, jobs, prior)
+                started += 1
+            else:
+                meta["images_status"] = "done"
+                mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        except Exception as e:
+            logger.warning("partner_intake: resume %s: %s", d.name, e)
+    return started
 
 
 def reprocess_listing_images(intake_id: str, listing_id: int) -> dict:
@@ -1700,6 +1756,10 @@ async def run_loop(stop_event: asyncio.Event) -> None:
                 _state["errors_total"] += 1
                 _state["last_error"] = f"imap: {type(e).__name__}: {str(e)[:120]}"
                 logger.error("partner_intake cikls: %s", e)
+            try:
+                resume_pending_images()
+            except Exception as e:
+                logger.warning("partner_intake: resume: %s", e)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=INTERVAL)
             except asyncio.TimeoutError:
