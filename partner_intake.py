@@ -979,6 +979,28 @@ def _pdf_images_for_unit(intake_dir: Path, meta: dict, unit: dict) -> dict:
     return out
 
 
+def _merge_same_addresses(addresses: list[dict]) -> list[dict]:
+    """AI tabulu pāri lapām mēdz sadalīt divās «adresēs» ar to pašu ielu (MCITY Ulbrokas 23 → 13 + 6 telpas,
+    «nav sarakstā» dubultā). Apvieno pēc ielas atslēgas + pilsētas (vai ēkas nosaukuma)."""
+    out: list[dict] = []
+    index: dict[str, dict] = {}
+    for a in addresses:
+        key = (_street_key(a.get("street") or "") or (a.get("building_name") or "").strip().lower()) + "|" + (a.get("city") or "rīga").strip().lower()
+        hit = index.get(key) if key.strip("|") else None
+        if hit is None:
+            a = dict(a)
+            a["units"] = list(a.get("units") or [])
+            index[key] = a
+            out.append(a)
+            continue
+        hit["units"].extend(a.get("units") or [])
+        for k in ("district", "building_name"):
+            if not hit.get(k) and a.get(k):
+                hit[k] = a[k]
+        hit["address_known"] = bool(hit.get("address_known", True)) or bool(a.get("address_known", True))
+    return out
+
+
 def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
     d = INTAKE_DIR / intake_id
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
@@ -1001,7 +1023,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
         idx = 0
-        for addr in analysis.get("addresses") or []:
+        for addr in _merge_same_addresses(analysis.get("addresses") or []):
             bps = _find_bps(conn, addr.get("street"), addr.get("city"), addr.get("district"), addr.get("building_name"))
             ours = []
             per_bp = []
