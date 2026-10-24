@@ -1391,7 +1391,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 elif status == "new":
                     report["summary"]["ready"] += 1
             a_out["contact_phone"] = _resolve_contact_phone(conn, report.get("partner") or {}, bp, ours, a_out["units"])
-            if report["looks_complete"] and bp:
+            # mūsu telpas šajā ēkā, kuru partnera sarakstā nav → piedāvā atzīmēt kā iznomātas VIENMĒR (agrāk tikai, ja
+            # AI nolēma «saraksts pilns» — Domuss 2026-10-24: AI teica «nē», un Ganību d. 25d 1512 m² netika ieteikts).
+            # Ķeksis pēc noklusējuma: ja saraksts izskatās pilns vai tajā ir ≥3 telpas; viena telpa e-pastā → bez ķekša.
+            default_on = bool(report["looks_complete"]) or len(a_out["units"]) >= 3
+            if bp:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied":
                         continue   # jau iznomātos nepiedāvā vēlreiz atzīmēt
@@ -1400,7 +1404,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         "price": l["price"], "source": l["source"], "on_website": l["on_website"],
                         "wp_synced_at": str(l["wp_synced_at"])[:10] if l["wp_synced_at"] else None,
                         "created_at": str(l["created_at"])[:10] if l["created_at"] else None,
-                        "decision": "ask",
+                        "decision": "ask", "default_checked": default_on,
                     })
                 report["summary"]["missing"] += len(a_out["missing_in_list"])
             report["addresses"].append(a_out)
