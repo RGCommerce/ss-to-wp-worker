@@ -672,11 +672,103 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
 """
 
 
+ANALYZE_RUNS = int(os.getenv("PARTNER_ANALYZE_RUNS", "2"))
+
+
+def _ai_call(client, model: str, content: list[dict]) -> dict:
+    resp = client.responses.create(
+        model=model,
+        input=[{"role": "user", "content": content}],
+        text={"format": {"type": "json_schema", "name": "vacancy_list", "schema": _schema(), "strict": True}},
+    )
+    return json.loads(resp.output_text)
+
+
+def _unit_key(addr: dict, u: dict) -> tuple:
+    """Telpas identitāte salīdzināšanai starp AI izlasījumiem: iela (bez tipa) + stāva cipars + platība."""
+    area = _num(u.get("area_m2"))
+    return (_street_key(addr.get("street") or addr.get("building_name") or ""), _floor_digits(_floor_norm(u.get("floor"))),
+            round(area, 1) if area else None)
+
+
+def _doc_areas(text: str) -> set[float]:
+    """Platības, kas dokumenta tekstā minētas ar m²/kv.m — pārbaudei, vai AI kādu nav palaidis garām."""
+    out = set()
+    for m in re.finditer(r"(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv\.?\s*m|kvm)\b", text or "", re.I):
+        try:
+            v = float(m.group(1).replace(",", "."))
+        except ValueError:
+            continue
+        if 8 <= v <= 50000:
+            out.add(round(v, 1))
+    return out
+
+
+def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
+    """Vairāku AI izlasījumu apvienošana (Raimonds 2026-10-24: «nevar būt, ka neizlasa pareizi»):
+    bāze = izlasījums ar visvairāk telpām; telpas, kas ir CITĀ izlasījumā, bet bāzē nav — pievieno
+    (pareizajai adresei); telpas, ko redzēja tikai viens no ≥2 izlasījumiem — `confidence` ≤0.55 →
+    panelī «pārbaudīt». Atgriež (apvienotais, statistika)."""
+    runs = [r for r in runs if r]
+    if len(runs) == 1:
+        runs = runs + [runs[0]]   # arī viens izlasījums iet caur dublikātu tīrīšanu
+    counts = [sum(len(a.get("units") or []) for a in r.get("addresses") or []) for r in runs]
+    base = json.loads(json.dumps(runs[counts.index(max(counts))]))
+    seen: dict[tuple, int] = {}
+    for r in runs:
+        keys = set()
+        for a in r.get("addresses") or []:
+            for u in a.get("units") or []:
+                keys.add(_unit_key(a, u))
+        for k in keys:
+            seen[k] = seen.get(k, 0) + 1
+    base_keys = {_unit_key(a, u) for a in base.get("addresses") or [] for u in a.get("units") or []}
+    added = 0
+    for r in runs:
+        if r is base:
+            continue
+        for a in r.get("addresses") or []:
+            for u in a.get("units") or []:
+                k = _unit_key(a, u)
+                if k in base_keys or k[2] is None:
+                    continue
+                tgt = next((ba for ba in base.get("addresses") or [] if _street_key(ba.get("street") or ba.get("building_name") or "") == k[0]), None)
+                if tgt is None:
+                    tgt = {**{kk: vv for kk, vv in a.items() if kk != "units"}, "units": []}
+                    base.setdefault("addresses", []).append(tgt)
+                tgt["units"].append(u)
+                base_keys.add(k)
+                added += 1
+    # viena un tā pati telpa dokumentā minēta divreiz (Domuss: GD25D.E16.1 plānā divās vietās) → viena
+    dups = 0
+    for a in base.get("addresses") or []:
+        uniq, keys_ref = [], set()
+        for u in a.get("units") or []:
+            kr = (_unit_key(a, u), (u.get("ref") or "").strip().lower())
+            if kr[0][2] is not None and kr in keys_ref:
+                dups += 1
+                continue
+            keys_ref.add(kr)
+            uniq.append(u)
+        a["units"] = uniq
+    weak = 0
+    for a in base.get("addresses") or []:
+        for u in a.get("units") or []:
+            if seen.get(_unit_key(a, u), 0) < len(runs):
+                u["confidence"] = min(float(u.get("confidence") or 0), 0.55)
+                weak += 1
+    return base, {"runs": len(runs), "units_per_run": counts, "added_from_other_runs": added, "seen_once": weak, "duplicates_removed": dups}
+
+
 def analyze(intake_id: str) -> dict:
+    """AI izlasa dokumentu ANALYZE_RUNS reizes (paralēli) → apvieno → pārbauda pret dokumenta platībām:
+    ja dokumentā minēta platība, kas nav ne telpā, ne skipped_items, — vēl viens mērķēts izlasījums ar
+    šo sarakstu. Tā AI nejaušība (Domuss: 5 vs 8 telpas tam pašam PDF) neaiziet līdz aģentam."""
     d = INTAKE_DIR / intake_id
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
     text, images = build_ai_input(d, meta)
     from openai import OpenAI
+    from concurrent.futures import ThreadPoolExecutor
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY nav konfigurēts")
@@ -691,16 +783,48 @@ def analyze(intake_id: str) -> dict:
     content.append({"type": "input_text", "text": PROMPT})
     client = OpenAI(api_key=api_key)
     t0 = time.time()
-    resp = client.responses.create(
-        model=model,
-        input=[{"role": "user", "content": content}],
-        text={"format": {"type": "json_schema", "name": "vacancy_list", "schema": _schema(), "strict": True}},
-    )
-    data = json.loads(resp.output_text)
-    data["_meta"] = {"model": model, "seconds": round(time.time() - t0, 1),
-                     "text_chars": len(text), "images": len(images)}
+    runs: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max(1, ANALYZE_RUNS)) as ex:
+        for res in ex.map(lambda _: _safe_ai(client, model, content), range(max(1, ANALYZE_RUNS))):
+            if res:
+                runs.append(res)
+    if not runs:
+        raise RuntimeError("AI neatbildēja nevienā izlasījumā")
+    data, stats = _merge_runs(runs)
+    # pārklājuma pārbaude: dokumenta platības, kas nekur neparādās
+    covered = set()
+    for a in data.get("addresses") or []:
+        for u in a.get("units") or []:
+            if _num(u.get("area_m2")):
+                covered.add(round(_num(u.get("area_m2")), 1))
+    skipped_txt = " ".join(json.dumps(x, ensure_ascii=False) for x in data.get("skipped_items") or [])
+    skipped_nums = {round(float(x.replace(",", ".")), 1) for x in re.findall(r"\d{1,5}(?:[.,]\d{1,2})?", skipped_txt)}
+    missing = sorted(x for x in _doc_areas(text) if not any(abs(x - c) <= max(0.06, 0.005 * x) for c in covered | skipped_nums))
+    stats["doc_areas_missing"] = missing
+    if missing and len(missing) <= 40:
+        hint = ("PĀRBAUDE: dokumentā minētas šīs platības, kas tavā iepriekšējā atbildē NAV ne `units`, ne `skipped_items`: "
+                + ", ".join(f"{x:g} m²" for x in missing)
+                + ". Izlasi vēlreiz un atgriez PILNU sarakstu: katra no tām ir vai nu telpa (units), vai skaidri ielikta "
+                  "skipped_items ar iemeslu (piem. kopplatība, terase, balkons, cita ēka, jau iznomāta).")
+        fix = _safe_ai(client, model, content + [{"type": "input_text", "text": hint}])
+        if fix:
+            data, st2 = _merge_runs([data, fix])
+            stats["coverage_rerun"] = st2
+    data["_meta"] = {"model": model, "seconds": round(time.time() - t0, 1), "text_chars": len(text),
+                     "images": len(images), "consistency": stats}
     (d / "analysis.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    logger.info("partner_intake %s: analīze %s", intake_id, stats)
     return data
+
+
+def _safe_ai(client, model: str, content: list[dict]) -> Optional[dict]:
+    for attempt in range(2):
+        try:
+            return _ai_call(client, model, content)
+        except Exception as e:
+            logger.warning("partner_intake: AI izlasījums neizdevās (%s/2): %s", attempt + 1, e)
+            time.sleep(3)
+    return None
 
 
 # ───────────────────────────── 3) salīdzināšana ─────────────────────────────
