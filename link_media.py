@@ -250,6 +250,45 @@ def links_from_text(text: str, source_name: str) -> list[dict]:
     return out
 
 
+_SKIP_HOSTS = ("facebook.", "linkedin.", "instagram.", "twitter.", "x.com", "youtube.", "wa.me", "whatsapp.",
+               "rgcommerce.", "rgcnoma.", "google.com/maps", "goo.gl/maps", "maps.app.goo.gl", "mailchimp", "unsubscribe")
+
+
+def is_web_page(url: str) -> bool:
+    """Parasta partnera web lapa (piem. realto.lv/property/...), ko vērts izlasīt — ne Drive, ne soc. tīkli, ne mūsu."""
+    u = (url or "").lower()
+    if not u.startswith(("http://", "https://")) or classify_url(url):
+        return False
+    if any(h in u for h in _SKIP_HOSTS):
+        return False
+    path = re.sub(r"^https?://[^/]+", "", u).strip("/")
+    return bool(path) and not re.search(r"\.(jpg|jpeg|png|gif|pdf|zip|docx?|xlsx?)(\?|$)", path)
+
+
+def fetch_page_text(url: str, limit: int = 2500) -> Optional[dict]:
+    """Web lapa → {title, text}: teksts no virsraksta otrās parādīšanās (pēc izvēlnes) — tur ir adrese/cena/platība."""
+    import html as _h
+    try:
+        raw = _get(url, timeout=20)[:3_000_000].decode("utf-8", "ignore")
+    except Exception as e:
+        logger.info("link_media: lapa %s nenolasās: %s", url, e)
+        return None
+    m = re.search(r"<title[^>]*>(.*?)</title>", raw, re.S | re.I)
+    title = _h.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
+    t = re.sub(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", raw, flags=re.S | re.I)
+    t = _h.unescape(re.sub(r"<[^>]+>", " ", t))
+    t = re.sub(r"\s+", " ", t).strip()
+    head = re.split(r"\s[|–-]\s", title)[0].strip()
+    start = 0
+    if head and len(head) > 5:
+        hits = [x.start() for x in re.finditer(re.escape(head[:40]), t)]
+        if len(hits) >= 2:
+            start = hits[1]
+        elif hits:
+            start = hits[0]
+    return {"url": url, "title": title, "text": t[max(0, start - 50): start + limit]}
+
+
 def render_pdf_first_page(pdf_bytes: bytes, out_path: Path, dpi: int = 110) -> bool:
     """Plāna PDF → PNG (kā plāns listingam)."""
     try:

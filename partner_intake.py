@@ -168,6 +168,17 @@ def _street_like(street: str) -> Optional[str]:
     return r"(^|[^a-z0-9])" + r"[^a-z0-9]+.*?".join(re.escape(t) for t in toks) + r"($|[^a-z0-9])" if len(toks) > 1         else r"(^|[^a-z0-9])" + re.escape(toks[0]) + r"($|[^a-z0-9])"
 
 
+def _street_short(street: str) -> Optional[str]:
+    """Garais oficiālais nosaukums → uzvārds + numurs: «Zigfrīda Annas Meierovica bulvāris 16» → «meierovica 16»,
+    «Krišjāņa Barona 3» → «barona 3» (DB parasti īsais). None, ja saīsināt nav ko."""
+    toks = _street_key(street).split()
+    i = next((k for k, t in enumerate(toks) if t[0].isdigit()), len(toks))
+    words, rest = toks[:i], toks[i:]
+    if len(words) < 2:
+        return None
+    return " ".join([words[-1]] + rest)
+
+
 # ───────────────────────────── 1) IMAP ─────────────────────────────
 
 def imap_configured() -> bool:
@@ -529,6 +540,25 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
             continue
         links.append({**fl, "id": f"L{len(links) + 1}", "rows": [fl["row_text"]], "geo": [geo]})
     (intake_dir / "links.json").write_text(json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8")
+    # partnera web lapas (Realto: «Telpas Purvciemā - 104 m2 <realto.lv/property/...>») — tur ir ADRESE, kuras
+    # e-pastā nav («Dz74»); izlasām un dodam AI kā vēl vienu avotu
+    pages: list[dict] = []
+    cache_p = intake_dir / "webpages.json"
+    cached = {}
+    try:
+        cached = {x["url"]: x for x in json.loads(cache_p.read_text(encoding="utf-8"))} if cache_p.is_file() else {}
+    except Exception:
+        cached = {}
+    for url in list(dict.fromkeys(fl["url"] for fl in found_links if link_media.is_web_page(fl["url"])))[:8]:
+        pg = cached.get(url) or link_media.fetch_page_text(url)
+        if pg and pg.get("text"):
+            pg["row_text"] = next((fl["row_text"] for fl in found_links if fl["url"] == url), "")
+            pages.append(pg)
+    if pages:
+        cache_p.write_text(json.dumps(pages, ensure_ascii=False, indent=1), encoding="utf-8")
+        parts.append("PARTNERA WEB LAPAS (saites no e-pasta; izmanto adresei/cenai/platībai — tā pati telpa, kas tabulā, NAV jauna):\n"
+                     + "\n".join(f"[{x['url']}] e-pasta rinda: {x['row_text'][:200]}\n  virsraksts: {x['title']}\n  saturs: {x['text']}"
+                                  for x in pages))
     if links:
         parts.append("SAITES UZ BILDĒM/PLĀNIEM (piesaisti katru telpai laukā `link_ids`; viena saite var būt vairākām telpām):\n"
                      + "\n".join(f"{x['id']} [{x['source']}{', ' + str(x['page']) + '. lapa' if x.get('page') else ''}] rinda: "
@@ -627,6 +657,12 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
 3. `addresses`: katra atsevišķa ēka/adrese = savs ieraksts (`street` = iela + numurs tieši kā dokumentā, bez pilsētas;
    `city`; `district` Rīgas apkaime, ja minēta). Ja dokumentā ir tikai zīmols/parka nosaukums bez adreses
    (piem. «INDI centrs», «MCITY 2. ēka») → `building_name` un `address_known=false`, `street` null.
+   ADRESI meklē VISUR: e-pasta teksts, pielikumi, PARTNERA WEB LAPAS (piem. «74, Dzelzavas iela, Purvciems» → street
+   «Dzelzavas iela 74»), plāna/bildes uzraksti. Saīsinājums tematā («Dz74») + web lapas adrese = tā pati ēka.
+   Partnera biroja adrese parakstā (piem. «Braslas iela 29a» zem vārda) NAV īpašuma adrese.
+   Telpa, kas minēta gan ar saiti/teikumu («Telpas – 150 m2»), gan tabulā («150,8») = VIENA telpa (tabulas dati +
+   piezīme no teikuma), nevis divas. Ja tabulā ir vairākas līdzīgas platības (104,1 un 105,7), izvēlies pēc web lapas
+   CENAS (€520 ÷ 5 €/m² = 104 → 104,1), nevis tuvāko skaitli uz labu laimi.
    Vairāki parki/ēkas vienā PDF → vairākas adreses. Telpas, kurām adrese nav skaidra, liec pie tuvākās sadaļas.
 4. KATRA iznomājamā telpa = sava `units` rinda. `ref` = partnera telpas kods/numurs, ja ir («GD25D.E3», «33-18»,
    «C ieeja 2.st 29.8», «201-9»). `building_part` = ēka/korpuss/ieeja/sekcija (C ēka, D ieeja, 42D).
@@ -745,12 +781,16 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
         uniq, keys_ref = [], set()
         for u in a.get("units") or []:
             kr = (_unit_key(a, u), (u.get("ref") or "").strip().lower())
-            if kr[0][2] is not None and kr in keys_ref:
+            if kr[0][2] is not None and kr[1] and kr in keys_ref:
                 dups += 1
                 continue
             keys_ref.add(kr)
             uniq.append(u)
         a["units"] = uniq
+    # «Telpas – 150 m2» (saite e-pastā) + tabulā «3.st. 150,8» → viena (Realto Dz74, 2026-10-24)
+    for a in base.get("addresses") or []:
+        a["units"], n = _merge_near_duplicates(a.get("units") or [])
+        dups += n
     weak = 0
     for a in base.get("addresses") or []:
         for u in a.get("units") or []:
@@ -758,6 +798,98 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
                 u["confidence"] = min(float(u.get("confidence") or 0), 0.55)
                 weak += 1
     return base, {"runs": len(runs), "units_per_run": counts, "added_from_other_runs": added, "seen_once": weak, "duplicates_removed": dups}
+
+
+def _unit_richness(u: dict) -> int:
+    return sum(1 for k in ("ref", "floor", "rent_per_m2_min", "rent_total", "sale_price", "maintenance_per_m2") if u.get(k))
+
+
+def _merge_near_duplicates(units: list[dict]) -> tuple[list[dict], int]:
+    """Telpa BEZ ref + tieši viena telpa AR ref ar ~vienādu platību (±1 m² / 1%) un nekonfliktējošu stāvu →
+    tā pati telpa no diviem avotiem (teikums + tabula). Bagātākā paliek, nabadzīgākās piezīmes/saites pievienojas."""
+    out: list[dict] = []
+    merged = 0
+    for u in sorted(units, key=lambda x: -_unit_richness(x)):
+        area = _num(u.get("area_m2"))
+        tgt = None
+        if area and not u.get("ref"):
+            fd = _floor_digits(_floor_norm(u.get("floor")))
+            cands = [o for o in out if o.get("ref") and _num(o.get("area_m2"))
+                     and abs(_num(o.get("area_m2")) - area) <= max(1.0, 0.01 * area)
+                     and (not fd or _floor_digits(_floor_norm(o.get("floor"))) in ("", fd))]
+            if len(cands) == 1:
+                tgt = cands[0]
+        if tgt is None:
+            out.append(u)
+            continue
+        merged += 1
+        notes = [x for x in (tgt.get("partner_notes"), u.get("partner_notes")) if x]
+        tgt["partner_notes"] = " ".join(dict.fromkeys(notes)) or None
+        tgt["link_ids"] = list(dict.fromkeys((tgt.get("link_ids") or []) + (u.get("link_ids") or [])))
+        tgt["features"] = list(dict.fromkeys((tgt.get("features") or []) + (u.get("features") or [])))
+        for k, v in u.items():
+            if v not in (None, "", []) and tgt.get(k) in (None, "", []):
+                tgt[k] = v
+    order = {id(u): i for i, u in enumerate(units)}
+    out.sort(key=lambda x: order.get(id(x), 0))
+    return out, merged
+
+
+def _name_matches(name: str, place: str) -> bool:
+    tr = str.maketrans("āēīōūčšžģķļņŗ", "aeiouczsgklnr")
+    toks = [t for t in re.findall(r"[a-z0-9]{3,}", name.lower().translate(tr)) if t not in ("eka", "centrs", "nams", "biroju")]
+    p = place.lower().translate(tr)
+    return bool(toks) and all(t in p for t in toks)
+
+
+def _geocode_name(name: str, city: str) -> Optional[dict]:
+    """Ēkas nosaukums («Basteja Pasāža») → {street, district}: Google Places teksta meklēšana (atrod biznesa
+    centrus pēc nosaukuma). Tikai LV, tikai ar mājas numuru un tikai, ja vietas nosaukums sakrīt."""
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key or not name:
+        return None
+    import urllib.parse
+    import urllib.request
+    q = f"{name}, {city or 'Rīga'}"
+    try:
+        req = urllib.request.Request(
+            "https://places.googleapis.com/v1/places:searchText",
+            data=json.dumps({"textQuery": q, "languageCode": "lv", "regionCode": "LV"}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Goog-Api-Key": key,
+                     "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.addressComponents"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            for pl in (json.loads(r.read().decode("utf-8")).get("places") or [])[:3]:
+                comp = {t: c["longText"] for c in pl.get("addressComponents") or [] for t in c.get("types") or []}
+                # vietas nosaukumā jābūt nosaukuma galvenajam vārdam (citādi «MCITY 2. ēka» → svešs objekts)
+                if not _name_matches(name, (pl.get("displayName") or {}).get("text") or ""):
+                    continue
+                if comp.get("route") and comp.get("street_number") and comp.get("country", "Latvija") in ("Latvija", "Latvia"):
+                    return {"street": f"{comp['route']} {comp['street_number']}",
+                            "district": comp.get("neighborhood") or None, "formatted": pl.get("formattedAddress")}
+    except Exception as e:
+        logger.info("partner_intake: places %r neizdevās: %s", name, e)
+    return None
+
+
+def _resolve_missing_addresses(data: dict) -> int:
+    """Adrese nav atrasta nekur dokumentā → ēkas nosaukums caur Google. Atrastā adrese = «pārbaudīt»."""
+    n = 0
+    for a in data.get("addresses") or []:
+        if a.get("street") or not a.get("building_name"):
+            continue
+        g = _geocode_name(a["building_name"], a.get("city") or "Rīga")
+        if not g:
+            continue
+        a["street"] = g["street"]
+        a["district"] = a.get("district") or g.get("district")
+        a["address_known"] = True
+        a["address_source"] = "google"
+        for u in a.get("units") or []:
+            u["confidence"] = min(float(u.get("confidence") or 0), 0.6)
+        data.setdefault("warnings", []).append(
+            f"Adrese «{a['building_name']}» atrasta pēc nosaukuma Google kartē: {g['formatted']} — pārbaudi.")
+        n += 1
+    return n
 
 
 def analyze(intake_id: str) -> dict:
@@ -797,9 +929,12 @@ def analyze(intake_id: str) -> dict:
         for u in a.get("units") or []:
             if _num(u.get("area_m2")):
                 covered.add(round(_num(u.get("area_m2")), 1))
+    # platības, kas minētas telpu piezīmēs (sastāvdaļas «32.7m2+22.4m2+10%») vai izlaistajos, arī skaitās redzētas
     skipped_txt = " ".join(json.dumps(x, ensure_ascii=False) for x in data.get("skipped_items") or [])
+    skipped_txt += " " + " ".join(f"{u.get('area_note') or ''} {u.get('partner_notes') or ''} {u.get('ref') or ''}"
+                                  for a in data.get("addresses") or [] for u in a.get("units") or [])
     skipped_nums = {round(float(x.replace(",", ".")), 1) for x in re.findall(r"\d{1,5}(?:[.,]\d{1,2})?", skipped_txt)}
-    missing = sorted(x for x in _doc_areas(text) if not any(abs(x - c) <= max(0.06, 0.005 * x) for c in covered | skipped_nums))
+    missing = sorted(x for x in _doc_areas(text.split("PARTNERA WEB LAPAS")[0]) if not any(abs(x - c) <= max(0.06, 0.005 * x) for c in covered | skipped_nums))
     stats["doc_areas_missing"] = missing
     if missing and len(missing) <= 40:
         hint = ("PĀRBAUDE: dokumentā minētas šīs platības, kas tavā iepriekšējā atbildē NAV ne `units`, ne `skipped_items`: "
@@ -810,6 +945,7 @@ def analyze(intake_id: str) -> dict:
         if fix:
             data, st2 = _merge_runs([data, fix])
             stats["coverage_rerun"] = st2
+    stats["addresses_geocoded"] = _resolve_missing_addresses(data)
     data["_meta"] = {"model": model, "seconds": round(time.time() - t0, 1), "text_chars": len(text),
                      "images": len(images), "consistency": stats}
     (d / "analysis.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -880,6 +1016,11 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
     out: list[dict] = []
     seen: set[int] = set()
     main = _find_bp(conn, street, city, district, building_name)
+    if (main is None or main.get("how") in ("name", "partner")) and street and _street_short(street):
+        # «Zigfrīda Annas Meierovica bulvāris 16» (Google/oficiāli) ↔ DB «Meierovica bulv. 16» (Basteja 2026-10-24)
+        short = _find_bp(conn, _street_short(street), city, district, None)
+        if short:
+            main, street = short, _street_short(street)
     if main:
         out.append(main); seen.add(main["id"])
     like = _street_like(street or "")
@@ -1155,7 +1296,12 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
         conn.read_only = True
         idx = 0
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
-            bps = _find_bps(conn, addr.get("street"), addr.get("city"), addr.get("district"), addr.get("building_name"))
+            bps = []
+            if addr.get("address_source") == "google" and addr.get("building_name"):
+                # mūsu DB ēkas nosaukums ir drošāks par Google atrasto adresi
+                by_name = _find_bp(conn, None, addr.get("city"), addr.get("district"), addr.get("building_name"))
+                bps = [by_name] if by_name else []
+            bps = bps or _find_bps(conn, addr.get("street"), addr.get("city"), addr.get("district"), addr.get("building_name"))
             ours = []
             per_bp = []
             for b in bps:
