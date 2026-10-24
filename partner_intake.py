@@ -151,6 +151,8 @@ def _street_key(street: str) -> str:
     """Tipa-neatkarīga ielas atslēga salīdzināšanai (kā paneļa street_search / dedup_street)."""
     s = (street or "").lower()
     s = s.translate(str.maketrans("āēīōūčšžģķļņŗ", "aeiouczsgklnr"))
+    # kopā rakstīts tips («Ganībudambis», «Brīvībasiela») → atdala (Domuss 2026-10-24: «jauna ēka» dublikāts)
+    s = re.sub(r"([a-z]{3,})(dambis|iela|gatve|prospekts|bulvaris|laukums|aleja|skersiela)\b", r"\1 \2", s)
     s = re.sub(r"\b(iela|street|prospekts|pr\.|bulvaris|bulv\.|gatve|gat\.|dambis|d\.|laukums|aleja|skerslela|šķērsiela)\b", " ", s)
     s = re.sub(r"[^a-z0-9]+", " ", s).strip()
     # iniciāļi («k. valdemāra» → «valdemāra»), lai LIKE neplūst pa visu DB
