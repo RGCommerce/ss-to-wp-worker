@@ -1295,6 +1295,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
         idx = 0
+        has_doc = any(Path(x.get("name") or x.get("path") or "").suffix.lower() in (".pdf", ".xlsx", ".xlsm", ".xls", ".docx", ".csv")
+                      for x in meta.get("attachments") or [])
+        total_units = sum(len(a.get("units") or []) for a in analysis.get("addresses") or [])
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
             bps = []
             if addr.get("address_source") == "google" and addr.get("building_name"):
@@ -1393,8 +1396,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             a_out["contact_phone"] = _resolve_contact_phone(conn, report.get("partner") or {}, bp, ours, a_out["units"])
             # mūsu telpas šajā ēkā, kuru partnera sarakstā nav → piedāvā atzīmēt kā iznomātas VIENMĒR (agrāk tikai, ja
             # AI nolēma «saraksts pilns» — Domuss 2026-10-24: AI teica «nē», un Ganību d. 25d 1512 m² netika ieteikts).
-            # Ķeksis pēc noklusējuma: ja saraksts izskatās pilns vai tajā ir ≥3 telpas; viena telpa e-pastā → bez ķekša.
-            default_on = bool(report["looks_complete"]) or len(a_out["units"]) >= 3
+            # Ķeksis pēc noklusējuma (Raimonds 2026-10-24): atsūtīts dokuments (PDF/Excel) ar telpām vai vairākas telpas
+            # = pilns saraksts; tikai viens birojs e-pastā → bez ķekša (var nebūt viss stāsts). Aģents vienmēr var noņemt.
+            default_on = bool(report["looks_complete"]) or has_doc or total_units >= 2
             if bp:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied":
