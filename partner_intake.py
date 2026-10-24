@@ -1045,6 +1045,8 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
 
 
 def _our_listings(conn, bp_id: int) -> list[dict]:
+    """Mūsu sludinājumi ēkā: mūsu avoti + VISS, kas ir mājaslapā (arī auto-publicētie ss.lv — Basteja 332 m²
+    #111385 bija mājaslapā, bet netika atpazīts, Raimonds 2026-10-24)."""
     return conn.execute(
         """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
                   on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
@@ -1053,7 +1055,7 @@ def _our_listings(conn, bp_id: int) -> list[dict]:
                   cardinality(local_image_paths_raw) AS n_raw
              FROM properties.listings
             WHERE building_profile_id = %s AND "Debug_status" = 'ok'
-              AND source = ANY(%s)
+              AND (source = ANY(%s) OR wp_post_id IS NOT NULL OR on_website = true)
             ORDER BY id DESC""",
         (bp_id, list(OUR_SOURCES)),
     ).fetchall()
@@ -1072,7 +1074,7 @@ def _our_listings_safe(conn, bp_id: int) -> list[dict]:
                       cardinality(local_image_paths_raw) AS n_raw
                  FROM properties.listings
                 WHERE building_profile_id = %s AND "Debug_status" = 'ok'
-                  AND source = ANY(%s)
+                  AND (source = ANY(%s) OR wp_post_id IS NOT NULL OR on_website = true)
                 ORDER BY id DESC""",
             (bp_id, list(OUR_SOURCES)),
         ).fetchall()
@@ -1251,6 +1253,27 @@ def _pdf_images_for_unit(intake_dir: Path, meta: dict, unit: dict) -> dict:
     return out
 
 
+def _image_attachments_for_unit(meta: dict, unit: dict, single_unit: bool) -> dict:
+    """E-pasta JPG/PNG pielikumi (Basteja: «plans biroja.jpg» + 8 WhatsApp foto) → kandidāti. Telpai pieder:
+    pielikums, kas nosaukts tās attachment_hint, vai VISI, ja telpa dokumentā ir viena. «plan/plān» nosaukumā = plāns."""
+    out = {"photos": [], "plans": []}
+    hint = ((unit.get("attachment_hint") or "") + " " + (unit.get("page_hint") or "")).lower()
+    for a in meta.get("attachments") or []:
+        name = a.get("name") or ""
+        if Path(name).suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+            continue
+        p = STORAGE_ROOT / a["path"]
+        if not p.is_file() or p.stat().st_size < 15_000:
+            continue   # paraksta ikonas (image001.png 7 KB) nav foto
+        stem = Path(name).stem.lower()
+        named = name.lower() in hint or stem in hint or (stem[:12] in hint and len(stem) >= 12)
+        if not (single_unit or named):
+            continue
+        rel = str(a["path"]).replace("\\", "/")
+        (out["plans"] if re.search(r"pl[aā]n|layout|shema|schem", stem) else out["photos"]).append(rel)
+    return out
+
+
 def _merge_same_addresses(addresses: list[dict]) -> list[dict]:
     """AI tabulu pāri lapām mēdz sadalīt divās «adresēs» ar to pašu ielu (MCITY Ulbrokas 23 → 13 + 6 telpas,
     «nav sarakstā» dubultā). Apvieno pēc ielas atslēgas + pilsētas (vai ēkas nosaukuma)."""
@@ -1316,7 +1339,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             if bp:
                 bp = {**bp, "alternatives": [{**b, "our_count": n} for n, b in per_bp[1:]]}
             matched_ids: set[int] = set()
-            a_out = {"street": addr.get("street"), "city": addr.get("city") or "Rīga", "district": addr.get("district"),
+            # Google atrastais garais nosaukums → DB ēkas adrese (jaunie listingi ar «Meierovica bulv. 16», ne «Zigfrīda Annas …»)
+            street_out = (bp.get("full_address") if (bp and addr.get("address_source") == "google" and bp.get("full_address")) else addr.get("street"))
+            a_out = {"street": street_out, "city": addr.get("city") or "Rīga", "district": addr.get("district"),
                      "building_name": addr.get("building_name"), "address_known": bool(addr.get("address_known", True)),
                      "bp": bp, "new_building": bp is None,
                      "our_count": sum(1 for l in ours if l.get("occupancy_status") != "occupied"),
@@ -1366,10 +1391,13 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     reactivate = match.get("occupancy_status") == "occupied"
                 elif len(cands) > 1:
                     status = "ambiguous"
-                images = {"pdf": _pdf_images_for_unit(d, meta, u) if addr.get("street") or addr.get("building_name") else {"photos": [], "plans": []},
+                pdf_imgs = _pdf_images_for_unit(d, meta, u) if addr.get("street") or addr.get("building_name") else {"photos": [], "plans": []}
+                att_imgs = _image_attachments_for_unit(meta, u, total_units == 1)
+                pdf_imgs = {"photos": pdf_imgs["photos"] + att_imgs["photos"], "plans": pdf_imgs["plans"] + att_imgs["plans"]}
+                images = {"pdf": pdf_imgs,
                           "links": _link_images_for_unit(d, intake_id, u),
                           "own_listings_with_images": [int(l["id"]) for l in ours if (l.get("n_processed") or 0) + (l.get("n_raw") or 0) > 0][:5],
-                          "sslv_inbox": _inbox_candidates(conn, addr.get("street") or "", addr.get("city"), floor, area, approx)
+                          "sslv_inbox": _inbox_candidates(conn, (bp or {}).get("full_address") or addr.get("street") or "", addr.get("city"), floor, area, approx)
                           if addr.get("street") else []}
                 has_photo = bool(images["pdf"]["photos"]) or bool(images["links"]["photos"]) or bool(images["sslv_inbox"]) or (match and ((match.get("n_processed") or 0) + (match.get("n_raw") or 0) > 0))
                 conf = float(u.get("confidence") or 0)
