@@ -248,17 +248,56 @@ def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
     save_sources(sources)
 
 
+def _set_scanning(sid: str, on: bool) -> None:
+    sources = load_sources()
+    for s in sources:
+        if s.get("id") == sid:
+            s["scanning"] = on
+            if on:
+                s["scanning_since"] = _now().isoformat()
+    save_sources(sources)
+
+
 def run_scan(sid: str, force: bool = False) -> dict:
     src = next((s for s in load_sources() if s.get("id") == sid), None)
     if src is None:
         raise ValueError("Nav tāda avota")
+    _set_scanning(sid, True)
     try:
         res = scan_source(src, force=force)
     except Exception as e:
         _apply_result(src, {"scanned_at": _now().isoformat()}, error=f"{type(e).__name__}: {str(e)[:200]}")
+        _set_scanning(sid, False)
         raise
     _apply_result(src, res)
+    _set_scanning(sid, False)
     return res
+
+
+_scan_threads: dict[str, "threading.Thread"] = {}
+
+
+def start_scan(sid: str, force: bool = False) -> dict:
+    """Panelim: skenēšana FONĀ (mapju bildes ~400 MB var ilgt 10–30 min; HTTP nedrīkst gaidīt).
+    Panelis redz `scanning` avotu sarakstā un pēc tam `last_result`."""
+    import threading
+    src = next((s for s in load_sources() if s.get("id") == sid), None)
+    if src is None:
+        raise ValueError("Nav tāda avota")
+    t = _scan_threads.get(sid)
+    if t is not None and t.is_alive():
+        return {"started": False, "already_running": True}
+    t = threading.Thread(target=lambda: _safe_run(sid, force), name=f"drive-scan-{sid}", daemon=True)
+    _scan_threads[sid] = t
+    t.start()
+    return {"started": True}
+
+
+def _safe_run(sid: str, force: bool) -> None:
+    try:
+        run_scan(sid, force=force)
+    except Exception as e:
+        logger.error("partner_drive %s: %s", sid, e)
 
 
 def maybe_scan_all() -> list[dict]:
@@ -267,6 +306,9 @@ def maybe_scan_all() -> list[dict]:
     for src in load_sources():
         if not src.get("enabled", True):
             continue
+        t = _scan_threads.get(src["id"])
+        if t is not None and t.is_alive():
+            continue   # panelis jau skenē šo avotu
         last = src.get("last_scan_at")
         due = True
         if last:

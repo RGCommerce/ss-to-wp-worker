@@ -169,7 +169,9 @@ def _street_like(street: str) -> Optional[str]:
     toks = [t + "[a-z]?" if t.isdigit() else re.escape(t) for t in toks]
     if len(toks) == 1:
         return r"(^|[^a-z0-9])" + toks[0] + r"($|[^a-z0-9])"
-    return r"(^|[^a-z0-9])" + r"[^a-z0-9]+.*?".join(toks) + r"($|[^a-z0-9])"
+    # starp daļām drīkst būt tikai VĀRDI (tips «iela», «gatve», «bulv.»), ne cipari — citādi «Duntes 3» atrada
+    # «Duntes 23a» un «Brīvības 39» → «Brīvības gatve 439» (Skanstes City 2026-10-25)
+    return r"(^|[^a-z0-9])" + r"[^a-z0-9]+(?:[a-z.]+[^a-z0-9]+)*?".join(toks) + r"($|[^a-z0-9])"
 
 
 def _street_short(street: str) -> Optional[str]:

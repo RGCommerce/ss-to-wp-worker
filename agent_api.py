@@ -1894,10 +1894,11 @@ def partner_drive_delete(sid: str, _auth: None = Depends(require_token)) -> dict
 
 @router.post("/partner-drive/scan/{sid}")
 def partner_drive_scan(sid: str, force: bool = False, _auth: None = Depends(require_token)) -> dict:
-    """Skenē tūlīt. force=1 → ieplūde arī tad, ja nekas nav mainījies (pirmais tests)."""
+    """Skenē tūlīt FONĀ (atbild uzreiz; panelis seko `scanning`/`last_result` avotu sarakstā).
+    force=1 → ieplūde arī tad, ja nekas nav mainījies (pirmais tests)."""
     import partner_drive
     try:
-        return {"ok": True, **partner_drive.run_scan(sid, force=force)}
+        return {"ok": True, **partner_drive.start_scan(sid, force=force)}
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
