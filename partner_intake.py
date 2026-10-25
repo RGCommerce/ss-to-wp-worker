@@ -165,7 +165,11 @@ def _street_like(street: str) -> Optional[str]:
     toks = _street_key(street).split()
     if not toks:
         return None
-    return r"(^|[^a-z0-9])" + r"[^a-z0-9]+.*?".join(re.escape(t) for t in toks) + r"($|[^a-z0-9])" if len(toks) > 1         else r"(^|[^a-z0-9])" + re.escape(toks[0]) + r"($|[^a-z0-9])"
+    # mājas nr. ar burtu (ss.lv «Dēļu 4s», «Ganību d. 25d») sakrīt ar «4»/«25» — bet ne «41» ar «4» (MBC 2026-10-25)
+    toks = [t + "[a-z]?" if t.isdigit() else re.escape(t) for t in toks]
+    if len(toks) == 1:
+        return r"(^|[^a-z0-9])" + toks[0] + r"($|[^a-z0-9])"
+    return r"(^|[^a-z0-9])" + r"[^a-z0-9]+.*?".join(toks) + r"($|[^a-z0-9])"
 
 
 def _street_short(street: str) -> Optional[str]:
@@ -1087,8 +1091,35 @@ def _area_close(a: Optional[float], b: Optional[float], approx: bool) -> bool:
     return abs(a - b) <= max(1.0, tol * max(a, b))
 
 
-def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: Optional[float], approx: bool) -> list[dict]:
-    """ss.lv inbox: tā pati iela + stāvs + platība → tie paši sludinājumi (foto avots)."""
+def _alt_areas(u: dict) -> list[float]:
+    """Citas platības, ar ko tā pati telpa var būt ss.lv: partnera piezīmēs minētās («194.83+10%» → 194.83;
+    «nr.201-9;32.7m2+201-20;22.4m2+10%» → 32.7, 22.4, 55.1) un neto bez ~10 % koplietošanas (MBC 2026-10-25:
+    aģents ss.lv liek neto 194, partneris sarakstā bruto 214,32)."""
+    area = _num(u.get("area_m2"))
+    nums: list[float] = []
+    for txt in (u.get("area_note"), u.get("partner_notes")):
+        t = str(txt or "")
+        t = re.sub(r"\d+(?:[.,]\d+)?\s*%", " ", t)          # «+10%» nav platība
+        t = re.sub(r"\b\d+\s*-\s*\d+\b", " ", t)             # telpu kodi «201-9» nav platība
+        for m in re.findall(r"(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv)?", t):
+            try:
+                v = float(m.replace(",", "."))
+            except ValueError:
+                continue
+            if 8 <= v <= 50000 and (not area or abs(v - area) > 0.5):
+                nums.append(round(v, 2))
+    nums = list(dict.fromkeys(nums))   # area_note un partner_notes bieži atkārto to pašu skaitli
+    out: list[float] = list(nums)
+    if 2 <= len(nums) <= 4:
+        out.append(round(sum(nums), 2))
+    if area and area >= 20:
+        out.append(round(area / 1.1, 2))   # bruto → neto (koplietošanas +10 %)
+    return [x for x in dict.fromkeys(out) if x]
+
+
+def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: Optional[float], approx: bool,
+                      alt_areas: Optional[list[float]] = None) -> list[dict]:
+    """ss.lv inbox: tā pati iela + stāvs + platība (vai alternatīvā neto platība) → tie paši sludinājumi (foto avots)."""
     like = _street_like(street)
     if not like or area is None:
         return []
@@ -1105,20 +1136,28 @@ def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: 
     fd = _floor_digits(floor)
     for r in rows:
         ra = _num(r["area_m2"])
-        if not _area_close(area, ra, True if approx else False) and not (ra and abs(area - ra) <= max(2.0, 0.05 * area)):
+        primary = _area_close(area, ra, True if approx else False) or bool(ra and abs(area - ra) <= max(2.0, 0.05 * area))
+        alt_hit = None if primary else next((a for a in (alt_areas or []) if ra and abs(a - ra) <= max(1.0, 0.02 * a)), None)
+        if not primary and alt_hit is None:
             continue
         rf = _floor_digits(r["floor"])
         floor_ok = (not fd) or (not rf) or fd == rf
+        if not primary and not floor_ok:
+            continue   # neto platība sakrīt, bet stāvs cits → ne tā pati telpa (74 m² 1.st ↔ 68 m² 2.st)
         score = 0.0
         if ra:
-            score = 1.0 - min(1.0, abs(area - ra) / max(area, 1.0))
+            base_area = area if primary else alt_hit
+            score = 1.0 - min(1.0, abs(base_area - ra) / max(base_area, 1.0))
+            if not primary:
+                score -= 0.15   # neto/alternatīvā platība — mazāk droši nekā tieša sakritība
         if floor_ok and fd and rf:
             score += 0.3
         out.append({"inbox_id": int(r["id"]), "street": r["street"], "area_m2": r["area_m2"], "floor": r["floor"],
                     "price": r["price"], "link": r["link"], "is_agent": str(r["is_agent"]).lower() == "true",
                     "phone": r.get("phone_numbers"),
                     "last_updated": str(r["last_updated"])[:10] if r["last_updated"] else None,
-                    "same_room_score": round(score, 2), "floor_ok": floor_ok})
+                    "same_room_score": round(score, 2), "floor_ok": floor_ok,
+                    "via_alt_area": None if primary else alt_hit})
     out.sort(key=lambda x: (-x["same_room_score"], x["last_updated"] or ""), reverse=False)
     out.sort(key=lambda x: x["same_room_score"], reverse=True)
     return out[:4]
@@ -1397,7 +1436,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 images = {"pdf": pdf_imgs,
                           "links": _link_images_for_unit(d, intake_id, u),
                           "own_listings_with_images": [int(l["id"]) for l in ours if (l.get("n_processed") or 0) + (l.get("n_raw") or 0) > 0][:5],
-                          "sslv_inbox": _inbox_candidates(conn, (bp or {}).get("full_address") or addr.get("street") or "", addr.get("city"), floor, area, approx)
+                          "sslv_inbox": _inbox_candidates(conn, (bp or {}).get("full_address") or addr.get("street") or "", addr.get("city"), floor, area, approx, _alt_areas(u))
                           if addr.get("street") else []}
                 has_photo = bool(images["pdf"]["photos"]) or bool(images["links"]["photos"]) or bool(images["sslv_inbox"]) or (match and ((match.get("n_processed") or 0) + (match.get("n_raw") or 0) > 0))
                 conf = float(u.get("confidence") or 0)
