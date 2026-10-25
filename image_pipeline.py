@@ -189,7 +189,7 @@ def process_bytes_checked(image_bytes: bytes, filename: str) -> bytes | None:
         out = _seedream_bytes(image_bytes, filename)
         if out is None:
             return None
-        wm = watermark_check.has_watermark_bytes(out)
+        wm = watermark_check.has_watermark_bytes(out, any_agency=True)   # ss.lv foto: arī citu aģentūru zīmes
         if wm is not True:
             return out  # tīra vai pārbaude neizdevās (fail-open)
         print(f"      ! ūdenszīme PALIKUSI pēc Seedream "

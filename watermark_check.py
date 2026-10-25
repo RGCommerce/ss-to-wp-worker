@@ -53,9 +53,24 @@ _VERIFY = os.getenv("VERIFY_SSL", os.getenv("WP_VERIFY_SSL", "1")) \
 
 CACHE_FILENAME = "_wm_check.json"
 
-# 2026-10-25 (Raimonds, MBC / Rent in Riga): skaitās ARĪ citu aģentūru ūdenszīmes, logo, «Autortiesības
-# pieder …», tālruņi — ne tikai ss.com. Reālas izkārtnes/numuri telpā neskaitās.
 WM_PROMPT = (
+    "You are checking a real-estate photo for the Latvian classifieds site "
+    "watermark. The ss.com / ss.lv watermark is large semi-transparent "
+    "white/grey text reading \"ss.com\" (often with the small line "
+    "\"sludinajumu serviss\" under it) or \"ss.lv\", usually in the TOP-LEFT "
+    "corner and/or a fainter copy in the BOTTOM-RIGHT corner of the photo.\n"
+    "Return ONLY a JSON object with EXACTLY these fields:\n"
+    "- \"watermark\": true if the ss.com/ss.lv watermark text is visible "
+    "anywhere in the image (even partially or faintly), false otherwise.\n"
+    "- \"where\": short note where it was seen (e.g. \"top-left\"), or \"\".\n"
+    "Other overlays (agency logos, phone numbers, EXIF stamps) do NOT count — "
+    "only the ss.com / ss.lv watermark. Return ONLY valid JSON."
+)
+
+# 2026-10-25 (Raimonds, MBC / Rent in Riga): ss.lv FOTO pēc Seedream pārbauda plašāk — skaitās ARĪ citu
+# aģentūru ūdenszīmes, logo, «Autortiesības pieder …», tālruņi. Lieto TIKAI image_pipeline.process_bytes_checked
+# (ss.lv bildes, kas tāpat iet caur Seedream), NE publicēšanas vārtā (plāni/aģenta bildes ar logo paliek kā ir).
+WM_PROMPT_ANY_AGENCY = (
     "You are checking a real-estate photo for watermarks overlaid on it. "
     "The Latvian classifieds site watermark ss.com / ss.lv is large semi-transparent "
     "white/grey text reading \"ss.com\" (often with the small line "
@@ -77,9 +92,10 @@ WM_PROMPT = (
 # Vision call
 # ---------------------------------------------------------------------------
 
-def has_watermark_bytes(image_bytes: bytes) -> bool | None:
+def has_watermark_bytes(image_bytes: bytes, any_agency: bool = False) -> bool | None:
     """Viena bilde → True (ir ss.com ūdenszīme) / False (tīra) / None (pārbaude
-    neizdevās — API kļūda vai nav atslēgas; sauciens pats lemj fail-open)."""
+    neizdevās — API kļūda vai nav atslēgas; sauciens pats lemj fail-open).
+    any_agency=True → skaitās arī citu aģentūru ūdenszīmes (tikai ss.lv foto pēc Seedream)."""
     if not OPENAI_API_KEY:
         return None
     b64 = base64.b64encode(image_bytes).decode("ascii")
@@ -89,7 +105,7 @@ def has_watermark_bytes(image_bytes: bytes) -> bool | None:
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": WM_PROMPT},
+                {"type": "text", "text": WM_PROMPT_ANY_AGENCY if any_agency else WM_PROMPT},
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/jpeg;base64,{b64}",
                                "detail": "low"}},
