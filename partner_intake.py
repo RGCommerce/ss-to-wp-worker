@@ -803,6 +803,21 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
     for a in base.get("addresses") or []:
         a["units"], n = _merge_near_duplicates(a.get("units") or [])
         dups += n
+    # viens izlasījums telpas lika pie ielas, otrs — pie «FLEX biroji» bez ielas (Skanstes City 2026-10-25) → tā pati
+    # telpa (stāvs + platība) paliek TIKAI pie adreses ar ielu; adrese bez ielas un bez telpām pazūd
+    with_street = {(_floor_digits(_floor_norm(u.get("floor"))), round(_num(u.get("area_m2")) or 0, 1))
+                   for a in base.get("addresses") or [] if a.get("street") for u in a.get("units") or []}
+    kept_addrs = []
+    for a in base.get("addresses") or []:
+        if not a.get("street"):
+            before = len(a.get("units") or [])
+            a["units"] = [u for u in a.get("units") or []
+                          if (_floor_digits(_floor_norm(u.get("floor"))), round(_num(u.get("area_m2")) or 0, 1)) not in with_street]
+            dups += before - len(a["units"])
+            if not a["units"]:
+                continue
+        kept_addrs.append(a)
+    base["addresses"] = kept_addrs
     weak = 0
     for a in base.get("addresses") or []:
         for u in a.get("units") or []:
