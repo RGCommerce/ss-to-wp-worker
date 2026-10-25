@@ -705,6 +705,14 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
     "project" = vēl neuzbūvēts / BTS / «pēc pieprasījuma»; citādi "standard".
 9h. Cena «No 10.00» / «no 10 €/m²» nozīmē: 10 IR cena (telpa «kā ir»; ar pielāgojumiem var būt vairāk) →
     `rent_per_m2_min` = 10, `rent_per_m2_max` = null, BEZ warning par to.
+9i. AUTOMĀTISKS DRIVE SKENĒJUMS (teksts sākas ar «AUTOMĀTISKS SKENĒJUMS»): telpas = cenu faila tabulas rindas
+    (platība, stāvs, tips, ēkas kods, statuss, noma, noma ar fit-out, apsaimniekošana) + TELPU MAPES rindas
+    (nosaukums = platība, stāvs, adrese, piezīme). Katrai telpai `link_ids` = tās mape (sakrīt platība + stāvs +
+    adrese). Ēkas kodu (S54A, B39, D3) atšifrē pēc mapju adresēm → `street`. Statuss «Pieejams» →
+    `available_from` «tagad»; «Q3 2026» → `available_from` «Q3 2026». Ja ir «Noma» un «Noma (ar Fit-Out)» —
+    `rent_per_m2_min` = noma (ja ir), citādi fit-out cena ar `partner_notes` «cena ar fit-out». FLEX tabulas
+    (Office no., workstations, Price EUR, IZNOMĀTS/PIEEJAMS) → tikai PIEEJAMS kā `offer_type` flex ar
+    `rent_total`; IZNOMĀTS → skipped_items. `looks_complete` = true (mape ir viss, kas partnerim brīvs).
 10. `looks_complete` = vai dokuments izskatās kā PILNS šī partnera brīvo telpu saraksts (vakanču saraksts,
     «aktuālais piedāvājums», mēneša lapa) — true; vai tikai dažas telpas/viena brošūra — false.
 11. `is_vacancy_offer=false`, ja e-pasts nav telpu piedāvājums (rēķins, sarakste, spams) — tad units tukšs.
@@ -2668,6 +2676,7 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
                 names = [f.get("name") or "" for f in json.loads(mp.read_text(encoding="utf-8")).get("files") or []]
             except Exception:
                 names = []
+        names = names + [str(x) for x in (l.get("rows") or [])]   # Drive skenējums: mapes NOSAUKUMS ir rindā («1000 m² (2.stāvs), Skanstes 54A»)
         l["name_areas"] = sorted({float(m.group(1).replace(",", ".")) for n in names
                                   for m in re.finditer(r"(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv\.?m|kvm)", n, re.I)})
         l["name_floors"] = sorted({int(m.group(1)) for n in names for m in re.finditer(r"(?<![\d.])(\d{1,2})\.?\s*st(?:āvs|avs|\.|_|)", n, re.I)})
@@ -2865,6 +2874,11 @@ async def run_loop(stop_event: asyncio.Event) -> None:
                 resume_pending_images()
             except Exception as e:
                 logger.warning("partner_intake: resume: %s", e)
+            try:
+                import partner_drive
+                await loop.run_in_executor(None, partner_drive.maybe_scan_all)
+            except Exception as e:
+                logger.warning("partner_intake: drive skenējums: %s", e)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=INTERVAL)
             except asyncio.TimeoutError:

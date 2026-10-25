@@ -1850,6 +1850,60 @@ def partner_intake_upload(
         raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
 
 
+# ---------------------------------------------------------------------------
+# 7g) PARTNERU DRIVE MAPJU AUTOMĀTISKA SKENĒŠANA (partner_drive.py): avoti + «Skenēt tagad»
+# ---------------------------------------------------------------------------
+
+class DriveSourceReq(BaseModel):
+    id: Optional[str] = None
+    name: str
+    folder: str                      # Drive mapes saite vai ID
+    price_files: list[str] = Field(default_factory=list)   # cenu failu saites/ID
+    agent_email: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    notes: Optional[str] = None
+    schedule: Optional[str] = None   # daily | weekly
+    enabled: Optional[bool] = None
+
+
+@router.get("/partner-drive/sources")
+def partner_drive_sources(_auth: None = Depends(require_token)) -> dict:
+    import partner_drive
+    return {"ok": True, "items": partner_drive.load_sources()}
+
+
+@router.post("/partner-drive/sources")
+def partner_drive_upsert(req: DriveSourceReq, _auth: None = Depends(require_token)) -> dict:
+    import partner_drive
+    data = req.model_dump(exclude_none=True)
+    try:
+        return {"ok": True, "source": partner_drive.upsert_source(data)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/partner-drive/sources/{sid}")
+def partner_drive_delete(sid: str, _auth: None = Depends(require_token)) -> dict:
+    import partner_drive
+    if not partner_drive.delete_source(sid):
+        raise HTTPException(404, "Nav tāda avota")
+    return {"ok": True}
+
+
+@router.post("/partner-drive/scan/{sid}")
+def partner_drive_scan(sid: str, force: bool = False, _auth: None = Depends(require_token)) -> dict:
+    """Skenē tūlīt. force=1 → ieplūde arī tad, ja nekas nav mainījies (pirmais tests)."""
+    import partner_drive
+    try:
+        return {"ok": True, **partner_drive.run_scan(sid, force=force)}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
+
+
 @router.get("/listing-source-file/{listing_id}")
 def listing_source_file(listing_id: int, _auth: None = Depends(require_token)):
     """Importētā listinga AVOTA PDF (oriģinālā brošūra) no volume."""
