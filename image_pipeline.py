@@ -67,9 +67,13 @@ SEEDREAM_VERSION = "eeb2857d94c49a5bcbc9d6c6057416e1d3b1a2735a16e08e4def9bf7ee22
 SEEDREAM_MODEL = "bytedance/seedream-5-lite"
 COST_PER_IMAGE_USD = 0.04
 
+# 2026-10-25 (Raimonds, MBC/Rent in Riga): noņem ARĪ citu aģentūru ūdenszīmes, logo, «Autortiesības pieder …»,
+# tālruņus — ne tikai ss.com stūros. Reālas izkārtnes/numuri telpā paliek.
 DEFAULT_PROMPT = (
-    "Recreate this exact real estate photo without the SS.com watermark "
-    "in the top-left and bottom-right corners. Preserve every detail "
+    "Recreate this exact real estate photo without ANY watermarks or overlays: remove the SS.com watermark "
+    "in the top-left and bottom-right corners AND any other agency watermark, logo, copyright notice "
+    "(e.g. 'Autortiesības pieder ...'), phone number or text that is overlaid on the photo, wherever it is. "
+    "Keep real-world signage and house numbers that are physically part of the scene. Preserve every detail "
     "identically: walls, floor, ceiling, windows, doors, fixtures, lighting, "
     "and overall composition. Output a clean, professional listing photo "
     "with slightly sharper details and natural colors. "

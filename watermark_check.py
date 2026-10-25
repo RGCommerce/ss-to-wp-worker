@@ -53,18 +53,23 @@ _VERIFY = os.getenv("VERIFY_SSL", os.getenv("WP_VERIFY_SSL", "1")) \
 
 CACHE_FILENAME = "_wm_check.json"
 
+# 2026-10-25 (Raimonds, MBC / Rent in Riga): skaitās ARĪ citu aģentūru ūdenszīmes, logo, «Autortiesības
+# pieder …», tālruņi — ne tikai ss.com. Reālas izkārtnes/numuri telpā neskaitās.
 WM_PROMPT = (
-    "You are checking a real-estate photo for the Latvian classifieds site "
-    "watermark. The ss.com / ss.lv watermark is large semi-transparent "
+    "You are checking a real-estate photo for watermarks overlaid on it. "
+    "The Latvian classifieds site watermark ss.com / ss.lv is large semi-transparent "
     "white/grey text reading \"ss.com\" (often with the small line "
     "\"sludinajumu serviss\" under it) or \"ss.lv\", usually in the TOP-LEFT "
-    "corner and/or a fainter copy in the BOTTOM-RIGHT corner of the photo.\n"
+    "corner and/or a fainter copy in the BOTTOM-RIGHT corner of the photo. "
+    "Other real-estate agencies also overlay their own watermarks: semi-transparent logos, "
+    "agency names, copyright notices such as 'Autortiesibas pieder ...', phone numbers "
+    "or website addresses.\n"
     "Return ONLY a JSON object with EXACTLY these fields:\n"
-    "- \"watermark\": true if the ss.com/ss.lv watermark text is visible "
+    "- \"watermark\": true if ANY such overlaid watermark/logo/copyright/phone text is visible "
     "anywhere in the image (even partially or faintly), false otherwise.\n"
     "- \"where\": short note where it was seen (e.g. \"top-left\"), or \"\".\n"
-    "Other overlays (agency logos, phone numbers, EXIF stamps) do NOT count — "
-    "only the ss.com / ss.lv watermark. Return ONLY valid JSON."
+    "Real-world signage, house numbers, shop signs or documents physically present in the scene "
+    "do NOT count — only overlays added on top of the photo. Return ONLY valid JSON."
 )
 
 
