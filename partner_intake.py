@@ -1582,11 +1582,14 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 images["sslv_inbox"] = [c for c in images["sslv_inbox"] if not (c["link"] in seen_links or seen_links.add(c["link"]))]
                 has_photo = bool(images["pdf"]["photos"]) or bool(images["links"]["photos"]) or bool(images["sslv_inbox"]) or (match and ((match.get("n_processed") or 0) + (match.get("n_raw") or 0) > 0))
                 conf = float(u.get("confidence") or 0)
-                needs_review = (status == "ambiguous" or conf < 0.6 or not u.get("space_type")
-                                or (u.get("deal") == "rent" and u.get("rent_per_m2_min") is None and u.get("rent_total") is None)
-                                or not a_out["address_known"])
-                decision = ("review" if needs_review else ("update" if (status == "match" and (diff or reactivate)) else
-                            ("keep" if status == "match" else "create")))
+                price_missing = u.get("deal") == "rent" and u.get("rent_per_m2_min") is None and u.get("rent_total") is None
+                # telpa JAU ir DB (sakrīt) → trūkstoša cena/tips nav iemesls «izlaist» — cena jau ir DB; noklusētais
+                # «jau DB — nemainīt» (Raimonds 2026-10-26: «kāpēc uzreiz nepiedāvāja jau ir DB?»)
+                needs_review = (status == "ambiguous" or conf < 0.6 or not a_out["address_known"]
+                                or (status != "match" and (not u.get("space_type") or price_missing)))
+                decision = ("review" if (needs_review and status != "match") else
+                            ("update" if (status == "match" and (diff or reactivate)) else
+                             ("keep" if status == "match" else "create")))
                 unit_out = {k: v for k, v in u.items() if not k.startswith("_")}
                 unit_out.update({"idx": idx, "floor_norm": floor, "status": status, "decision": decision,
                                  "matched_listing": {k: (str(v) if isinstance(v, datetime) else v)
