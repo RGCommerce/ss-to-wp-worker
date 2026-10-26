@@ -52,6 +52,7 @@ IMAP_PORT = int(os.getenv("PARTNER_IMAP_PORT", "993"))
 IMAP_USER = os.getenv("PARTNER_IMAP_USER")
 IMAP_PASSWORD = os.getenv("PARTNER_IMAP_PASSWORD")
 IMAP_FOLDER = os.getenv("PARTNER_IMAP_FOLDER", "INBOX")
+IMAP_EXTRA_FOLDERS = [f.strip() for f in os.getenv("PARTNER_IMAP_EXTRA_FOLDERS", "INBOX/spam,Junk,Spam").split(",") if f.strip()]
 IMAP_PROCESSED = os.getenv("PARTNER_IMAP_PROCESSED_FOLDER", "Processed")
 INTERVAL = int(os.getenv("PARTNER_INTAKE_INTERVAL", "120"))
 ALLOWED_FORWARDERS = {
@@ -361,56 +362,68 @@ def fetch_new_intakes() -> list[dict]:
     m = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=60)
     try:
         m.login(IMAP_USER, IMAP_PASSWORD)
-        typ, _ = m.select(IMAP_FOLDER)
-        if typ != "OK":
-            raise RuntimeError(f"IMAP select {IMAP_FOLDER} neizdevās")
-        typ, ids = m.search(None, "UNSEEN")
-        uids = ids[0].split() if typ == "OK" and ids and ids[0] else []
-        moved = False
-        for num in uids:
-            typ, data = m.fetch(num, "(RFC822)")
-            if typ != "OK" or not data or not isinstance(data[0], tuple):
+        # arī SPAM mape: inbox.eu filtrs mūsu pašu pārsūtītās vēstules (Raimonds «Vircava», Ieva «Sadarbības
+        # piedāvājums») lika spamā → worker tās neredzēja (2026-10-26). Sūtītāju tāpat filtrē ALLOWED_FORWARDERS.
+        for folder_name in [IMAP_FOLDER] + [f for f in IMAP_EXTRA_FOLDERS if f != IMAP_FOLDER]:
+            typ, _ = m.select(folder_name)
+            if typ != "OK":
+                if folder_name == IMAP_FOLDER:
+                    raise RuntimeError(f"IMAP select {IMAP_FOLDER} neizdevās")
                 continue
-            raw = data[0][1]
-            parsed = _parse_message(raw)
-            mid = parsed.get("message_id") or f"nomid:{hash(raw)}"
-            if mid in seen:
-                m.store(num, "+FLAGS", "\\Seen")
-                continue
-            seen.add(mid)
-            dom = parsed["forwarder_email"].split("@")[-1] if parsed.get("forwarder_email") else ""
-            if dom not in ALLOWED_FORWARDERS:
-                logger.info("partner_intake: ignorē sūtītāju %s (nav atļautajā sarakstā)", parsed.get("forwarder_email"))
-                m.store(num, "+FLAGS", "\\Seen")
-                continue
-            if not parsed["attachments_raw"] and len(parsed.get("body", "")) < 80:
-                logger.info("partner_intake: tukša vēstule no %s — izlaiž", parsed.get("forwarder_email"))
-                m.store(num, "+FLAGS", "\\Seen")
-                continue
-            meta = _store_intake(parsed, "imap")
-            out.append(meta)
-            m.store(num, "+FLAGS", "\\Seen")
-            # pārvieto uz Processed — TIKAI ja kopija tiešām izdevās (imaplib uz "NO" nemet kļūdu;
-            # inbox.eu mapes ir tikai zem INBOX/ → bez pārbaudes vēstule tiktu izdzēsta, 2026-10-21)
-            folder = _ensure_processed_folder(m)
-            if folder:
-                typ, _ = m.copy(num, folder)
-                if typ == "OK":
-                    m.store(num, "+FLAGS", "\\Deleted")
-                    moved = True
-                else:
-                    logger.warning("partner_intake: copy uz %s neizdevās (%s) — vēstule paliek INBOX kā izlasīta", folder, typ)
-        if moved:
-            try:
-                m.expunge()
-            except Exception:
-                pass
+            out.extend(_fetch_folder(m, seen))
     finally:
         try:
             m.logout()
         except Exception:
             pass
     _save_seen(seen)
+    return out
+
+
+def _fetch_folder(m: imaplib.IMAP4, seen: set[str]) -> list[dict]:
+    """Viena atvērta IMAP mape: neredzētās → intake; apstrādātās pārvieto uz Processed."""
+    out: list[dict] = []
+    typ, ids = m.search(None, "UNSEEN")
+    uids = ids[0].split() if typ == "OK" and ids and ids[0] else []
+    moved = False
+    for num in uids:
+        typ, data = m.fetch(num, "(RFC822)")
+        if typ != "OK" or not data or not isinstance(data[0], tuple):
+            continue
+        raw = data[0][1]
+        parsed = _parse_message(raw)
+        mid = parsed.get("message_id") or f"nomid:{hash(raw)}"
+        if mid in seen:
+            m.store(num, "+FLAGS", "\\Seen")
+            continue
+        seen.add(mid)
+        dom = parsed["forwarder_email"].split("@")[-1] if parsed.get("forwarder_email") else ""
+        if dom not in ALLOWED_FORWARDERS:
+            logger.info("partner_intake: ignorē sūtītāju %s (nav atļautajā sarakstā)", parsed.get("forwarder_email"))
+            m.store(num, "+FLAGS", "\\Seen")
+            continue
+        if not parsed["attachments_raw"] and len(parsed.get("body", "")) < 80:
+            logger.info("partner_intake: tukša vēstule no %s — izlaiž", parsed.get("forwarder_email"))
+            m.store(num, "+FLAGS", "\\Seen")
+            continue
+        meta = _store_intake(parsed, "imap")
+        out.append(meta)
+        m.store(num, "+FLAGS", "\\Seen")
+        # pārvieto uz Processed — TIKAI ja kopija tiešām izdevās (imaplib uz "NO" nemet kļūdu;
+        # inbox.eu mapes ir tikai zem INBOX/ → bez pārbaudes vēstule tiktu izdzēsta, 2026-10-21)
+        folder = _ensure_processed_folder(m)
+        if folder:
+            typ, _ = m.copy(num, folder)
+            if typ == "OK":
+                m.store(num, "+FLAGS", "\\Deleted")
+                moved = True
+            else:
+                logger.warning("partner_intake: copy uz %s neizdevās (%s) — vēstule paliek INBOX kā izlasīta", folder, typ)
+    if moved:
+        try:
+            m.expunge()
+        except Exception:
+            pass
     return out
 
 
