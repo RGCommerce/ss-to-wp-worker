@@ -23,7 +23,7 @@ logger = logging.getLogger("partner_web")
 
 MAX_DETAIL_PAGES = 60
 MAX_IMAGES_PER_PAGE = 25
-AREA_RE = re.compile(r"\d{1,5}(?:[.,]\d{1,2})?\s*(?:sqm|sq\.?\s*m|m²|m2|kv\.?\s*m|kvm)\b", re.I)
+AREA_RE = re.compile(r"\d{1,5}(?:[.,]\d{1,2})?\s*(?:sqm|sq\.?\s*m|m²|m\s?2|m\s*<sup>\s*2\s*</sup>|kv\.?\s*m|kvm)(?![0-9])", re.I)
 IMG_RE = re.compile(r'(?:data-src|data-lazy|data-original|src|href)\s*=\s*["\']([^"\']+\.(?:jpe?g|png|webp)(?:\?[^"\']*)?)["\']', re.I)
 PDF_RE = re.compile(r'href\s*=\s*["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']', re.I)
 SKIP_PATH = re.compile(r"(logo|icon|favicon|sprite|placeholder|avatar|flag|/themes/|/plugins/|emoji)", re.I)
@@ -100,25 +100,64 @@ def detail_links(raw: str, base_url: str) -> list[dict]:
     return [{"url": u, "row": rows.get(u, "")} for u in order]
 
 
-def _best_images(raw: str, page_url: str) -> list[str]:
-    """Bildes: lielākais variants katram failam (WP «-300x200» sīktēli ārā), bez logo/ikonām, tā paša domēna."""
+def _best_images(raw: str, page_url: str, any_domain: bool = False) -> list[str]:
+    """Bildes: lielākais variants katram failam (WP «-300x200», «_tn», «_thumb», «_web2» varianti), bez logo/ikonām.
+    any_domain=True — bilžu serveris var būt cits (Eften: rems.eften.lv), lieto lapas iekšējiem blokiem."""
     best: dict[str, tuple[int, str]] = {}
     for m in IMG_RE.finditer(raw):
         u = urljoin(page_url, html_mod.unescape(m.group(1)))
-        if not _same_site(u, page_url) and "wp-content" not in u:
+        if not any_domain and not _same_site(u, page_url) and "wp-content" not in u:
             continue
         if SKIP_PATH.search(u):
             continue
-        path = urlparse(u).path
+        path = urlparse(u).netloc + urlparse(u).path
         mm = re.search(r"-(\d{2,4})x(\d{2,4})(\.\w+)$", path)
+        ms = re.search(r"_(tn|thumb|thumbnail|small|sm|xs|web\d*|md|medium|large|lg)(\.\w+)$", path, re.I)
         if mm:
             base = path[: mm.start()] + mm.group(3)
             score = int(mm.group(1)) * int(mm.group(2))
+        elif ms:
+            base = path[: ms.start()] + ms.group(2)
+            tag = ms.group(1).lower()
+            score = 100 if tag in ("tn", "thumb", "thumbnail", "small", "sm", "xs") else (8_000_000 if tag in ("large", "lg") else 5_000_000)
         else:
             base, score = path, 10_000_000   # oriģināls bez izmēra = lielākais
         if base not in best or score > best[base][0]:
             best[base] = (score, u)
-    return [u for _, u in list(best.values())[:MAX_IMAGES_PER_PAGE]]
+    return [u for sc, u in list(best.values()) if sc > 100][:MAX_IMAGES_PER_PAGE] or [u for _, u in list(best.values())][:MAX_IMAGES_PER_PAGE]
+
+
+def inline_blocks(raw: str, base_url: str) -> list[dict]:
+    """Visas telpas VIENĀ lapā (bez atsevišķām lapām — Eften: modāļi «object_196» ar galeriju + tabulu).
+    Atrod atkārtotus elementus ar id «<prefikss><numurs>», kuru saturā ir platība → katrs = telpa."""
+    hits = [(m.start(), m.group(1), m.group(1) + m.group(2)) for m in re.finditer(r'<(?:div|section|article|li)[^>]*\sid="([a-zA-Z_-]+?)(\d+)"', raw)]
+    by_prefix: dict[str, list[tuple[int, str]]] = {}
+    for pos, pref, full in hits:
+        if pref.startswith(("menu", "nav", "post-", "comment")):
+            continue
+        by_prefix.setdefault(pref, []).append((pos, full))
+    best: list[dict] = []
+    for pref, occ in by_prefix.items():
+        if len(occ) < 2:
+            continue
+        blocks = []
+        for k, (pos, full) in enumerate(occ):
+            end = occ[k + 1][0] if k + 1 < len(occ) else min(len(raw), pos + 40000)
+            seg = raw[pos:end]
+            if not AREA_RE.search(seg):
+                continue
+            blocks.append({"url": f"{base_url.split('#')[0]}#{full}", "row": "", "html": seg})
+        # vienāds skaits (kartiņas + modāļi ar tām pašām telpām) → ņem bagātākos (vairāk teksta + bilžu)
+        def _rich(bl):
+            return sum(len(x["html"]) for x in bl)
+        if len(blocks) > len(best) or (len(blocks) == len(best) and _rich(blocks) > _rich(best)):
+            best = blocks
+    out = []
+    for b in best[:MAX_DETAIL_PAGES]:
+        text = visible_text(b["html"])
+        row = " ".join(x for x in text.split("\n") if x.strip())[:300]
+        out.append({"url": b["url"], "row": row, "text": text, "images": _best_images(b["html"], base_url, any_domain=True), "pdfs": []})
+    return out
 
 
 def collect(url: str) -> dict:
@@ -127,7 +166,15 @@ def collect(url: str) -> dict:
     list_text = visible_text(raw)
     fp = hashlib.sha1(_norm_for_fp(list_text).encode("utf-8")).hexdigest()
     out = {"url": url, "list_text": list_text, "fingerprint": fp, "details": []}
-    for d in detail_links(raw, url):
+    mb = re.search(r'<base\s+href="([^"]+)"', raw, re.I)
+    base = mb.group(1) if mb else url   # <base href> maina relatīvo saišu bāzi (Eften: «lv/…/408/196/»)
+    links = detail_links(raw, base)
+    inline = inline_blocks(raw, url)
+    if inline and len(inline) >= max(2, len(links)):
+        # visas telpas jau ir šajā lapā (modāļi ar galeriju + tabulu, Eften) — bez papildu ielādes
+        out["details"] = inline
+        return out
+    for d in links:
         try:
             draw = _get(d["url"])
         except Exception as e:
