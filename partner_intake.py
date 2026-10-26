@@ -837,6 +837,13 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
                 continue
         kept_addrs.append(a)
     base["addresses"] = kept_addrs
+    # absurdas platības (ha nolasīts kā m²: «3,92 ha» → 3.92 m², Realto Vircava 2026-10-26) → ārā + warning
+    for a in base.get("addresses") or []:
+        bad = [u for u in a.get("units") or [] if _num(u.get("area_m2")) is not None and 0 < _num(u.get("area_m2")) < 5]
+        if bad:
+            a["units"] = [u for u in a["units"] if u not in bad]
+            base.setdefault("warnings", []).append(
+                "Izlaistas telpas ar platību zem 5 m² (visticamāk ha nolasīts kā m²): " + ", ".join(str(u.get("area_m2")) for u in bad))
     weak = 0
     for a in base.get("addresses") or []:
         for u in a.get("units") or []:
@@ -1355,6 +1362,73 @@ def _image_attachments_for_unit(meta: dict, unit: dict, single_unit: bool) -> di
     return out
 
 
+_SSLV_MSG_RE = re.compile(r"https?://(?:www\.)?ss\.(?:lv|com)/msg/[^\s<>\")\]]+", re.I)
+
+
+def _email_sslv_candidates(d: Path) -> list[dict]:
+    """Partnera e-pastā/PDF ieliktie ss.lv/ss.com sludinājumu linki (Realto «Vircava»: «Ir aktīvs sludinājums … <ss.com/msg/…>»)
+    → tādi paši kandidāti kā no mūsu inbox (galerija → bildes), arī ja reģionu mūsu skrāperis neskenē.
+    Kešs intake mapē sslv_links.json."""
+    cache_p = d / "sslv_links.json"
+    if cache_p.is_file():
+        try:
+            return json.loads(cache_p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    texts = []
+    if (d / "body.txt").is_file():
+        texts.append((d / "body.txt").read_text(encoding="utf-8", errors="ignore"))
+    try:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        for a in meta.get("attachments") or []:
+            if str(a.get("name", "")).lower().endswith(".pdf"):
+                import pymupdf
+                with pymupdf.open(str(STORAGE_ROOT / a["path"])) as doc:
+                    for page in doc:
+                        texts.append(page.get_text() or "")
+                        for l in page.get_links():
+                            if l.get("uri"):
+                                texts.append(l["uri"])
+    except Exception:
+        pass
+    urls = list(dict.fromkeys(m.group(0).split("#")[0].rstrip(".,;") for t in texts for m in _SSLV_MSG_RE.finditer(t)))
+    out: list[dict] = []
+    for url in urls[:10]:
+        try:
+            import ai_text_helpers as helpers
+            import sslv_import
+            info = sslv_import.parse_sslv_url(url)
+            html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
+            det = sslv_import.parse_detail_page(html_doc)
+            gallery = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+            out.append({"inbox_id": 0, "street": det.get("street"), "city": det.get("city"), "area_m2": str(det["area_m2"]) if det.get("area_m2") else None,
+                        "floor": str(det["floor"]) if det.get("floor") is not None else None, "price": str(det["price"]) if det.get("price") is not None else None,
+                        "link": info["canonical_link"], "is_agent": False, "phone": None, "last_updated": None,
+                        "same_room_score": 1.5, "floor_ok": True, "from_email": True, "gallery_n": len(gallery)})
+        except Exception as e:
+            logger.info("partner_intake: e-pasta ss.lv links %s nenolasās: %s", url, e)
+    cache_p.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    return out
+
+
+def _email_sslv_for_unit(cands: list[dict], u: dict, n_units_total: int) -> list[dict]:
+    """Kurš e-pasta ss.lv links pieder šai telpai: platība ±5 % (vai ss.lv bez platības); ja dokumentā ir tikai
+    1 telpa (vai 1 ēka ar nomas+pārdošanas variantiem — Vircava) un 1 links → tas."""
+    if not cands:
+        return []
+    area = _num(u.get("area_m2"))
+    hits = []
+    for c in cands:
+        ca = _num(c.get("area_m2"))
+        if area and ca and abs(area - ca) <= max(2.0, 0.05 * max(area, ca)):
+            hits.append(c)
+        elif not ca and (len(cands) == 1):
+            hits.append(c)
+    if not hits and len(cands) == 1 and n_units_total <= 2:
+        hits = cands
+    return hits
+
+
 def _merge_same_addresses(addresses: list[dict]) -> list[dict]:
     """AI tabulu pāri lapām mēdz sadalīt divās «adresēs» ar to pašu ielu (MCITY Ulbrokas 23 → 13 + 6 telpas,
     «nav sarakstā» dubultā). Apvieno pēc ielas atslēgas + pilsētas (vai ēkas nosaukuma)."""
@@ -1402,6 +1476,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
         has_doc = any(Path(x.get("name") or x.get("path") or "").suffix.lower() in (".pdf", ".xlsx", ".xlsm", ".xls", ".docx", ".csv")
                       for x in meta.get("attachments") or [])
         total_units = sum(len(a.get("units") or []) for a in analysis.get("addresses") or [])
+        email_sslv = _email_sslv_candidates(d)   # partnera e-pastā ieliktie ss.lv sludinājumi (galerija bildēm)
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
             bps = []
             if addr.get("address_source") == "google" and addr.get("building_name"):
@@ -1478,8 +1553,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 images = {"pdf": pdf_imgs,
                           "links": _link_images_for_unit(d, intake_id, u),
                           "own_listings_with_images": [int(l["id"]) for l in ours if (l.get("n_processed") or 0) + (l.get("n_raw") or 0) > 0][:5],
-                          "sslv_inbox": _inbox_candidates(conn, (bp or {}).get("full_address") or addr.get("street") or "", addr.get("city"), floor, area, approx, _alt_areas(u))
-                          if addr.get("street") else []}
+                          "sslv_inbox": _email_sslv_for_unit(email_sslv, u, total_units)
+                          + (_inbox_candidates(conn, (bp or {}).get("full_address") or addr.get("street") or "", addr.get("city"), floor, area, approx, _alt_areas(u))
+                             if addr.get("street") else [])}
+                seen_links: set[str] = set()
+                images["sslv_inbox"] = [c for c in images["sslv_inbox"] if not (c["link"] in seen_links or seen_links.add(c["link"]))]
                 has_photo = bool(images["pdf"]["photos"]) or bool(images["links"]["photos"]) or bool(images["sslv_inbox"]) or (match and ((match.get("n_processed") or 0) + (match.get("n_raw") or 0) > 0))
                 conf = float(u.get("confidence") or 0)
                 needs_review = (status == "ambiguous" or conf < 0.6 or not u.get("space_type")
