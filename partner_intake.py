@@ -562,6 +562,15 @@ def build_ai_input(intake_dir: Path, meta: dict) -> tuple[str, list[dict]]:
             same.setdefault("geo", []).append(geo)
             continue
         links.append({**fl, "id": f"L{len(links) + 1}", "rows": [fl["row_text"]], "geo": [geo]})
+    # mājaslapas skenējums (partner_web): telpu lapas ar bildēm kā saites L1.. tādā pašā secībā kā body tekstā
+    wl_p = intake_dir / "web_links.json"
+    if wl_p.is_file():
+        try:
+            for wl in json.loads(wl_p.read_text(encoding="utf-8")):
+                links.append({"url": wl["url"], "source": "mājaslapa", "page": None, "id": f"L{len(links) + 1}",
+                              "rows": [wl.get("row_text") or ""], "geo": [{"areas": [], "floor": None, "rents": []}], "kind": "web"})
+        except Exception:
+            pass
     (intake_dir / "links.json").write_text(json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8")
     # partnera web lapas (Realto: «Telpas Purvciemā - 104 m2 <realto.lv/property/...>») — tur ir ADRESE, kuras
     # e-pastā nav («Dz74»); izlasām un dodam AI kā vēl vienu avotu
@@ -732,6 +741,13 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
     `rent_per_m2_min` = noma (ja ir), citādi fit-out cena ar `partner_notes` «cena ar fit-out». FLEX tabulas
     (Office no., workstations, Price EUR, IZNOMĀTS/PIEEJAMS) → tikai PIEEJAMS kā `offer_type` flex ar
     `rent_total`; IZNOMĀTS → skipped_items. `looks_complete` = true (mape ir viss, kas partnerim brīvs).
+9j. MĀJASLAPAS SKENĒJUMS (teksts sākas ar «AUTOMĀTISKS SKENĒJUMS — partnera … mājaslapa»): katra «TELPAS LAPA Ln»
+    = viena telpa ar `link_ids` [«Ln»]; adrese no kartiņas/lapas (angļu «street» → iela, «K. Barona street 15» →
+    «K. Barona iela 15»); «Size 500 sqm» = platība; «Floor 4» = stāvs; «EUR 10.50++ / sqm» → `rent_per_m2_min` 10.5 un
+    `utilities_note` «plus apsaimniekošana/komunālie»; «EUR 325.00++ / sqm» pie 65 m² pagraba = visticamāk kopējā cena
+    mēnesī (325/65 = 5 €/m²) → `rent_total`; apsaimniekošanas maksu no apraksta («service fee EUR 2.95/sqm») →
+    `maintenance_per_m2`; `looks_complete` = true. Ēkas aprakstu (visa ēka, citas platības «from 110 to 335 sqm»)
+    NEpārvērt par telpām.
 10. `looks_complete` = vai dokuments izskatās kā PILNS šī partnera brīvo telpu saraksts (vakanču saraksts,
     «aktuālais piedāvājums», mēneša lapa) — true; vai tikai dažas telpas/viena brošūra — false.
 11. `is_vacancy_offer=false`, ja e-pasts nav telpu piedāvājums (rēķins, sarakste, spams) — tad units tukšs.
@@ -2915,7 +2931,7 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
                 names = []
         names = names + [str(x) for x in (l.get("rows") or [])]   # Drive skenējums: mapes NOSAUKUMS ir rindā («1000 m² (2.stāvs), Skanstes 54A»)
         l["name_areas"] = sorted({float(m.group(1).replace(",", ".")) for n in names
-                                  for m in re.finditer(r"(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv\.?m|kvm)", n, re.I)})
+                                  for m in re.finditer(r"(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv\.?m|kvm|sqm|sq\.?\s*m)", n, re.I)})
         l["name_floors"] = sorted({int(m.group(1)) for n in names for m in re.finditer(r"(?<![\d.])(\d{1,2})\.?\s*st(?:āvs|avs|\.|_|)", n, re.I)})
     stats = {"geometry": 0, "folder": 0, "ai": 0, "none": 0}
     for a in analysis.get("addresses") or []:

@@ -1889,7 +1889,9 @@ def partner_intake_upload(
 class DriveSourceReq(BaseModel):
     id: Optional[str] = None
     name: str
-    folder: str                      # Drive mapes saite vai ID
+    kind: Optional[str] = None       # drive (noklusēti) | web
+    folder: Optional[str] = None     # Drive mapes saite vai ID
+    url: Optional[str] = None        # mājaslapas saraksta lapa (kind=web)
     price_files: list[str] = Field(default_factory=list)   # cenu failu saites/ID
     agent_email: Optional[str] = None
     contact_name: Optional[str] = None

@@ -70,10 +70,17 @@ def _drive_id(value: str, kind: str) -> Optional[str]:
 
 
 def upsert_source(data: dict) -> dict:
-    """Panelis: {id?, name, folder, price_files: [saite...], agent_email, schedule, enabled}."""
-    folder_id = _drive_id(data.get("folder") or data.get("folder_id") or "", "folder")
-    if not folder_id:
-        raise ValueError("Drive mapes saite nav atpazīta")
+    """Panelis: {id?, kind: drive|web, name, folder | url, price_files: [saite...], agent_email, schedule, enabled}."""
+    kind = (data.get("kind") or ("web" if data.get("url") else "drive")).strip().lower()
+    web_url = (data.get("url") or "").strip()
+    folder_id = None
+    if kind == "web":
+        if not re.match(r"^https?://[^\s]+$", web_url):
+            raise ValueError("Mājaslapas saite nav derīga (jāsākas ar http)")
+    else:
+        folder_id = _drive_id(data.get("folder") or data.get("folder_id") or "", "folder")
+        if not folder_id:
+            raise ValueError("Drive mapes saite nav atpazīta")
     price_ids = []
     for x in data.get("price_files") or []:
         fid = _drive_id(x, "file")
@@ -87,7 +94,7 @@ def upsert_source(data: dict) -> dict:
     cur = next((s for s in sources if s.get("id") == sid), None)
     src = {
         **(cur or {}),
-        "id": sid, "name": name, "folder_id": folder_id, "price_file_ids": price_ids,
+        "id": sid, "name": name, "kind": kind, "folder_id": folder_id, "url": web_url or None, "price_file_ids": price_ids,
         "agent_email": (data.get("agent_email") or (cur or {}).get("agent_email") or "raimonds@rgcommerce.lv").strip().lower(),
         "contact_name": (data.get("contact_name") or (cur or {}).get("contact_name") or "").strip(),
         "contact_email": (data.get("contact_email") or (cur or {}).get("contact_email") or "").strip(),
@@ -171,8 +178,55 @@ def _body_text(src: dict, entries: list[dict], scanned_at: datetime) -> str:
     return "\n".join(lines)
 
 
+def scan_web_source(src: dict, force: bool = False) -> dict:
+    """Mājaslapas avots: saraksta lapa (nospiedums) → ja mainījies → detaļu lapas + bildes → ieplūde."""
+    import partner_intake
+    import partner_web
+    scanned_at = _now()
+    col = partner_web.collect(src["url"])
+    fp = col["fingerprint"]
+    result: dict[str, Any] = {"source_id": src["id"], "scanned_at": scanned_at.isoformat(), "unit_folders": len(col["details"]),
+                              "price_files": 0, "changed": fp != src.get("last_fingerprint"), "fingerprint": fp,
+                              "intake_id": None, "skipped": None}
+    if not result["changed"] and not force:
+        return result
+    if not col["details"]:
+        raise RuntimeError("Lapā neatradu nevienu telpas lapu (saites ar platību) — vajag citu URL vai pielāgojumu")
+    prev = src.get("last_intake_id")
+    if prev and not force:
+        mp = partner_intake.INTAKE_DIR / prev / "meta.json"
+        if mp.is_file():
+            try:
+                st = json.loads(mp.read_text(encoding="utf-8")).get("status")
+            except Exception:
+                st = None
+            if st in ("new", "ready"):
+                result["skipped"] = f"iepriekšējais piedāvājums {prev} vēl nav apstiprināts"
+                return result
+    parsed = {
+        "message_id": f"web:{src['id']}:{fp[:12]}",
+        "forwarder_name": src.get("name"), "forwarder_email": src.get("agent_email") or "raimonds@rgcommerce.lv",
+        "subject": f"{src['name']} — mājaslapas skenējums {scanned_at.strftime('%Y-%m-%d')}",
+        "body": partner_web.body_text(src, col, scanned_at),
+        "orig_sender": {"name": src.get("contact_name") or src.get("name"), "email": src.get("contact_email") or ""},
+        "attachments_raw": [], "date": scanned_at.isoformat(),
+    }
+    meta = partner_intake._store_intake(parsed, "web")
+    meta["drive_source_id"] = src["id"]
+    meta["drive_fingerprint"] = fp
+    d = partner_intake.INTAKE_DIR / meta["intake_id"]
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    (d / "web_links.json").write_text(json.dumps(partner_web.web_links(col), ensure_ascii=False, indent=1), encoding="utf-8")
+    result["intake_id"] = meta["intake_id"]
+    rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
+    result["summary"] = rep.get("summary")
+    return result
+
+
 def scan_source(src: dict, force: bool = False) -> dict:
     """Viens avots: mapes saraksts + cenu faili → nospiedums → ja mainījies (vai force) → ieplūde."""
+    if (src.get("kind") or "drive") == "web":
+        return scan_web_source(src, force=force)
     import link_media
     import partner_intake
     scanned_at = _now()

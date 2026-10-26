@@ -117,6 +117,9 @@ def fetch_link(intake_dir: Path, link_id: str, url: str) -> dict:
     d.mkdir(parents=True, exist_ok=True)
     res: dict = {"link_id": link_id, "url": url, "kind": kind[0] if kind else None, "files": [], "error": None}
     if not kind:
+        web = _web_link_spec(intake_dir, url)
+        if web:
+            return _fetch_web_link(d, man_p, res, web)
         res["error"] = "neatbalstīta saite"
         man_p.write_text(json.dumps(res, ensure_ascii=False), encoding="utf-8")
         return res
@@ -150,6 +153,57 @@ def fetch_link(intake_dir: Path, link_id: str, url: str) -> dict:
                 (d / name).write_bytes(data)
                 res["files"].append({"name": e["path"], "file": name, "size": len(data),
                                      "type": "image" if ext in IMG_EXT else ("pdf" if ext == ".pdf" else "doc")})
+    except Exception as e:
+        res["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+    man_p.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
+    return res
+
+
+def _web_link_spec(intake_dir: Path, url: str) -> Optional[dict]:
+    """Mājaslapas skenējums (partner_web): web_links.json rinda ar bilžu/PDF URL šai lapai."""
+    p = intake_dir / "web_links.json"
+    if not p.is_file():
+        return None
+    try:
+        for x in json.loads(p.read_text(encoding="utf-8")):
+            if x.get("url") == url:
+                return x
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_web_link(d: Path, man_p: Path, res: dict, spec: dict) -> dict:
+    """Lejupielādē telpas lapas bildes + PDF (plāns) → links/<Lid>/. Mazas (<8 KB) = ikonas → izmet."""
+    res["kind"] = "web"
+    items = [(u, "image") for u in (spec.get("images") or [])[:MAX_FILES_PER_LINK]] + [(u, "pdf") for u in (spec.get("pdfs") or [])[:3]]
+
+    def _one(it):
+        u, t = it
+        try:
+            return it, _get(u, timeout=40)
+        except Exception as ex:
+            return it, ex
+
+    try:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for (u, t), data in ex.map(_one, items):
+                if isinstance(data, Exception) or not data or (t == "image" and len(data) < 8000):
+                    res["files"].append({"name": u, "error": type(data).__name__ if isinstance(data, Exception) else "nav"})
+                    continue
+                base = _safe(u.split("?")[0].rsplit("/", 1)[-1]) or "fails"
+                ext = Path(base).suffix.lower()
+                if t == "pdf" and ext != ".pdf":
+                    base += ".pdf"
+                elif t == "image" and ext not in IMG_EXT:
+                    base += ".jpg"
+                name = base
+                i = 1
+                while (d / name).exists():
+                    name = f"{Path(base).stem}_{i}{Path(base).suffix}"
+                    i += 1
+                (d / name).write_bytes(data)
+                res["files"].append({"name": u.rsplit("/", 1)[-1], "file": name, "size": len(data), "type": t})
     except Exception as e:
         res["error"] = f"{type(e).__name__}: {str(e)[:160]}"
     man_p.write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
