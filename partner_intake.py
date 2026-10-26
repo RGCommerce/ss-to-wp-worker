@@ -2886,6 +2886,7 @@ def list_intakes(limit: int = 50) -> list[dict]:
             except Exception:
                 pass
         out.append({"intake_id": meta["intake_id"], "status": meta.get("status"), "received_at": meta.get("received_at"),
+                    "source": meta.get("source") or "imap",   # imap | panel | drive | web — paneļa cilnēm
                     "forwarder": meta.get("forwarder_email"), "subject": meta.get("subject"),
                     "attachments": [a["name"] for a in meta.get("attachments", [])], "report": rep,
                     "error": meta.get("error"),
