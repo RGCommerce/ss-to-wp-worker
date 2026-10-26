@@ -1580,6 +1580,7 @@ class PartnerApplyReq(BaseModel):
     decisions: dict[str, Any]
     requested_by: Optional[str] = None
     wp_user_id: int = 0
+    dry_run: bool = False   # tikai parāda, ko rakstītu (agrāk lauks tika ignorēts → «dry» apply rakstīja DB, 2026-10-26)
 
 
 @router.post("/partner-intake/{intake_id}/apply")
@@ -1588,7 +1589,7 @@ def partner_intake_apply(intake_id: str, req: PartnerApplyReq, _auth: None = Dep
     if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
         raise HTTPException(400, "Nederīgs intake_id")
     try:
-        return {"ok": True, **partner_intake.apply(intake_id, req.decisions, req.requested_by, req.wp_user_id)}
+        return {"ok": True, **partner_intake.apply(intake_id, req.decisions, req.requested_by, req.wp_user_id, dry_run=req.dry_run)}
     except partner_intake.ApplyError as e:
         raise HTTPException(409, str(e))
     except FileNotFoundError:
