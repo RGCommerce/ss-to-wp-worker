@@ -1544,6 +1544,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 idx += 1
                 u = dict(u)
                 u["_idx"] = idx
+                if u.get("rent_total") and _num(u.get("area_m2")) and u.get("rent_per_m2_min") is None:
+                    u["rent_per_m2_min"] = round(float(u["rent_total"]) / float(_num(u["area_m2"])), 2)
                 area = _num(u.get("area_m2"))
                 floor = _floor_norm(u.get("floor"))
                 fd = _floor_digits(floor)
@@ -2101,13 +2103,17 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
         sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no izvēlētā (1.) kandidāta galerijas
     elif ((u.get("images") or {}).get("links") or {}).get("photos"):
         sslv = []   # partnerim ir savas (Drive) bildes — ss.lv (ar ūdenszīmēm) pēc noklusējuma neņem
-    for cand in sslv[:2]:
+    for cand in sslv[:4]:
         try:
             import ai_text_helpers as helpers
             import download_images
             import sslv_import
             info = sslv_import.parse_sslv_url(cand["link"])
             html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
+            ok, why = _sslv_live_matches(html_doc, _unit_street(intake_id, u.get("idx")), u)
+            if not ok:
+                logger.info("partner_intake %s: ss.lv %s neatbilst telpai (%s) — izlaiž", intake_id, cand["link"], why)
+                continue
             gallery = _alive_sslv_images((helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS])
             if sel_sslv is not None:
                 want = set(sel_sslv)
@@ -2479,6 +2485,46 @@ def resume_pending_images() -> int:
     return started
 
 
+def _sslv_live_matches(html_doc: str, street: Optional[str], unit: dict) -> tuple[bool, str]:
+    """Dzīvā ss.lv lapa TAGAD (ne mūsu inbox kopija): vai iela+nr un platība sakrīt ar telpu?
+    ss.lv linkus pārizmanto citiem sludinājumiem (Spire B171 198 m² → links tagad «Piena 2, 46 m²», Raimonds
+    2026-10-26: «ja nav equal real-time datiem — vispār neiet iekšā»). Atgriež (ok, apraksts)."""
+    import sslv_import
+    try:
+        det = sslv_import.parse_detail_page(html_doc)
+    except Exception as e:
+        return False, f"lapa nenolasās ({type(e).__name__})"
+    live_street = det.get("street") or ""
+    live_area = _num(det.get("area_m2"))
+    desc = f"{live_street or '?'} · {live_area or '?'} m²"
+    if street and live_street:
+        like = _street_like(street)
+        if like and not re.search(like, _street_key(live_street) + " ", re.I):
+            # vēl mēģina ar īso ielas formu (garie oficiālie nosaukumi)
+            short = _street_short(street)
+            like2 = _street_like(short) if short else None
+            if not (like2 and re.search(like2, _street_key(live_street) + " ", re.I)):
+                return False, f"cita adrese: {desc}"
+    area = _num(unit.get("area_m2"))
+    if area and live_area:
+        alts = [area] + _alt_areas(unit)
+        if not any(abs(a - live_area) <= max(2.0, 0.06 * a) for a in alts):
+            return False, f"cita platība: {desc}"
+    return True, desc
+
+
+def _unit_street(intake_id: str, idx) -> Optional[str]:
+    """Telpas adrese no reporta (DB ēkas adrese, ja sasaistīta)."""
+    try:
+        rep = json.loads((INTAKE_DIR / intake_id / "report.json").read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    for a in rep.get("addresses") or []:
+        if any(str(u.get("idx")) == str(idx) for u in a.get("units") or []):
+            return (a.get("bp") or {}).get("full_address") or a.get("street")
+    return None
+
+
 def _alive_sslv_images(urls: list[str]) -> list[str]:
     """i.ss.lv dzēstam sludinājumam atdod 200 + ~49 baitu tukšu GIF — panelī tukši sīktēli (Brīvības g. 432, 2026-10-26).
     Pārbauda 1. bildi; ja tā mirusi — pārbauda visas un patur tikai dzīvās (>2 KB)."""
@@ -2581,10 +2627,14 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     # Raimonds 2026-10-26: ja 1. ss.lv sludinājums miris (tukšas bildes) — ņem NĀKAMO kandidātu; ja neviena —
     # skaidri «nav», nevis tukši rāmīši. Kešā (sslv_gallery_cache.json) mirušas galerijas pārbauda vēlreiz.
     out["sslv_pending"] = False
-    for cand in cands[:3]:
+    rejected: list[dict] = []
+    # galerijas, kas kešotas PIRMS dzīvās adreses pārbaudes (2026-10-26), jāpārbauda vēlreiz
+    ver_p = d / "sslv_verified.json"
+    verified: set[str] = set(json.loads(ver_p.read_text(encoding="utf-8"))) if ver_p.is_file() else set()
+    for cand in cands[:5]:
         link = cand["link"]
-        if link not in cache:
-            if not prepare and link != pick:
+        if link not in cache or (cache.get(link) and link not in verified):
+            if link not in cache and not prepare and link != pick:
                 out["sslv_pending"] = True
                 out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
                 break
@@ -2593,8 +2643,15 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
                 import sslv_import
                 info = sslv_import.parse_sslv_url(link)
                 html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
-                urls = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
-                cache[link] = _alive_sslv_images(urls)
+                ok, why = _sslv_live_matches(html_doc, (addr.get("bp") or {}).get("full_address") or addr.get("street"), unit)
+                verified.add(link)
+                ver_p.write_text(json.dumps(sorted(verified)), encoding="utf-8")
+                if not ok:
+                    cache[link] = []
+                    rejected.append({"link": link, "why": why})
+                else:
+                    urls = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+                    cache[link] = _alive_sslv_images(urls)
             except Exception as e:
                 cache[link] = []
                 out["sslv_error"] = f"{type(e).__name__}"
@@ -2608,8 +2665,11 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
             out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
             out.pop("sslv_error", None)
             break
+    if rejected:
+        out["sslv_rejected"] = rejected
     if cands and not out["sslv"] and not out["sslv_pending"]:
-        out["sslv_error"] = "ss.lv sludinājuma bildes vairs nav pieejamas (dzēsts?)"
+        out["sslv_error"] = ("ss.lv: neviens sludinājums vairs neatbilst šai telpai (" + rejected[0]["why"] + ")") if rejected \
+            else "ss.lv sludinājuma bildes vairs nav pieejamas (dzēsts?)"
     L = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
     # dublikāti arī rādot (vecie reporti pirms Drive-ID dedupe)
     out["links"] = {"photos": _dedupe_files(L.get("photos") or []), "plans": _dedupe_files(L.get("plans") or []), "errors": L.get("errors") or []}
