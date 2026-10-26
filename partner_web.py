@@ -40,6 +40,7 @@ def visible_text(raw: str) -> str:
     t = re.sub(r"<(script|style|noscript|svg|head)[^>]*>.*?</\1>", " ", raw, flags=re.S | re.I)
     t = re.sub(r"<br\s*/?>|</(p|div|li|tr|h\d|section|article)>", "\n", t, flags=re.I)
     t = html_mod.unescape(re.sub(r"<[^>]+>", " ", t))
+    t = re.sub(r"<[^>]+>", " ", t)   # atribūtos ieslēpts HTML (&lt;div …&gt;) pēc unescape — vēlreiz ārā
     t = re.sub(r"[ \t\xa0]+", " ", t)
     t = re.sub(r"\s*\n\s*", "\n", t)
     return t.strip()
@@ -61,34 +62,42 @@ def _same_site(u: str, base: str) -> bool:
 
 def detail_links(raw: str, base_url: str) -> list[dict]:
     """Saraksta lapas saites uz telpu lapām: tā paša domēna URL, kura HTML apkārtnē (±700 zīmes) ir platība
-    un kas nav navigācija/valoda/pati lapa. Atgriež [{url, row}] ar kartiņas tekstu (adrese/nosaukums/cena/platība)."""
+    un kas nav navigācija/valoda/pati lapa. Kartiņas teksts (adrese/nosaukums/cena/platība) = redzamais teksts
+    no saites PIRMĀS vietas līdz NĀKAMĀS citas saites vietai (kartiņa sākas ar slaideri, info seko pēc tā —
+    ±logs deva iepriekšējās kartiņas tekstu, Spire 2026-10-26)."""
     base_path = urlparse(base_url).path.rstrip("/")
-    seen: dict[str, str] = {}
+    occ: list[tuple[int, str]] = []   # (pozīcija, URL) visām saitēm uz telpu lapām, dokumenta secībā
+    valid: dict[str, bool] = {}
     for m in re.finditer(r"""(?:href|location\.href)\s*=\s*['"]([^'"]+)['"]""", raw):
         u = html_mod.unescape(m.group(1)).strip()
         if not u or any(w in u.lower() for w in NAV_WORDS):
             continue
         u = urljoin(base_url, u).split("#")[0].split("?")[0]
-        u = u.rstrip("/") + "/"   # «…/b171-office-no-400» un «…/b171-office-no-400/» = viena lapa (Spire: dublis izspieda 11. telpu)
-        if not _same_site(u, base_url):
-            continue
-        p = urlparse(u).path.rstrip("/")
-        if not p or p == base_path or p.count("/") < 2:
-            continue
-        if re.search(r"/(lv|ru|en|de)(/|$)", p) and not re.search(r"/(lv|ru|en|de)/", base_url):
-            continue   # citas valodas dublikāti
-        ctx = raw[max(0, m.start() - 700): m.end() + 700]
-        if not AREA_RE.search(ctx):
-            continue
-        # nogriež pusēs pārgrieztos tagus («e-mobile" data-lazy=…»), lai rindā paliek tikai redzamais teksts
-        ctx = ctx[ctx.find(">") + 1: ctx.rfind("<")] if ">" in ctx and "<" in ctx else ctx
-        row = visible_text(ctx)
-        row = " ".join(x for x in row.split("\n") if x.strip())[:300]
-        if u not in seen:
-            seen[u] = row
-        if len(seen) >= MAX_DETAIL_PAGES:
-            break
-    return [{"url": u, "row": r} for u, r in seen.items()]
+        u = u.rstrip("/") + "/"   # «…/b171-office-no-400» un «…/b171-office-no-400/» = viena lapa
+        if not valid.get(u):   # pietiek, ja KĀDĀ vietā blakus ir platība (pirmā vieta var būt <link>/meta bez teksta)
+            ok = _same_site(u, base_url)
+            p = urlparse(u).path.rstrip("/")
+            ok = ok and bool(p) and p != base_path and p.count("/") >= 2
+            if ok and re.search(r"/(lv|ru|en|de)(/|$)", p) and not re.search(r"/(lv|ru|en|de)/", base_url):
+                ok = False   # citas valodas dublikāti
+            if ok:
+                ctx = raw[max(0, m.start() - 700): m.end() + 700]
+                ok = bool(AREA_RE.search(ctx))
+            valid[u] = valid.get(u) or ok
+        if valid[u]:
+            occ.append((m.start(), u))
+    order = list(dict.fromkeys(u for _, u in occ))[:MAX_DETAIL_PAGES]
+    # kartiņas teksts: no saites vietas līdz nākamajai CITAI saitei; URL atkārtojas (slaidera bildes, virsraksts) —
+    # ņem to vietu, kurai seko visvairāk redzamā teksta (Spire: pirmā vieta bija slaiderī bez teksta)
+    rows: dict[str, str] = {}
+    for k, (pos, u) in enumerate(occ):
+        nxt = next((p2 for p2, u2 in occ[k + 1:] if u2 != u), pos + 2500)
+        seg = raw[pos: min(nxt, pos + 2500)]
+        seg = seg[seg.find(">") + 1: seg.rfind("<")] if ">" in seg and "<" in seg else seg   # bez pusēs pārgrieztiem tagiem
+        row = " ".join(x for x in visible_text(seg).split("\n") if x.strip())[:300]
+        if len(row) > len(rows.get(u, "")):
+            rows[u] = row
+    return [{"url": u, "row": rows.get(u, "")} for u in order]
 
 
 def _best_images(raw: str, page_url: str) -> list[str]:
