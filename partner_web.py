@@ -160,20 +160,46 @@ def inline_blocks(raw: str, base_url: str) -> list[dict]:
     return out
 
 
-def collect(url: str) -> dict:
-    """Saraksta lapa + detaļas. → {list_text, fingerprint, details:[{url,row,text,images,pdfs}]}"""
+def collect(url: str, recipe: Optional[dict] = None) -> dict:
+    """Saraksta lapa + detaļas. → {list_text, fingerprint, details:[{url,row,text,images,pdfs}], needs_recipe}.
+    Secība: AI iemācītā recepte (ja ir) → heiristikas (detaļu lapas / bloki vienā lapā) → needs_recipe=True."""
     raw = _get(url)
     list_text = visible_text(raw)
     fp = hashlib.sha1(_norm_for_fp(list_text).encode("utf-8")).hexdigest()
-    out = {"url": url, "list_text": list_text, "fingerprint": fp, "details": []}
+    out = {"url": url, "list_text": list_text, "fingerprint": fp, "details": [], "needs_recipe": False, "list_only": False, "raw_len": len(raw)}
     mb = re.search(r'<base\s+href="([^"]+)"', raw, re.I)
     base = mb.group(1) if mb else url   # <base href> maina relatīvo saišu bāzi (Eften: «lv/…/408/196/»)
+    if recipe:
+        try:
+            det, list_only = apply_recipe(raw, url, base, recipe)
+        except Exception as e:
+            logger.warning("partner_web: recepte %s neizdevās: %s", url, e)
+            det, list_only = [], False
+        # «detaļu lapa», kas ir tā pati saraksta lapa (Eften URL atgriež visu sarakstu) → recepte nederīga
+        same = {d["url"] for d in det if _norm_for_fp(d.get("text") or "")[:3000] == _norm_for_fp(list_text)[:3000]}
+        det = [d for d in det if d["url"] not in same]
+        if det or list_only:
+            out["details"] = det
+            out["list_only"] = list_only
+            out["recipe_used"] = True
+            return out
     links = detail_links(raw, base)
     inline = inline_blocks(raw, url)
     if inline and len(inline) >= max(2, len(links)):
         # visas telpas jau ir šajā lapā (modāļi ar galeriju + tabulu, Eften) — bez papildu ielādes
         out["details"] = inline
         return out
+    if not links:
+        out["needs_recipe"] = True
+        out["_raw"] = raw
+        return out
+    out["details"] = fetch_details(links)
+    return out
+
+
+def fetch_details(links: list[dict]) -> list[dict]:
+    """Detaļu lapas → teksts + bildes + PDF."""
+    out = []
     for d in links:
         try:
             draw = _get(d["url"])
@@ -181,11 +207,141 @@ def collect(url: str) -> dict:
             logger.info("partner_web: %s nenolasās: %s", d["url"], e)
             continue
         text = visible_text(draw)
-        imgs = _best_images(draw, d["url"])
+        imgs = _best_images(draw, d["url"]) or _best_images(draw, d["url"], any_domain=True)   # bildes var būt citā domēnā (CDN)
         pdfs = [urljoin(d["url"], html_mod.unescape(x)) for x in PDF_RE.findall(draw)]
         pdfs = [p for p in dict.fromkeys(pdfs) if _same_site(p, d["url"]) or "wp-content" in p][:3]
-        out["details"].append({**d, "text": text, "images": imgs, "pdfs": pdfs})
+        out.append({**d, "text": text, "images": imgs, "pdfs": pdfs})
     return out
+
+
+# ───────────────────────────── AI recepte nezināmai lapai ─────────────────────────────
+# Raimonds 2026-10-27: «katra lapa būs citādāka — negribu katru reizi iet caur tevi». Ja heiristikas lapu
+# nesaprot, AI VIENREIZ izpēta HTML un atdod recepti (regex), ko glabā pie avota; turpmāk lapu lasa bez AI.
+
+RECIPE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "mode": {"type": "string", "enum": ["detail_links", "inline_blocks", "list_only", "unsupported"]},
+        "detail_url_regex": {"type": ["string", "null"]},
+        "block_start_regex": {"type": ["string", "null"]},
+        "image_url_regex": {"type": ["string", "null"]},
+        "notes": {"type": "string"},
+    },
+    "required": ["mode", "detail_url_regex", "block_start_regex", "image_url_regex", "notes"],
+}
+
+RECIPE_PROMPT = """Tu analizē nekustamo īpašumu partnera MĀJASLAPAS HTML (saraksts ar brīvajām nomas telpām).
+Uzdevums: pateikt, KĀ no šī HTML mašīna var izvilkt KATRU telpu atsevišķi. Atbildi TIKAI JSON pēc shēmas.
+mode:
+- "detail_links": katrai telpai ir sava lapa → `detail_url_regex` = Python regex, kas sakrīt ar ŠO telpu lapu URL
+  (pilniem vai relatīviem href/onclick URL; piem. "/listings/[^/]+/[^/]+/$"), bet NE ar navigāciju/valodu saitēm.
+- "inline_blocks": visas telpas ir šajā pašā lapā atkārtotos blokos (kartiņas, modāļi, akordeoni, tabulas rindas) →
+  `block_start_regex` = regex, kas sakrīt tieši ar KATRA bloka sākuma HTML (piem. '<div class="property-item' vai
+  '<tr class="unit"' vai 'id="object_\\d+"'); bloks turpinās līdz nākamajai sakritībai.
+- "list_only": telpas ir tikai kā teksta rindas bez struktūras/bilžu → nekādi regex (tiks lasīts viss teksts).
+- "unsupported": lapa ielādē telpas ar JavaScript/API un HTML nav datu.
+`image_url_regex` (nav obligāts): regex bilžu URL, ja tās nav parastos <img src>.
+Regex rakstīt bez / / iekavām, Python sintaksē, īsus un drošus. `notes` — 1 teikums LV, ko redzēji."""
+
+
+def _html_sample(raw: str, limit: int = 90000) -> str:
+    t = re.sub(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", raw, flags=re.S | re.I)
+    t = re.sub(r"<!--.*?-->", " ", t, flags=re.S)
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n\s*\n+", "\n", t)
+    if len(t) <= limit:
+        return t
+    # sākums + vidus (saraksti parasti vidū) — lai AI redz atkārtojumus
+    head = t[: int(limit * 0.45)]
+    mid0 = len(t) // 2
+    return head + "\n…[izlaists]…\n" + t[mid0: mid0 + int(limit * 0.55)]
+
+
+def learn_recipe(url: str, raw: str) -> dict:
+    """AI izpēta HTML un atdod recepti (vienreizēja izmaksa ~daži centi)."""
+    import os
+    from openai import OpenAI
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY nav konfigurēts")
+    model = os.getenv("PARTNER_INTAKE_MODEL") or os.getenv("MODEL") or "gpt-5.4"
+    client = OpenAI(api_key=api_key)
+    content = [
+        {"type": "input_text", "text": f"LAPA: {url}\nREDZAMAIS TEKSTS (fragments):\n{visible_text(raw)[:4000]}"},
+        {"type": "input_text", "text": "HTML (bez script/style):\n" + _html_sample(raw)},
+        {"type": "input_text", "text": RECIPE_PROMPT},
+    ]
+    resp = client.responses.create(
+        model=model, input=[{"role": "user", "content": content}],
+        text={"format": {"type": "json_schema", "name": "web_recipe", "schema": RECIPE_SCHEMA, "strict": True}},
+    )
+    rec = json.loads(resp.output_text)
+    rec["learned_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    rec["model"] = model
+    return rec
+
+
+def _compile(rx: Optional[str]):
+    if not rx:
+        return None
+    try:
+        return re.compile(rx, re.I)
+    except re.error as e:
+        logger.warning("partner_web: nederīgs regex %r: %s", rx, e)
+        return None
+
+
+def apply_recipe(raw: str, url: str, base: str, recipe: dict) -> tuple[list[dict], bool]:
+    """Recepte → (detaļas, list_only)."""
+    mode = recipe.get("mode")
+    if mode == "list_only":
+        return [], True
+    if mode == "detail_links":
+        rx = _compile(recipe.get("detail_url_regex"))
+        if not rx:
+            return [], False
+        occ: list[tuple[int, str]] = []
+        for m in re.finditer(r"""(?:href|location\.href)\s*=\s*['"]([^'"]+)['"]""", raw):
+            rawu = html_mod.unescape(m.group(1)).strip()
+            if not rawu or rawu.lower().startswith(("mailto:", "tel:", "javascript:", "#")):
+                continue
+            full = urljoin(base, rawu).split("#")[0].split("?")[0].rstrip("/") + "/"
+            if not (rx.search(rawu) or rx.search(full)):
+                continue
+            if not _same_site(full, url):
+                continue
+            if full.rstrip("/") == url.split("#")[0].split("?")[0].rstrip("/"):
+                continue
+            occ.append((m.start(), full))
+        order = list(dict.fromkeys(u for _, u in occ))[:MAX_DETAIL_PAGES]
+        rows: dict[str, str] = {}
+        for k, (pos, u) in enumerate(occ):
+            nxt = next((p2 for p2, u2 in occ[k + 1:] if u2 != u), pos + 2500)
+            seg = raw[pos: min(nxt, pos + 2500)]
+            seg = seg[seg.find(">") + 1: seg.rfind("<")] if ">" in seg and "<" in seg else seg
+            row = " ".join(x for x in visible_text(seg).split("\n") if x.strip())[:300]
+            if len(row) > len(rows.get(u, "")):
+                rows[u] = row
+        return fetch_details([{"url": u, "row": rows.get(u, "")} for u in order]), False
+    if mode == "inline_blocks":
+        rx = _compile(recipe.get("block_start_regex"))
+        if not rx:
+            return [], False
+        starts = [m.start() for m in rx.finditer(raw)]
+        img_rx = _compile(recipe.get("image_url_regex"))
+        out = []
+        for k, pos in enumerate(starts[:MAX_DETAIL_PAGES]):
+            end = starts[k + 1] if k + 1 < len(starts) else min(len(raw), pos + 40000)
+            seg = raw[pos:end]
+            text = visible_text(seg)
+            row = " ".join(x for x in text.split("\n") if x.strip())[:300]
+            imgs = _best_images(seg, url, any_domain=True)
+            if img_rx:
+                extra = [urljoin(url, html_mod.unescape(x if isinstance(x, str) else x[0])) for x in img_rx.findall(seg)]
+                imgs = list(dict.fromkeys(imgs + extra))[:MAX_IMAGES_PER_PAGE]
+            out.append({"url": f"{url.split('#')[0]}#blk{k + 1}", "row": row, "text": text, "images": imgs, "pdfs": []})
+        return out, False
+    return [], False
 
 
 def body_text(src: dict, col: dict, scanned_at) -> str:

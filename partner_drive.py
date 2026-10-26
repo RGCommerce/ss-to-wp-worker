@@ -183,14 +183,23 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
     import partner_intake
     import partner_web
     scanned_at = _now()
-    col = partner_web.collect(src["url"])
+    col = partner_web.collect(src["url"], recipe=src.get("web_recipe"))
+    learned = None
+    if col.get("needs_recipe") or (src.get("web_recipe") and not col["details"] and not col.get("list_only")):
+        # nezināma lapas uzbūve (vai vecā recepte vairs nestrādā) → AI iemācās recepti VIENREIZ un to glabā pie avota
+        learned = partner_web.learn_recipe(src["url"], col.get("_raw") or partner_web._get(src["url"]))
+        logger.info("partner_drive %s: AI recepte %s", src["name"], {k: learned.get(k) for k in ("mode", "detail_url_regex", "block_start_regex", "notes")})
+        col = partner_web.collect(src["url"], recipe=learned)
+        if not col["details"] and not col.get("list_only"):
+            raise RuntimeError(f"Lapu neizdodas nolasīt arī ar AI recepti ({learned.get('mode')}: {learned.get('notes')})")
+    col.pop("_raw", None)
     fp = col["fingerprint"]
     result: dict[str, Any] = {"source_id": src["id"], "scanned_at": scanned_at.isoformat(), "unit_folders": len(col["details"]),
                               "price_files": 0, "changed": fp != src.get("last_fingerprint"), "fingerprint": fp,
-                              "intake_id": None, "skipped": None}
+                              "intake_id": None, "skipped": None, "web_recipe": learned, "list_only": bool(col.get("list_only"))}
     if not result["changed"] and not force:
         return result
-    if not col["details"]:
+    if not col["details"] and not col.get("list_only"):
         raise RuntimeError("Lapā neatradu nevienu telpas lapu (saites ar platību) — vajag citu URL vai pielāgojumu")
     prev = src.get("last_intake_id")
     if prev and not force:
@@ -294,6 +303,8 @@ def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
             s["last_scan_at"] = result.get("scanned_at") or _now().isoformat()
             s["last_result"] = {k: result.get(k) for k in ("changed", "intake_id", "skipped", "unit_folders", "price_files", "summary")}
             s["last_error"] = error
+            if result.get("web_recipe"):
+                s["web_recipe"] = result["web_recipe"]
             if result.get("intake_id") or (not result.get("changed") and not error):
                 # nospiedumu atjauno tikai, ja ieplūde izveidota vai nekas nav mainījies; «skipped» → rīt vēlreiz
                 s["last_fingerprint"] = result.get("fingerprint") or s.get("last_fingerprint")
