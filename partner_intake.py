@@ -2086,7 +2086,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             import sslv_import
             info = sslv_import.parse_sslv_url(cand["link"])
             html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
-            gallery = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+            gallery = _alive_sslv_images((helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS])
             if sel_sslv is not None:
                 want = set(sel_sslv)
                 gallery = [g for g in gallery if g in want] or [g for g in sel_sslv if g.startswith("http")]
@@ -2539,10 +2539,16 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
     cache_p = d / "sslv_gallery_cache.json"
     cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
     cands = imgs.get("sslv_inbox") or []
-    if cands:
-        link = cands[0]["link"]
-        out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
-        if link not in cache and prepare:
+    # Raimonds 2026-10-26: ja 1. ss.lv sludinājums miris (tukšas bildes) — ņem NĀKAMO kandidātu; ja neviena —
+    # skaidri «nav», nevis tukši rāmīši. Kešā (sslv_gallery_cache.json) mirušas galerijas pārbauda vēlreiz.
+    out["sslv_pending"] = False
+    for cand in cands[:3]:
+        link = cand["link"]
+        if link not in cache:
+            if not prepare:
+                out["sslv_pending"] = True
+                out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
+                break
             try:
                 import ai_text_helpers as helpers
                 import sslv_import
@@ -2550,13 +2556,21 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
                 html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
                 urls = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
                 cache[link] = _alive_sslv_images(urls)
-                if urls and not cache[link]:
-                    out["sslv_error"] = "ss.lv bildes vairs nav pieejamas (sludinājums dzēsts?)"
-                cache_p.write_text(json.dumps(cache), encoding="utf-8")
             except Exception as e:
+                cache[link] = []
                 out["sslv_error"] = f"{type(e).__name__}"
-        out["sslv"] = cache.get(link) or []
-        out["sslv_pending"] = link not in cache
+            cache_p.write_text(json.dumps(cache), encoding="utf-8")
+        elif cache.get(link) and prepare and not _alive_sslv_images(cache[link][:1]):
+            # vecs kešs ar mirušām bildēm (pirms 2026-10-26 pārbaudes) → pārvērtē
+            cache[link] = _alive_sslv_images(cache[link])
+            cache_p.write_text(json.dumps(cache), encoding="utf-8")
+        if cache.get(link):
+            out["sslv"] = cache[link]
+            out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
+            out.pop("sslv_error", None)
+            break
+    if cands and not out["sslv"] and not out["sslv_pending"]:
+        out["sslv_error"] = "ss.lv sludinājuma bildes vairs nav pieejamas (dzēsts?)"
     L = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
     # dublikāti arī rādot (vecie reporti pirms Drive-ID dedupe)
     out["links"] = {"photos": _dedupe_files(L.get("photos") or []), "plans": _dedupe_files(L.get("plans") or []), "errors": L.get("errors") or []}
