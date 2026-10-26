@@ -1492,7 +1492,16 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
         email_sslv = _email_sslv_candidates(d)   # partnera e-pastā ieliktie ss.lv sludinājumi (galerija bildēm)
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
             bps = []
-            if addr.get("address_source") == "google" and addr.get("building_name"):
+            ov = (meta.get("address_overrides") or {}).get(str(len(report["addresses"])))
+            if ov and ov.get("bp_id"):
+                # aģents panelī sasaistīja ar DB ēku («Dominante Parks» → «Lielvārži, Ķekavas novads», 2026-10-26)
+                row = conn.execute("SELECT id, full_address, city, street, building_name FROM properties.building_profiles WHERE id = %s",
+                                   (int(ov["bp_id"]),)).fetchone()
+                if row:
+                    addr = {**addr, "street": row["full_address"] or row["street"] or addr.get("street"),
+                            "city": row["city"] or addr.get("city") or "Rīga", "address_known": True, "address_source": "agent"}
+                    bps = [{"id": int(row["id"]), "full_address": row["full_address"], "city": row["city"], "how": "agent"}]
+            if not bps and addr.get("address_source") == "google" and addr.get("building_name"):
                 # mūsu DB ēkas nosaukums ir drošāks par Google atrasto adresi
                 by_name = _find_bp(conn, None, addr.get("city"), addr.get("district"), addr.get("building_name"))
                 bps = [by_name] if by_name else []
@@ -2448,6 +2457,69 @@ def resume_pending_images() -> int:
     return started
 
 
+def _alive_sslv_images(urls: list[str]) -> list[str]:
+    """i.ss.lv dzēstam sludinājumam atdod 200 + ~49 baitu tukšu GIF — panelī tukši sīktēli (Brīvības g. 432, 2026-10-26).
+    Pārbauda 1. bildi; ja tā mirusi — pārbauda visas un patur tikai dzīvās (>2 KB)."""
+    if not urls:
+        return []
+    import download_images
+
+    def alive(u: str) -> bool:
+        try:
+            data = download_images.download_one(u)
+            return bool(data) and len(data) > 2000
+        except Exception:
+            return False
+    if alive(urls[0]):
+        return urls
+    return [u for u in urls if alive(u)]
+
+
+def address_override(intake_id: str, addr_idx: int, bp_id: Optional[int]) -> dict:
+    """Panelis: aģents sasaista piedāvājuma adresi ar DB ēku (vai noņem sasaisti) → salīdzināšana no jauna
+    (mūsējie šajā ēkā, «nav sarakstā», ss.lv kandidāti pēc DB adreses) + bilžu sagatavošana."""
+    d = INTAKE_DIR / intake_id
+    meta_p = d / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    if meta.get("status") in ("applied",):
+        raise ApplyError("Piedāvājums jau apstiprināts — ēku maini listingā")
+    ov = meta.get("address_overrides") or {}
+    if bp_id:
+        ov[str(addr_idx)] = {"bp_id": int(bp_id)}
+    else:
+        ov.pop(str(addr_idx), None)
+    meta["address_overrides"] = ov
+    meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    rep = reconcile(intake_id)
+    start_prepare_unit_images(intake_id)
+    return {"summary": rep["summary"], "address": rep["addresses"][addr_idx] if addr_idx < len(rep["addresses"]) else None}
+
+
+def search_buildings(conn, q: str, limit: int = 12) -> list[dict]:
+    """Ēku meklēšana panelim: adrese / nosaukums / pilsēta, bez diakritikas, ar listingu skaitu (aktuālie dati)."""
+    # PAREIZĀ diakritikas tabula (š→s, ž→z). Pārējā kodā vēsturiski š↔ž ir samainīti vietām — tur abās pusēs vienādi,
+    # bet šeit lietotājs raksta ASCII («lielvarzi»), tāpēc jābūt pareizi (2026-10-26)
+    tr = str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr")
+    toks = [t for t in re.sub(r"[^a-z0-9]+", " ", (q or "").lower().translate(tr)).split() if t]
+    if not toks:
+        return []
+    # lower() pirms translate neapstrādā «Ķ» (DB locale) → translate arī lielos burtus, tad lower (Ķekavas novads)
+    T = ("lower(translate(coalesce(bp.full_address,'') || ' ' || coalesce(bp.building_name,'') || ' ' || coalesce(bp.city,'') || ' ' || coalesce(bp.street,''),"
+         "'āēīōūčšžģķļņŗĀĒĪŌŪČŠŽĢĶĻŅŖ','aeioucszgklnraeioucszgklnr'))")
+    where = " AND ".join(f"{T} LIKE %s" for _ in toks)
+    rows = conn.execute(
+        f"""SELECT bp.id, bp.full_address, bp.city, bp.building_name,
+                   (SELECT count(*) FROM properties.listings l WHERE l.building_profile_id = bp.id AND l."Debug_status" = 'ok') AS n,
+                   (SELECT count(*) FROM properties.listings l WHERE l.building_profile_id = bp.id AND l."Debug_status" = 'ok' AND l.on_website) AS n_web
+              FROM properties.building_profiles bp
+             WHERE {where}
+             ORDER BY n DESC, bp.full_address LIMIT %s""",
+        tuple(f"%{t}%" for t in toks) + (limit,),
+    ).fetchall()
+    return [{"id": int(r["id"]), "full_address": r["full_address"], "city": r["city"], "building_name": r["building_name"],
+             "listings": int(r["n"]), "on_website": int(r["n_web"])} for r in rows]
+
+
 def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> dict:
     """Importa stadijai: ko pievienos šai telpai — ss.lv galerija (dzīvā, kešota), PDF foto/plāni,
     aģenta augšupielādes, ēkas noklusējuma bildes, mūsu listinga fasāde."""
@@ -2476,7 +2548,10 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
                 import sslv_import
                 info = sslv_import.parse_sslv_url(link)
                 html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
-                cache[link] = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+                urls = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
+                cache[link] = _alive_sslv_images(urls)
+                if urls and not cache[link]:
+                    out["sslv_error"] = "ss.lv bildes vairs nav pieejamas (sludinājums dzēsts?)"
                 cache_p.write_text(json.dumps(cache), encoding="utf-8")
             except Exception as e:
                 out["sslv_error"] = f"{type(e).__name__}"
