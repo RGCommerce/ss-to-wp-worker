@@ -800,6 +800,11 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
                 if k in base_keys or k[2] is None:
                     continue
                 tgt = next((ba for ba in base.get("addresses") or [] if _street_key(ba.get("street") or ba.get("building_name") or "") == k[0]), None)
+                if tgt is None and not a.get("street") and a.get("building_name"):
+                    # tas pats nosaukums ar garāku/īsāku piedēkli («Dominante Parks "Ciedri"» vs «… , Lielvāržos …»)
+                    nm = _street_key(a["building_name"])[:14]
+                    tgt = next((ba for ba in base.get("addresses") or [] if not ba.get("street") and ba.get("building_name")
+                                and (_street_key(ba["building_name"])[:14] == nm)), None)
                 if tgt is None:
                     tgt = {**{kk: vv for kk, vv in a.items() if kk != "units"}, "units": []}
                     base.setdefault("addresses", []).append(tgt)
@@ -824,17 +829,25 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
         dups += n
     # viens izlasījums telpas lika pie ielas, otrs — pie «FLEX biroji» bez ielas (Skanstes City 2026-10-25) → tā pati
     # telpa (stāvs + platība) paliek TIKAI pie adreses ar ielu; adrese bez ielas un bez telpām pazūd
-    with_street = {(_floor_digits(_floor_norm(u.get("floor"))), round(_num(u.get("area_m2")) or 0, 1))
-                   for a in base.get("addresses") or [] if a.get("street") for u in a.get("units") or []}
+    # + divi izlasījumi to pašu ēku bez ielas nosauc dažādi («Dominante Parks "Ciedri"» / «… Lielvāržos, Ķekavas
+    # pagastā») → tās pašas telpas (stāvs + platība) paliek tikai pirmajā; adreses bez telpām pazūd (Realto 2026-10-26)
+    seen_fa: set[tuple] = {(_floor_digits(_floor_norm(u.get("floor"))), round(_num(u.get("area_m2")) or 0, 1))
+                           for a in base.get("addresses") or [] if a.get("street") for u in a.get("units") or []}
     kept_addrs = []
     for a in base.get("addresses") or []:
         if not a.get("street"):
             before = len(a.get("units") or [])
-            a["units"] = [u for u in a.get("units") or []
-                          if (_floor_digits(_floor_norm(u.get("floor"))), round(_num(u.get("area_m2")) or 0, 1)) not in with_street]
-            dups += before - len(a["units"])
-            if not a["units"]:
-                continue
+            kept_units = []
+            for u in a.get("units") or []:
+                k = (_floor_digits(_floor_norm(u.get("floor"))), round(_num(u.get("area_m2")) or 0, 1))
+                if k[1] and k in seen_fa:
+                    continue
+                seen_fa.add(k)
+                kept_units.append(u)
+            a["units"] = kept_units
+            dups += before - len(kept_units)
+        if not a.get("units"):
+            continue
         kept_addrs.append(a)
     base["addresses"] = kept_addrs
     # absurdas platības (ha nolasīts kā m²: «3,92 ha» → 3.92 m², Realto Vircava 2026-10-26) → ārā + warning
