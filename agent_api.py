@@ -1675,13 +1675,16 @@ _INTAKE_ID_RE = r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}"
 
 
 @router.get("/partner-intake/{intake_id}/unit-images/{idx}")
-def partner_intake_unit_images(intake_id: str, idx: str, _auth: None = Depends(require_token)) -> dict:
-    """Importa stadija: bilžu kandidāti telpai (ss.lv galerija, PDF, augšupielādes, ēkas bildes)."""
+def partner_intake_unit_images(intake_id: str, idx: str, pick: Optional[str] = None, _auth: None = Depends(require_token)) -> dict:
+    """Importa stadija: bilžu kandidāti telpai (ss.lv galerija, PDF, augšupielādes, ēkas bildes).
+    ?pick=<ss.lv links> — aģents izvēlas citu ss.lv sludinājumu (galeriju ielādē uzreiz)."""
     import partner_intake
     if not re.fullmatch(_INTAKE_ID_RE, intake_id) or not re.fullmatch(r"\d{1,4}", idx):
         raise HTTPException(400, "Nederīgs ceļš")
+    if pick and not re.fullmatch(r"(https?://(www\.)?)?ss\.(lv|com)/msg/[A-Za-z0-9_./-]+\.html", pick):
+        raise HTTPException(400, "Nederīgs ss.lv links")
     try:
-        return partner_intake.unit_image_candidates(intake_id, idx)
+        return partner_intake.unit_image_candidates(intake_id, idx, pick=pick)
     except FileNotFoundError:
         raise HTTPException(404, "Reports nav gatavs")
     except partner_intake.ApplyError as e:

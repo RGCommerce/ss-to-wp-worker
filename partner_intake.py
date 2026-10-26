@@ -1220,9 +1220,9 @@ def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: 
                     "last_updated": str(r["last_updated"])[:10] if r["last_updated"] else None,
                     "same_room_score": round(score, 2), "floor_ok": floor_ok,
                     "via_alt_area": None if primary else alt_hit})
-    out.sort(key=lambda x: (-x["same_room_score"], x["last_updated"] or ""), reverse=False)
-    out.sort(key=lambda x: x["same_room_score"], reverse=True)
-    return out[:4]
+    # score, tad īpašnieks pirms aģenta, tad jaunākais (Raimonds 2026-10-26: «rāda to, kas nav aģents, ja tāds ir»)
+    out.sort(key=lambda x: (-round(x["same_room_score"], 1), 1 if x["is_agent"] else 0, x["last_updated"] or ""))
+    return out[:5]
 
 
 
@@ -2075,8 +2075,11 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
 
     # 1) ss.lv — vispirms (download_images var tīrīt img_*.* mapē, ja mainās URL saraksts)
     sslv = (u.get("images") or {}).get("sslv_inbox") or []
+    if sel.get("sslv_link"):
+        want_link = _bare_sslv(sel["sslv_link"])
+        sslv = [c for c in sslv if c.get("link") == want_link] + [c for c in sslv if c.get("link") != want_link]
     if sel_sslv is not None:
-        sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no 1. kandidāta galerijas
+        sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no izvēlētā (1.) kandidāta galerijas
     elif ((u.get("images") or {}).get("links") or {}).get("photos"):
         sslv = []   # partnerim ir savas (Drive) bildes — ss.lv (ar ūdenszīmēm) pēc noklusējuma neņem
     for cand in sslv[:2]:
@@ -2520,7 +2523,15 @@ def search_buildings(conn, q: str, limit: int = 12) -> list[dict]:
              "listings": int(r["n"]), "on_website": int(r["n_web"])} for r in rows]
 
 
-def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> dict:
+def _bare_sslv(link: Optional[str]) -> Optional[str]:
+    """«https://www.ss.lv/msg/...» / «ss.com/msg/...» → «ss.lv/msg/...» (kā scrape_inbox.link un kandidātos)."""
+    if not link:
+        return None
+    l = re.sub(r"^https?://", "", link.strip()).replace("www.", "", 1)
+    return re.sub(r"^ss\.com/", "ss.lv/", l).split("#")[0]
+
+
+def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick: Optional[str] = None) -> dict:
     """Importa stadijai: ko pievienos šai telpai — ss.lv galerija (dzīvā, kešota), PDF foto/plāni,
     aģenta augšupielādes, ēkas noklusējuma bildes, mūsu listinga fasāde."""
     d = INTAKE_DIR / intake_id
@@ -2539,13 +2550,22 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
     cache_p = d / "sslv_gallery_cache.json"
     cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
     cands = imgs.get("sslv_inbox") or []
+    # visi kandidāti panelim («vēl 3 sludinājumi» — aģents var pārslēgt); pick = aģenta izvēlētais links
+    out["sslv_candidates"] = [{"link": c["link"], "url": c["link"] if c["link"].startswith("http") else f"https://www.{c['link']}",
+                               "area_m2": c.get("area_m2"), "floor": c.get("floor"), "price": c.get("price"),
+                               "is_agent": bool(c.get("is_agent")), "from_email": bool(c.get("from_email")),
+                               "score": c.get("same_room_score"), "n": len(cache.get(c["link"]) or []) if c["link"] in cache else None}
+                              for c in cands[:5]]
+    pick = _bare_sslv(pick)
+    if pick:
+        cands = [c for c in cands if c["link"] == pick] + [c for c in cands if c["link"] != pick]
     # Raimonds 2026-10-26: ja 1. ss.lv sludinājums miris (tukšas bildes) — ņem NĀKAMO kandidātu; ja neviena —
     # skaidri «nav», nevis tukši rāmīši. Kešā (sslv_gallery_cache.json) mirušas galerijas pārbauda vēlreiz.
     out["sslv_pending"] = False
     for cand in cands[:3]:
         link = cand["link"]
         if link not in cache:
-            if not prepare:
+            if not prepare and link != pick:
                 out["sslv_pending"] = True
                 out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
                 break
@@ -2560,7 +2580,7 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False) -> di
                 cache[link] = []
                 out["sslv_error"] = f"{type(e).__name__}"
             cache_p.write_text(json.dumps(cache), encoding="utf-8")
-        elif cache.get(link) and prepare and not _alive_sslv_images(cache[link][:1]):
+        elif cache.get(link) and (prepare or link == pick) and not _alive_sslv_images(cache[link][:1]):
             # vecs kešs ar mirušām bildēm (pirms 2026-10-26 pārbaudes) → pārvērtē
             cache[link] = _alive_sslv_images(cache[link])
             cache_p.write_text(json.dumps(cache), encoding="utf-8")
