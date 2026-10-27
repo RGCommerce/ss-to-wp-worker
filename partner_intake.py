@@ -758,6 +758,9 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
     reklāma, lapa ir par citu ēku).
 11. `is_vacancy_offer=false`, ja e-pasts nav telpu piedāvājums (rēķins, sarakste, spams) — tad units tukšs.
 12. `warnings` — īsi LV: kas neskaidrs (cena diapazons, platība «~», adrese nezināma, vairāki dokumenti u.c.).
+13. Stāvs nav minēts, bet telpa ir TIRDZNIECĪBAS / pakalpojumu telpa ar skatlogiem vai ieeju no ielas (Raimonds 2026-10-27:
+    «tā ir tirdzniecības telpa, tāpēc 1. stāvs») → `floor` «1» un `partner_notes` «stāvs pieņemts (ielas tirdzniecības
+    telpa)». Birojiem/noliktavām stāvu NEminēt bez avota.
 """
 
 
