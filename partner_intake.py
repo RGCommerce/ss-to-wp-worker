@@ -2046,8 +2046,12 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                                      (f"Nav partnera ({partner.get('company') or '?'}) vakanču sarakstā {report.get('list_date') or report.get('received_at','')[:10]}",
                                       requested_by, lid))
                         if m.get("on_website"):
+                            # jau gaidošs rindas ieraksts (publish/unpublish) → pārliek uz unpublish, nevis krīt ar
+                            # UniqueViolation (idx_wp_export_queue_active_listing; Eften #110054, 2026-10-27)
                             conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, action, status, requested_by)
-                                            VALUES (%s,'unpublish','pending',%s)""", (lid, requested_by))
+                                            VALUES (%s,'unpublish','pending',%s)
+                                            ON CONFLICT (listing_id) WHERE status IN ('pending','processing')
+                                            DO UPDATE SET action='unpublish', requested_by=EXCLUDED.requested_by""", (lid, requested_by))
                         conn.commit()
                         result["occupied"].append(lid)
                     except Exception as e:
