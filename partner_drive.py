@@ -221,7 +221,7 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
     result["intake_id"] = meta["intake_id"]
     rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
     result["summary"] = rep.get("summary")
-    _mark_superseded(supersede, meta["intake_id"])
+    _mark_superseded(supersede, meta["intake_id"], src["id"])
     return result
 
 
@@ -277,7 +277,7 @@ def scan_source(src: dict, force: bool = False) -> dict:
     result["intake_id"] = meta["intake_id"]
     rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
     result["summary"] = rep.get("summary")
-    _mark_superseded(supersede, meta["intake_id"])
+    _mark_superseded(supersede, meta["intake_id"], src["id"])
     return result
 
 
@@ -296,18 +296,29 @@ def _pending_prev(src: dict) -> Optional[str]:
     return prev if st in ("new", "ready") else None
 
 
-def _mark_superseded(old_id: Optional[str], new_id: str) -> None:
-    if not old_id or old_id == new_id:
-        return
-    mp = partner_intake.INTAKE_DIR / old_id / "meta.json"
-    try:
-        meta = json.loads(mp.read_text(encoding="utf-8"))
-        if meta.get("status") in ("new", "ready"):
+def _mark_superseded(old_id: Optional[str], new_id: str, source_id: Optional[str] = None) -> None:
+    """Vecā neapstiprinātā ieplūde (un visas citas šī avota new/ready ieplūdes, kas palikušas no agrākiem skenējumiem)
+    → «superseded»: sarakstā pazūd, jaunākais nolasījums ir vienīgais."""
+    cands = {old_id} if old_id else set()
+    if source_id and partner_intake.INTAKE_DIR.is_dir():
+        for d in partner_intake.INTAKE_DIR.iterdir():
+            if (d / "meta.json").is_file():
+                cands.add(d.name)
+    for iid in cands:
+        if not iid or iid == new_id:
+            continue
+        mp = partner_intake.INTAKE_DIR / iid / "meta.json"
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            if meta.get("status") not in ("new", "ready"):
+                continue
+            if iid != old_id and meta.get("drive_source_id") != source_id:
+                continue
             meta["status"] = "superseded"
             meta["superseded_by"] = new_id
             mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-    except Exception as e:
-        logger.warning("partner_drive: superseded %s: %s", old_id, e)
+        except Exception as e:
+            logger.warning("partner_drive: superseded %s: %s", iid, e)
 
 
 def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
