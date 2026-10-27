@@ -1861,7 +1861,17 @@ def _guess_district(conn, street: Optional[str], city: Optional[str], bp_id: Opt
     if nn:
         return _canon(nn)
     g = _google_district(street, city)
-    return _canon(g) if g else ""
+    if g:
+        return _canon(g)
+    # 6) ārpus Rīgas DB konvencija: rajons = pilsēta/pagasts (Jelgava → «Jelgava», «Kolkas pag.»)
+    c = (city or "").strip()
+    if c and translate_lower(c) not in ("riga", "rīga"):
+        return _canon(c)
+    return ""
+
+
+def translate_lower(s: str) -> str:
+    return (s or "").lower().translate(str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr"))
 
 
 def _geocode_coords(street: Optional[str], city: Optional[str]) -> Optional[tuple[float, float]]:
