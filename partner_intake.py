@@ -2094,6 +2094,10 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     (ūdenszīmes), tīrās kopē tieši → local_image_paths_processed (publish vārts izpildīts)."""
     import image_classify
     out: dict = {"listing_id": listing_id, "pdf": 0, "plans": 0, "sslv": 0, "own": 0}
+    try:
+        intake_source = json.loads((INTAKE_DIR / intake_id / "meta.json").read_text(encoding="utf-8")).get("source")
+    except Exception:
+        intake_source = None
     ldir = STORAGE_ROOT / "listings" / str(listing_id)
     raw_dir = ldir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -2184,14 +2188,19 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             prefix = CLEAN_PREFIX
             if kind in ("link_photos", "photos"):
                 # partnera foto var nest īpašnieka/aģentūras ūdenszīmi (Eften «EfTEN Capital» pa vidu, Raimonds
-                # 2026-10-27) → lēta pārbaude; ja ir — kā ss.lv bilde caur Seedream (img_lnk_*), citādi tīra
-                try:
-                    import watermark_check
-                    if watermark_check.has_watermark_bytes(src.read_bytes(), any_agency=True) is True:
-                        prefix = "img_lnk_"
-                        out["watermarked_partner"] = out.get("watermarked_partner", 0) + 1
-                except Exception:
-                    pass
+                # 2026-10-27: «100 % success rate»). Mājaslapas (web) avota foto → VIENMĒR caur Seedream (img_lnk_*):
+                # pārbaude ar «low» logo palaida garām un tas nonāca mājaslapā. Drive/PDF foto → pārbaude (detail high).
+                if kind == "link_photos" and intake_source == "web":
+                    prefix = "img_lnk_"
+                    out["watermarked_partner"] = out.get("watermarked_partner", 0) + 1
+                else:
+                    try:
+                        import watermark_check
+                        if watermark_check.has_watermark_bytes(src.read_bytes(), any_agency=True) is True:
+                            prefix = "img_lnk_"
+                            out["watermarked_partner"] = out.get("watermarked_partner", 0) + 1
+                    except Exception:
+                        pass
             fn = f"{prefix}{uuid.uuid4().hex}{src.suffix.lower() or '.png'}"
             shutil.copy2(src, raw_dir / fn)
             keymap[str(rel)] = fn

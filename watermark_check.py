@@ -108,7 +108,8 @@ def has_watermark_bytes(image_bytes: bytes, any_agency: bool = False) -> bool | 
                 {"type": "text", "text": WM_PROMPT_ANY_AGENCY if any_agency else WM_PROMPT},
                 {"type": "image_url",
                  "image_url": {"url": f"data:image/jpeg;base64,{b64}",
-                               "detail": "low"}},
+                               # aģentūru logo (EfTEN pa vidu, pusdzidrs) ar «low» palika nepamanīts (2026-10-27) → high
+                               "detail": "high" if any_agency else "low"}},
             ],
         }],
         "max_tokens": 100,
@@ -172,14 +173,15 @@ def _save_cache(cache_path: Path, images: dict) -> None:
 
 
 def check_files(cache_dir: Path, paths: list[Path],
-                force: bool = False) -> dict[str, bool | None]:
+                force: bool = False, any_agency: bool = False) -> dict[str, bool | None]:
     """Pārbauda failus (ar disku-kešu `cache_dir/_wm_check.json`).
 
     Keša atslēga = filename + faila izmērs → pārrakstīta bilde (cits izmērs)
     tiek pārbaudīta no jauna pati. Atgriež {filename: True|False|None}.
     None (pārbaude neizdevās) NEkešo — nākamreiz mēģina vēlreiz.
     """
-    cache_path = Path(cache_dir) / CACHE_FILENAME
+    # plašajai (aģentūru) pārbaudei savs kešs — verdikti atšķiras no ss.com-only
+    cache_path = Path(cache_dir) / (CACHE_FILENAME.replace(".json", "_any.json") if any_agency else CACHE_FILENAME)
     cache = _load_cache(cache_path)
     out: dict[str, bool | None] = {}
     dirty_cache = False
@@ -201,7 +203,7 @@ def check_files(cache_dir: Path, paths: list[Path],
             print(f"      ! wm-check read {p.name}: {e}")
             out[p.name] = None
             continue
-        verdict = has_watermark_bytes(data)
+        verdict = has_watermark_bytes(data, any_agency=any_agency)
         out[p.name] = verdict
         if verdict is not None:
             cache[p.name] = {

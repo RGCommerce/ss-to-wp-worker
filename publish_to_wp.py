@@ -296,7 +296,7 @@ def _promote_wp_raw(conn, listing: dict) -> bool:
     return True
 
 
-def _watermark_gate(listing_id: int, img_paths: list[Path]) -> bool:
+def _watermark_gate(listing_id: int, img_paths: list[Path], any_agency: bool = False) -> bool:
     """GALA DROŠĪBAS VĀRTS: pirms augšuplādes pārbauda VISAS publicējamās
     bildes ar watermark_check (gpt-4o-mini, kešots — atkārtots publish = $0).
 
@@ -315,7 +315,9 @@ def _watermark_gate(listing_id: int, img_paths: list[Path]) -> bool:
     if not img_paths:
         return False
     cache_dir = STORAGE_ROOT / "listings" / str(listing_id)
-    verdicts = watermark_check.check_files(cache_dir, img_paths)
+    # any_agency: partneru (agent_partner) listingiem publicēt drīkst TIKAI bez jebkuras aģentūras logo/ūdenszīmes
+    # (Eften «EfTEN Capital» pa vidu nonāca mājaslapā, Raimonds 2026-10-27 — 100 % prasība)
+    verdicts = watermark_check.check_files(cache_dir, img_paths, any_agency=any_agency)
     dirty = [p for p in img_paths if verdicts.get(p.name) is True]
     unknown = [p.name for p in img_paths if verdicts.get(p.name) is None]
     if unknown:
@@ -336,7 +338,7 @@ def _watermark_gate(listing_id: int, img_paths: list[Path]) -> bool:
             )
         # clean_single_file pārrakstīja failu (cits izmērs) → keša atslēga
         # vairs nesakrīt → pārbaudam vēlreiz svaigi.
-        recheck = watermark_check.check_files(cache_dir, [p])
+        recheck = watermark_check.check_files(cache_dir, [p], any_agency=any_agency)
         if recheck.get(p.name) is True:
             raise SystemExit(
                 f"ATCELTS: listing {listing_id} bildē {p.name} ss.com "
@@ -655,7 +657,7 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # Kešots (atkārtots publish = $0). Ja kāda tika notīrīta uz vietas →
         # force bilžu re-upload (WP paliktu vecie attachment ar ūdenszīmi).
         if not dry_run:
-            if _watermark_gate(listing_id, img_paths):
+            if _watermark_gate(listing_id, img_paths, any_agency=(listing.get("source") == "agent_partner")):
                 force = True
 
         # Task #16: klasificē raw bildes un sadali galerijas / plānos.
