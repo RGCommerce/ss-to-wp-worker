@@ -283,6 +283,7 @@ def scan_source(src: dict, force: bool = False) -> dict:
 
 def _pending_prev(src: dict) -> Optional[str]:
     """Avota iepriekšējā ieplūde, ja tā vēl nav apstiprināta (new/ready) — to aizstās jaunā."""
+    import partner_intake   # lokāls imports (cikliska atkarība) — bez tā NameError (Realto Hausmaņa 2026-10-27)
     prev = src.get("last_intake_id")
     if not prev:
         return None
@@ -299,6 +300,7 @@ def _pending_prev(src: dict) -> Optional[str]:
 def _mark_superseded(old_id: Optional[str], new_id: str, source_id: Optional[str] = None) -> None:
     """Vecā neapstiprinātā ieplūde (un visas citas šī avota new/ready ieplūdes, kas palikušas no agrākiem skenējumiem)
     → «superseded»: sarakstā pazūd, jaunākais nolasījums ir vienīgais."""
+    import partner_intake
     cands = {old_id} if old_id else set()
     if source_id and partner_intake.INTAKE_DIR.is_dir():
         for d in partner_intake.INTAKE_DIR.iterdir():
