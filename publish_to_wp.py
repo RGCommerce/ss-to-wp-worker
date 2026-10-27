@@ -296,7 +296,7 @@ def _promote_wp_raw(conn, listing: dict) -> bool:
     return True
 
 
-def _watermark_gate(listing_id: int, img_paths: list[Path], any_agency: bool = False) -> bool:
+def _watermark_gate(listing_id: int, img_paths: list[Path], any_agency: bool = False) -> tuple[bool, list[Path]]:
     """GALA DROŠĪBAS VĀRTS: pirms augšuplādes pārbauda VISAS publicējamās
     bildes ar watermark_check (gpt-4o-mini, kešots — atkārtots publish = $0).
 
@@ -309,11 +309,13 @@ def _watermark_gate(listing_id: int, img_paths: list[Path], any_agency: bool = F
     publicēšana ATCELTA (redzams wp_export_queue error panelī).
     Pārbaudes kļūda (None, piem. nav OPENAI_API_KEY) = fail-open ar warning.
 
-    Atgriež True, ja kāds fails tika pārrakstīts → izsaucējam jāpiespiež
-    bilžu RE-UPLOAD (citādi WP paliktu vecie, netīrītie attachment).
+    Atgriež (pārrakstīts?, izslēgtās bildes). Realto 2026-10-27: bilde, ko nevar notīrīt, vairs NEATCEĻ visu
+    publicēšanu — to izlaiž (nepublicē), pārējās iet uz WP; ja neviena nepaliek → ATCELTS.
+    Pirms tīrīšanas vienkāršo verdiktu apstiprina ar fresh_eyes (3 balsis + aklā pārbaude) — gpt-4o ar «ss.com»
+    promptā «redzēja» ūdenszīmi tīrā bruģī.
     """
     if not img_paths:
-        return False
+        return False, []
     cache_dir = STORAGE_ROOT / "listings" / str(listing_id)
     # any_agency: partneru (agent_partner) listingiem publicēt drīkst TIKAI bez jebkuras aģentūras logo/ūdenszīmes
     # (Eften «EfTEN Capital» pa vidu nonāca mājaslapā, Raimonds 2026-10-27 — 100 % prasība)
@@ -324,28 +326,47 @@ def _watermark_gate(listing_id: int, img_paths: list[Path], any_agency: bool = F
         print(f"  ! ūdenszīmes pārbaude neizdevās {len(unknown)} bildēm "
               f"({', '.join(unknown[:5])}) — laižam cauri (fail-open)")
     if not dirty:
-        return False
+        return False, []
 
-    print(f"  !! ss.com ŪDENSZĪME atrasta {len(dirty)} publicējamās bildēs: "
+    # apstiprinājums ar fresh eyes (3 balsis + aklā pārbaude) — viens strikts verdikts mēdz būt halucinācija
+    confirmed = []
+    for p in dirty:
+        try:
+            data = p.read_bytes()
+            loc = watermark_check.locate_watermark(data, any_agency=True, strict=True) or {}
+            fe = watermark_check.fresh_eyes(data, loc if loc.get("watermark") else None)
+        except Exception as e:
+            print(f"    ! fresh eyes {p.name}: {str(e)[:120]} — uzskatu par netīru")
+            fe = {"watermark": True}
+        if fe is None or fe.get("watermark"):
+            confirmed.append(p)
+        else:
+            print(f"    ✓ {p.name}: fresh eyes saka tīra ({fe.get('votes')}, {fe.get('blind', '')}) — viltus trauksme")
+    dirty = confirmed
+    if not dirty:
+        return False, []
+
+    print(f"  !! ŪDENSZĪME atrasta {len(dirty)} publicējamās bildēs: "
           f"{[p.name for p in dirty]} — tīru ar Seedream...")
+    rewritten = False
+    excluded: list[Path] = []
     for p in dirty:
         if not image_pipeline.clean_single_file(p):
-            raise SystemExit(
-                f"ATCELTS: listing {listing_id} bildē {p.name} ir ss.com "
-                f"ūdenszīme, un to neizdevās notīrīt (Seedream). "
-                f"ss.com ūdenszīmes uz WP ir AIZLIEGTAS — izlabo bildi "
-                f"manuāli (panelī nomaini/izdzēs) un publicē vēlreiz."
-            )
+            print(f"    ✗ {p.name}: ūdenszīmi neizdevās notīrīt — bilde IZLAISTA (uz WP neiet); nomaini/izdzēs panelī")
+            excluded.append(p)
+            continue
+        rewritten = True
         # clean_single_file pārrakstīja failu (cits izmērs) → keša atslēga
         # vairs nesakrīt → pārbaudam vēlreiz svaigi.
         recheck = watermark_check.check_files(cache_dir, [p], any_agency=any_agency)
         if recheck.get(p.name) is True:
-            raise SystemExit(
-                f"ATCELTS: listing {listing_id} bildē {p.name} ss.com "
-                f"ūdenszīme PALIKUSI arī pēc tīrīšanas. Izlabo bildi manuāli."
-            )
+            fe = watermark_check.fresh_eyes(p.read_bytes(), None)
+            if fe is None or fe.get("watermark"):
+                print(f"    ✗ {p.name}: ūdenszīme PALIKUSI arī pēc tīrīšanas — bilde IZLAISTA (uz WP neiet)")
+                excluded.append(p)
+                continue
         print(f"    ✓ {p.name} notīrīta (Seedream) un pārbaudīta")
-    return True
+    return rewritten, excluded
 
 
 # Bilžu secības prioritātes (task #16): mazāks skaitlis = augstāka galerijā
@@ -657,7 +678,16 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # Kešots (atkārtots publish = $0). Ja kāda tika notīrīta uz vietas →
         # force bilžu re-upload (WP paliktu vecie attachment ar ūdenszīmi).
         if not dry_run:
-            if _watermark_gate(listing_id, img_paths, any_agency=(listing.get("source") == "agent_partner")):
+            rewritten, excluded = _watermark_gate(listing_id, img_paths, any_agency=(listing.get("source") == "agent_partner"))
+            if rewritten:
+                force = True
+            if excluded:
+                img_paths = [p for p in img_paths if p not in excluded]
+                print(f"  ! {len(excluded)} bilde(s) ar nenotīrāmu ūdenszīmi izlaistas: {[p.name for p in excluded]}")
+                if not img_paths:
+                    raise SystemExit(
+                        f"ATCELTS: listing {listing_id} — VISĀS bildēs ūdenszīme, ko neizdevās notīrīt. "
+                        f"Nomaini/izdzēs bildes panelī un publicē vēlreiz.")
                 force = True
 
         # Task #16: klasificē raw bildes un sadali galerijas / plānos.

@@ -153,9 +153,63 @@ def fresh_eyes(image_bytes: bytes, hint: dict | None = None) -> dict | None:
     yes = [v for v in votes if v.get("watermark")]
     if len(yes) >= 2 or (len(votes) == 1 and yes):
         best = yes[0]
-        return {"watermark": True, "where": best.get("where") or (hint or {}).get("where") or "center",
-                "text": best.get("text") or (hint or {}).get("text") or "", "votes": f"{len(yes)}/{len(votes)}"}
+        where = best.get("where") or (hint or {}).get("where") or "center"
+        # AKLĀ pārbaude (Realto 2026-10-27): prompts ar «ss.com» liek modelim to «redzēt» arī tīrā bruģī — 3× «ss.com
+        # apakšā pa labi», kur nekā nav. Tāpēc uz tuvinājuma jautā BEZ jebkādas norādes: «kāds teksts/logo te ir?»;
+        # ja nekāda uzraksta/logo nav → tīra.
+        zoom = _crop_zoom(image_bytes, where) or crop
+        blind = _blind_overlay_text(zoom) if zoom else None
+        if blind is not None and not blind.get("has_overlay"):
+            return {"watermark": False, "where": "", "text": "", "votes": f"{len(yes)}/{len(votes)}", "blind": "nav teksta/logo"}
+        return {"watermark": True, "where": where,
+                "text": (blind or {}).get("text") or best.get("text") or (hint or {}).get("text") or "",
+                "votes": f"{len(yes)}/{len(votes)}"}
     return {"watermark": False, "where": "", "text": "", "votes": f"{len(yes)}/{len(votes)}"}
+
+
+BLIND_PROMPT = (
+    "Look at this image crop. Is there any text, lettering, logo, brand mark, URL, phone number or copyright notice "
+    "that is OVERLAID on the photo (semi-transparent or opaque, added on top of the picture — not a real sign, "
+    "house number or object physically in the scene)? Faint, blurred or partially erased remnants of such overlays count. "
+    "Return ONLY JSON: {\"has_overlay\": true/false, \"text\": \"what you can read, or empty\"}."
+)
+
+
+def _blind_overlay_text(image_bytes: bytes) -> dict | None:
+    """Neprimēta pārbaude: vai tuvinājumā ir KĀDS uzraksts/logo pa virsu (bez «ss.com» ieteikšanas)."""
+    if not OPENAI_API_KEY:
+        return None
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    body = {
+        "model": OPENAI_VISION_MODEL_STRICT,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": BLIND_PROMPT},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+        ]}],
+        "max_tokens": 100,
+    }
+    for attempt in range(1, 4):
+        try:
+            r = requests.post("https://api.openai.com/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                              json=body, timeout=60, verify=_VERIFY)
+        except requests.RequestException:
+            if attempt < 3:
+                time.sleep(3 * attempt)
+                continue
+            return None
+        if r.status_code == 429:
+            time.sleep(15)
+            continue
+        if r.status_code != 200:
+            return None
+        try:
+            obj = json.loads(r.json()["choices"][0]["message"]["content"])
+            return {"has_overlay": bool(obj.get("has_overlay")), "text": str(obj.get("text") or "")}
+        except Exception:
+            return None
+    return None
 
 
 def locate_watermark(image_bytes: bytes, any_agency: bool = True, hint: dict | None = None, strict: bool = False) -> dict | None:
