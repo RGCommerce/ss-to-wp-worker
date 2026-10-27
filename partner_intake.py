@@ -1505,6 +1505,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
         has_doc = any(Path(x.get("name") or x.get("path") or "").suffix.lower() in (".pdf", ".xlsx", ".xlsm", ".xls", ".docx", ".csv")
                       for x in meta.get("attachments") or [])
         total_units = sum(len(a.get("units") or []) for a in analysis.get("addresses") or [])
+        missing_seen: set[int] = set()   # «nav sarakstā» ids pāri adresēm (viena ēka var būt 2 adresēs)
         email_sslv = _email_sslv_candidates(d)   # partnera e-pastā ieliktie ss.lv sludinājumi (galerija bildēm)
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
             bps = []
@@ -1640,8 +1641,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             default_on = bool(report["looks_complete"]) or has_doc or total_units >= 2
             if bp:
                 for l in ours:
-                    if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied":
-                        continue   # jau iznomātos nepiedāvā vēlreiz atzīmēt
+                    if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied" or int(l["id"]) in missing_seen:
+                        continue   # jau iznomātos / citā adresē jau uzskaitītos nepiedāvā vēlreiz
+                    missing_seen.add(int(l["id"]))
                     a_out["missing_in_list"].append({
                         "id": int(l["id"]), "street": l["street"], "area_m2": l["area_m2"], "floor": l["floor"],
                         "price": l["price"], "source": l["source"], "on_website": l["on_website"],
@@ -2033,7 +2035,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.rollback()
                             result["errors"].append(f"atjaunot #{lid}: {type(e).__name__}: {str(e)[:150]}")
             for m in addr.get("missing_in_list") or []:
-                if miss_dec.get(str(m["id"])) == "occupied" and int(m["id"]) not in prev_occupied:
+                if miss_dec.get(str(m["id"])) == "occupied" and int(m["id"]) not in prev_occupied and int(m["id"]) not in result["occupied"]:
                     lid = int(m["id"])
                     try:
                         snap = conn.execute("""SELECT id, occupancy_status, occupied_from, occupied_note, occupancy_set_by, occupancy_set_at, wp_post_id, on_website
