@@ -2022,12 +2022,23 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     phone_dec = decisions.get("phones") or {}   # {addr_index: "+371 ..."} — aģenta izvēlētais kontakta nr.  # {idx: {sslv, pdf, uploads, own, building, building_fns}} — aģenta bilžu izvēle
     miss_dec = decisions.get("missing") or {}
     addr_dec = decisions.get("addresses") or {}
-    unit_fields = decisions.get("unit_fields") or {}   # {idx: {space_type: ...}} — aģenta labojumi
+    unit_fields = decisions.get("unit_fields") or {}   # {idx: {space_type, floor, area_m2}} — aģenta labojumi
     for addr in report["addresses"]:
         for u in addr["units"]:
             ov = unit_fields.get(str(u["idx"])) or {}
             if ov.get("space_type") in SPACE_GROUPS:
                 u["space_type"] = ov["space_type"]
+            # Raimonds 2026-10-27: stāvu/platību var labot ar roku (zināms cits stāvs, PDF kļūda)
+            if ov.get("floor") and _floor_norm(ov["floor"]):
+                u["floor"] = _floor_norm(ov["floor"])
+                u["_floor_override"] = True
+            if _num(ov.get("area_m2")) and _num(ov["area_m2"]) > 0:
+                new_area = float(_num(ov["area_m2"]))
+                if _num(u.get("rent_per_m2_min")) and u.get("rent_total") is not None:
+                    u["rent_total"] = round(new_area * float(_num(u["rent_per_m2_min"])), 2)   # kopsumma pēc €/m²
+                u["area_m2"] = new_area
+                u["area_approx"] = False
+                u["_area_override"] = True
     for i, addr in enumerate(report["addresses"]):
         ov = addr_dec.get(str(i)) or {}
         if ov.get("bp_id"):
@@ -2144,6 +2155,10 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         sets.append("price = %s"); vals.append(_numstr(diff["price"]["new"]))
                     if "price_per_m2" in diff:
                         sets.append("price_per_m2 = %s"); vals.append(_numstr(diff["price_per_m2"]["new"]))
+                    if u.get("_floor_override"):
+                        sets.append("floor = %s"); vals.append(u["floor"])
+                    if u.get("_area_override"):
+                        sets.append("area_m2 = %s"); vals.append(_numstr(u["area_m2"]))
                     reactivate = bool(u.get("reactivate")) or (u["matched_listing"].get("occupancy_status") == "occupied")
                     if reactivate:
                         sets.append("occupancy_status = NULL"); sets.append("occupied_from = NULL")
