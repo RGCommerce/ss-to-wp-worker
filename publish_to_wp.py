@@ -677,6 +677,7 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # GALA DROŠĪBAS VĀRTS: neviena bilde ar ss.com ūdenszīmi uz WP.
         # Kešots (atkārtots publish = $0). Ja kāda tika notīrīta uz vietas →
         # force bilžu re-upload (WP paliktu vecie attachment ar ūdenszīmi).
+        excluded: list[Path] = []
         if not dry_run:
             rewritten, excluded = _watermark_gate(listing_id, img_paths, any_agency=(listing.get("source") == "agent_partner"))
             if rewritten:
@@ -886,6 +887,16 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
             (wp_id, all_attach_ids or None,
              plan_attach_ids or None, listing_id),
         )
+        if excluded:
+            # Raimonds 2026-10-27: izlaistā bilde JĀREDZ kā kļūda rindā (panelī «Publicēšana» rāda error tekstu arī pie
+            # «Publicēts») — «nepublicēju, jo ūdenszīmi nevarēja noņemt; izņem/nomaini bildi».
+            msg = ("⚠ Publicēts BEZ " + ", ".join(p.name for p in excluded)
+                   + " — ūdenszīmi/logo nevarēja noņemt (Seedream 3×). Izņem vai nomaini šo bildi panelī un publicē vēlreiz.")
+            try:
+                conn.execute("""UPDATE properties.wp_export_queue SET error = %s
+                                WHERE listing_id = %s AND status = 'processing'""", (msg[:900], listing_id))
+            except Exception as e:
+                print(f"  ! rindas brīdinājums neierakstījās: {str(e)[:100]}")
         # SPOGUĻA ATSVAIDZINĀŠANA (Raimonds 2026-07-30): paneļa "Mājaslapas"
         # folderis (wp_raw + wp_image_urls) lejupielādējas TIKAI vienreiz
         # (WHERE wp_images_downloaded_at IS NULL) → pēc bilžu maiņas panelis
