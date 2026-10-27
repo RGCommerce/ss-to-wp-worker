@@ -1563,10 +1563,18 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         continue
                     cands.append(l)
                 # vairāki kandidāti, bet tikai viens brīvs → tas (iznomātais = vēsturisks dvīnis)
+                dup_ids: list[int] = []
                 if len(cands) > 1:
                     free = [c for c in cands if c.get("occupancy_status") != "occupied"]
                     if len(free) == 1:
                         cands = free
+                    elif len(free) > 1:
+                        # mūsu DB dublikāti (Eften 260 m² 3. st → #108157 un #61319, Raimonds 2026-10-27): viens paliek
+                        # (mājaslapā esošais / ar bildēm / jaunākais) un tiek atjaunots, pārējie nonāk «nav sarakstā»
+                        # → iznomāti (tie paliek ārpus matched_ids)
+                        free.sort(key=lambda c: (bool(c.get("on_website")), (c.get("n_processed") or 0) + (c.get("n_raw") or 0), int(c["id"])), reverse=True)
+                        dup_ids = [int(c["id"]) for c in free[1:]]
+                        cands = free[:1]
                 status = "new"
                 match = None
                 diff = {}
@@ -1615,6 +1623,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                                  "candidates": [int(c["id"]) for c in cands] if status == "ambiguous" else [],
                                  "diff": diff, "reactivate": reactivate, "images": images, "has_photo_source": has_photo,
                                  "link_source": u.get("link_source"),
+                                 "duplicates": dup_ids,
                                  "needs_review": needs_review})
                 a_out["units"].append(unit_out)
                 report["summary"]["units"] += 1
@@ -2166,7 +2175,18 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             src = STORAGE_ROOT / rel
             if not src.is_file():
                 continue
-            fn = f"{CLEAN_PREFIX}{uuid.uuid4().hex}{src.suffix.lower() or '.png'}"
+            prefix = CLEAN_PREFIX
+            if kind in ("link_photos", "photos"):
+                # partnera foto var nest īpašnieka/aģentūras ūdenszīmi (Eften «EfTEN Capital» pa vidu, Raimonds
+                # 2026-10-27) → lēta pārbaude; ja ir — kā ss.lv bilde caur Seedream (img_lnk_*), citādi tīra
+                try:
+                    import watermark_check
+                    if watermark_check.has_watermark_bytes(src.read_bytes(), any_agency=True) is True:
+                        prefix = "img_lnk_"
+                        out["watermarked_partner"] = out.get("watermarked_partner", 0) + 1
+                except Exception:
+                    pass
+            fn = f"{prefix}{uuid.uuid4().hex}{src.suffix.lower() or '.png'}"
             shutil.copy2(src, raw_dir / fn)
             keymap[str(rel)] = fn
             p = f"listings/{listing_id}/raw/{fn}"
