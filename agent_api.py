@@ -24,6 +24,7 @@ DB: properties.building_profiles, properties.listings, properties.agent_drafts
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import os
 import re
 import sys
@@ -1627,6 +1628,24 @@ def partner_intake_reprocess(intake_id: str, _auth: None = Depends(require_token
         return {"ok": True, "summary": rep["summary"]}
     except Exception as e:
         raise HTTPException(500, f"{type(e).__name__}: {str(e)[:300]}")
+
+
+@router.post("/partner-intake/{intake_id}/dismiss")
+def partner_intake_dismiss(intake_id: str, _auth: None = Depends(require_token)) -> dict:
+    """Noņemt neapstiprinātu piedāvājumu no saraksta (vecs/lieks nolasījums; Raimonds 2026-10-27). Apstiprinātu nedzēš."""
+    import partner_intake
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{6}", intake_id):
+        raise HTTPException(400, "Nederīgs intake_id")
+    mp = partner_intake.INTAKE_DIR / intake_id / "meta.json"
+    if not mp.is_file():
+        raise HTTPException(404, "Nav tāda piedāvājuma")
+    meta = json.loads(mp.read_text(encoding="utf-8"))
+    if meta.get("status") in ("applied", "partial"):
+        raise HTTPException(409, "Apstiprinātu piedāvājumu nevar noņemt — lieto «Atsaukt»")
+    meta["status"] = "dismissed"
+    meta["dismissed_at"] = datetime.now(timezone.utc).isoformat()
+    mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"ok": True}
 
 
 class AddressOverrideReq(BaseModel):

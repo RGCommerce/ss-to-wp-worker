@@ -3129,8 +3129,8 @@ def list_intakes(limit: int = 50) -> list[dict]:
             meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         except Exception:
             continue
-        if meta.get("status") == "superseded":
-            continue   # aizstāts ar jaunāku tā paša avota nolasījumu (sk. partner_drive._mark_superseded)
+        if meta.get("status") in ("superseded", "dismissed"):
+            continue   # aizstāts ar jaunāku tā paša avota nolasījumu / aģents noņēma no saraksta
         rep = None
         if (d / "report.json").is_file():
             try:
