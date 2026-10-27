@@ -644,6 +644,7 @@ def _schema() -> dict:
             "district": _nullable("string"),
             "building_name": _nullable("string"),
             "address_known": {"type": "boolean"},
+            "list_complete_here": {"type": "boolean"},
             "units": {"type": "array", "items": unit},
         },
     }
@@ -747,9 +748,14 @@ PDF tabula, Excel, plāni kā PDF/attēli). Izvade: TIKAI JSON pēc shēmas, tek
     `utilities_note` «plus apsaimniekošana/komunālie»; «EUR 325.00++ / sqm» pie 65 m² pagraba = visticamāk kopējā cena
     mēnesī (325/65 = 5 €/m²) → `rent_total`; apsaimniekošanas maksu no apraksta («service fee EUR 2.95/sqm») →
     `maintenance_per_m2`; `looks_complete` = true. Ēkas aprakstu (visa ēka, citas platības «from 110 to 335 sqm»)
-    NEpārvērt par telpām.
+    NEpārvērt par telpām. Ja lapa ir par KONKRĒTU ēku/kvartālu (virsraksts, «Adrese: …»), bet tajā parādās arī telpas
+    citā adresē (cits kvartāls, «citi objekti», ieteikumi) — tām adresēm `list_complete_here` = false (Realto
+    «Manufaktūra» lapā L4/L5 ir Čiekurkalna kvartāls → tur mūsu neredzētās telpas NAV iznomātas).
 10. `looks_complete` = vai dokuments izskatās kā PILNS šī partnera brīvo telpu saraksts (vakanču saraksts,
     «aktuālais piedāvājums», mēneša lapa) — true; vai tikai dažas telpas/viena brošūra — false.
+    Katrai adresei `list_complete_here` = vai ŠIS dokuments/lapa ir pilns brīvo telpu saraksts ŠAI adresei (parasti
+    true, ja `looks_complete`); false — ja adrese te parādās tikai garāmejot (viena telpa pieminēta, cita objekta
+    reklāma, lapa ir par citu ēku).
 11. `is_vacancy_offer=false`, ja e-pasts nav telpu piedāvājums (rēķins, sarakste, spams) — tad units tukšs.
 12. `warnings` — īsi LV: kas neskaidrs (cena diapazons, platība «~», adrese nezināma, vairāki dokumenti u.c.).
 """
@@ -787,7 +793,7 @@ def _doc_areas(text: str) -> set[float]:
     return out
 
 
-def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
+def _merge_runs(runs: list[dict], one_unit_per_link: bool = False) -> tuple[dict, dict]:
     """Vairāku AI izlasījumu apvienošana (Raimonds 2026-10-24: «nevar būt, ka neizlasa pareizi»):
     bāze = izlasījums ar visvairāk telpām; telpas, kas ir CITĀ izlasījumā, bet bāzē nav — pievieno
     (pareizajai adresei); telpas, ko redzēja tikai viens no ≥2 izlasījumiem — `confidence` ≤0.55 →
@@ -866,6 +872,26 @@ def _merge_runs(runs: list[dict]) -> tuple[dict, dict]:
             continue
         kept_addrs.append(a)
     base["addresses"] = kept_addrs
+    if one_unit_per_link:
+        # mājaslapa: viena TELPAS LAPA (Ln) = viena telpa; ja tā nonākusi divās adresēs («Brīvības gatve 401» un
+        # «401C», Realto 2026-10-27) → paliek pie precīzākās (garākās) adreses, kopijas ārā
+        owner: dict[str, tuple[int, int]] = {}
+        for ai, a in enumerate(base.get("addresses") or []):
+            for ui, u in enumerate(a.get("units") or []):
+                for lid in u.get("link_ids") or []:
+                    cur = owner.get(lid)
+                    if cur is None or len(a.get("street") or "") > len(base["addresses"][cur[0]].get("street") or ""):
+                        owner[lid] = (ai, ui)
+        for ai, a in enumerate(base.get("addresses") or []):
+            keep = []
+            for ui, u in enumerate(a.get("units") or []):
+                lids = u.get("link_ids") or []
+                if lids and all(owner.get(l) != (ai, ui) for l in lids):
+                    dups += 1
+                    continue
+                keep.append(u)
+            a["units"] = keep
+        base["addresses"] = [a for a in base["addresses"] if a.get("units")]
     # absurdas platības (ha nolasīts kā m²: «3,92 ha» → 3.92 m², Realto Vircava 2026-10-26) → ārā + warning
     for a in base.get("addresses") or []:
         bad = [u for u in a.get("units") or [] if _num(u.get("area_m2")) is not None and 0 < _num(u.get("area_m2")) < 5]
@@ -1004,7 +1030,8 @@ def analyze(intake_id: str) -> dict:
                 runs.append(res)
     if not runs:
         raise RuntimeError("AI neatbildēja nevienā izlasījumā")
-    data, stats = _merge_runs(runs)
+    is_web = meta.get("source") == "web" or "AUTOMĀTISKS SKENĒJUMS — partnera" in text[:6000]
+    data, stats = _merge_runs(runs, one_unit_per_link=is_web)
     # pārklājuma pārbaude: dokumenta platības, kas nekur neparādās
     covered = set()
     for a in data.get("addresses") or []:
@@ -1016,7 +1043,12 @@ def analyze(intake_id: str) -> dict:
     skipped_txt += " " + " ".join(f"{u.get('area_note') or ''} {u.get('partner_notes') or ''} {u.get('ref') or ''}"
                                   for a in data.get("addresses") or [] for u in a.get("units") or [])
     skipped_nums = {round(float(x.replace(",", ".")), 1) for x in re.findall(r"\d{1,5}(?:[.,]\d{1,2})?", skipped_txt)}
-    missing = sorted(x for x in _doc_areas(text.split("PARTNERA WEB LAPAS")[0]) if not any(abs(x - c) <= max(0.06, 0.005 * x) for c in covered | skipped_nums))
+    cov_src = text.split("PARTNERA WEB LAPAS")[0]
+    if is_web:
+        # mājaslapa: pārklājumu prasa tikai telpu lapu virsrakstiem (kartiņām), ne kvartāla aprakstam («30, 90 un 120 m²»,
+        # «~4000 m²», «30 800 m²» — AI no tiem izdomāja telpas bez cenas, Realto 2026-10-27)
+        cov_src = "\n".join(l for l in cov_src.splitlines() if l.startswith("TELPAS LAPA L"))
+    missing = sorted(x for x in _doc_areas(cov_src) if not any(abs(x - c) <= max(0.06, 0.005 * x) for c in covered | skipped_nums))
     stats["doc_areas_missing"] = missing
     if missing and len(missing) <= 40:
         hint = ("PĀRBAUDE: dokumentā minētas šīs platības, kas tavā iepriekšējā atbildē NAV ne `units`, ne `skipped_items`: "
@@ -1025,7 +1057,7 @@ def analyze(intake_id: str) -> dict:
                   "skipped_items ar iemeslu (piem. kopplatība, terase, balkons, cita ēka, jau iznomāta).")
         fix = _safe_ai(client, model, content + [{"type": "input_text", "text": hint}])
         if fix:
-            data, st2 = _merge_runs([data, fix])
+            data, st2 = _merge_runs([data, fix], one_unit_per_link=is_web)
             stats["coverage_rerun"] = st2
     stats["addresses_geocoded"] = _resolve_missing_addresses(data)
     data["_meta"] = {"model": model, "seconds": round(time.time() - t0, 1), "text_chars": len(text),
@@ -1639,6 +1671,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             # Ķeksis pēc noklusējuma (Raimonds 2026-10-24): atsūtīts dokuments (PDF/Excel) ar telpām vai vairākas telpas
             # = pilns saraksts; tikai viens birojs e-pastā → bez ķekša (var nebūt viss stāsts). Aģents vienmēr var noņemt.
             default_on = bool(report["looks_complete"]) or has_doc or total_units >= 2
+            # adrese, par kuru šis dokuments/lapa NAV pilns saraksts (Realto Manufaktūra lapā Čiekurkalna kvartāla telpas,
+            # 2026-10-27) → mūsu neredzētās telpas NAV automātiski «iznomātas»
+            complete_here = addr.get("list_complete_here", True) is not False
+            a_out["list_complete_here"] = complete_here
+            default_on = default_on and complete_here
             if bp:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied" or int(l["id"]) in missing_seen:

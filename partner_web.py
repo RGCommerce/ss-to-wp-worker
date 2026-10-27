@@ -23,12 +23,35 @@ logger = logging.getLogger("partner_web")
 
 MAX_DETAIL_PAGES = 60
 MAX_IMAGES_PER_PAGE = 25
-AREA_RE = re.compile(r"\d{1,5}(?:[.,]\d{1,2})?\s*(?:sqm|sq\.?\s*m|m²|m\s?2|m\s*<sup>\s*2\s*</sup>|kv\.?\s*m|kvm)(?![0-9])", re.I)
+AREA_RE = re.compile(r"\d{1,5}(?:[.,]\d{1,2})?\s*(?:sqm|sq\.?\s*m|m²|m\s?2|mc2|m\s*<sup>\s*2\s*</sup>|kv\.?\s*m|kvm)(?![0-9])", re.I)   # «mc2» = Realto kartiņas drukas kļūda
 IMG_RE = re.compile(r'(?:data-src|data-lazy|data-original|src|href)\s*=\s*["\']([^"\']+\.(?:jpe?g|png|webp)(?:\?[^"\']*)?)["\']', re.I)
 PDF_RE = re.compile(r'href\s*=\s*["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']', re.I)
 SKIP_PATH = re.compile(r"(logo|icon|favicon|sprite|placeholder|avatar|flag|/themes/|/plugins/|emoji)", re.I)
 NAV_WORDS = ("contact", "kontakt", "about", "company", "par-mums", "privacy", "cookie", "login", "cart", "wp-admin",
-             "maintenance", "residential", "dzivok", "land", "zeme", "#", "mailto:", "tel:", "javascript:")
+             "maintenance", "residential", "dzivok", "land", "zeme", "#", "mailto:", "tel:", "javascript:",
+             "/agent/", "/agents/", "/author/", "/team/", "/broker")   # aģenta/autora lapas nav telpas (Realto 2026-10-27)
+
+
+CHROME_CTX = re.compile(r"(agent|author|avatar|widget|related|similar|logo|profile|sidebar|comment|navbar|footer)", re.I)
+
+
+def _strip_chrome(raw: str) -> str:
+    """Vietnes «rāmis» ārā: <head> (favicon), pirmais <header>, <nav>, <aside>, pēdējais <footer> — tur ir izvēlne un
+    kājenes logs «Nomai pieejamās telpas» ar CITU kvartālu telpām (Realto Manufaktūra → Čiekurkalns, 2026-10-27)."""
+    t = re.sub(r"<head[\s>].*?</head>", " ", raw, count=1, flags=re.S | re.I)
+    t = re.sub(r"<header[\s>].*?</header>", " ", t, count=1, flags=re.S | re.I)
+    t = re.sub(r"<nav[\s>].*?</nav>", " ", t, flags=re.S | re.I)
+    t = re.sub(r"<aside[\s>].*?</aside>", " ", t, flags=re.S | re.I)
+    i = t.lower().rfind("<footer")
+    if i >= 0:
+        j = t.lower().find("</footer>", i)
+        t = t[:i] + " " + (t[j + 9:] if j >= 0 else "")
+    return t
+
+
+def _page_title(raw: str) -> str:
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", raw, re.S | re.I) or re.search(r"<title[^>]*>(.*?)</title>", raw, re.S | re.I)
+    return " ".join(visible_text(m.group(1)).split())[:160] if m else ""
 
 
 def _get(url: str, timeout: int = 30) -> str:
@@ -82,7 +105,8 @@ def detail_links(raw: str, base_url: str) -> list[dict]:
                 ok = False   # citas valodas dublikāti
             if ok:
                 ctx = raw[max(0, m.start() - 700): m.end() + 700]
-                ok = bool(AREA_RE.search(ctx))
+                # Realto/Houzez 2026-10-27: «<span>520</span> <span>m2</span>» — tagi starp skaitli un mērvienību
+                ok = bool(AREA_RE.search(ctx)) or bool(AREA_RE.search(visible_text(ctx)))
             valid[u] = valid.get(u) or ok
         if valid[u]:
             occ.append((m.start(), u))
@@ -109,6 +133,9 @@ def _best_images(raw: str, page_url: str, any_domain: bool = False) -> list[str]
         if not any_domain and not _same_site(u, page_url) and "wp-content" not in u:
             continue
         if SKIP_PATH.search(u):
+            continue
+        # aģenta foto, autora avatārs, «līdzīgie objekti» logs, logo — nav telpas bildes (Realto Atlasa 8, 2026-10-27)
+        if CHROME_CTX.search(raw[max(0, m.start() - 400): m.start()]):
             continue
         path = urlparse(u).netloc + urlparse(u).path
         mm = re.search(r"-(\d{2,4})x(\d{2,4})(\.\w+)$", path)
@@ -163,11 +190,13 @@ def inline_blocks(raw: str, base_url: str) -> list[dict]:
 def collect(url: str, recipe: Optional[dict] = None) -> dict:
     """Saraksta lapa + detaļas. → {list_text, fingerprint, details:[{url,row,text,images,pdfs}], needs_recipe}.
     Secība: AI iemācītā recepte (ja ir) → heiristikas (detaļu lapas / bloki vienā lapā) → needs_recipe=True."""
-    raw = _get(url)
+    raw0 = _get(url)
+    raw = _strip_chrome(raw0)
     list_text = visible_text(raw)
     fp = hashlib.sha1(_norm_for_fp(list_text).encode("utf-8")).hexdigest()
-    out = {"url": url, "list_text": list_text, "fingerprint": fp, "details": [], "needs_recipe": False, "list_only": False, "raw_len": len(raw)}
-    mb = re.search(r'<base\s+href="([^"]+)"', raw, re.I)
+    out = {"url": url, "title": _page_title(raw0), "list_text": list_text, "fingerprint": fp, "details": [], "needs_recipe": False,
+           "list_only": False, "raw_len": len(raw)}
+    mb = re.search(r'<base\s+href="([^"]+)"', raw0, re.I)
     base = mb.group(1) if mb else url   # <base href> maina relatīvo saišu bāzi (Eften: «lv/…/408/196/»)
     if recipe:
         try:
@@ -206,6 +235,7 @@ def fetch_details(links: list[dict]) -> list[dict]:
         except Exception as e:
             logger.info("partner_web: %s nenolasās: %s", d["url"], e)
             continue
+        draw = _strip_chrome(draw)
         text = visible_text(draw)
         imgs = _best_images(draw, d["url"]) or _best_images(draw, d["url"], any_domain=True)   # bildes var būt citā domēnā (CDN)
         pdfs = [urljoin(d["url"], html_mod.unescape(x)) for x in PDF_RE.findall(draw)]
@@ -355,6 +385,9 @@ def body_text(src: dict, col: dict, scanned_at) -> str:
         "saitē ar to pašu L-numuru (link_ids). Cena «EUR 10.50++ / sqm» = 10,50 €/m² mēnesī PLUS apsaimniekošana un "
         "komunālie (++); «sqm» = m². Adrese ir kartiņā/lapā (angliski «Brivibas street 171» = Brīvības iela 171).",
     ]
+    if col.get("title"):
+        lines.append(f"LAPA IR PAR: «{col['title']}» — telpas CITĀ adresē/kvartālā nekā šī ēka ir tikai pieminētas garāmejot "
+                     "(tām adresēm `list_complete_here` = false).")
     if src.get("notes"):
         lines.append(f"Piezīmes par partneri: {src['notes']}")
     lines += ["", "SARAKSTA LAPA:", col["list_text"][:6000], ""]
