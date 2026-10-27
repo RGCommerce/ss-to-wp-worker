@@ -167,10 +167,10 @@ def seedream_predict(image_url: str, prompt: str | None = None) -> str | None:
     return None
 
 
-def _seedream_bytes(image_bytes: bytes, filename: str) -> bytes | None:
+def _seedream_bytes(image_bytes: bytes, filename: str, prompt: str | None = None) -> bytes | None:
     """Bilde (baiti) → Seedream → apstrādātās bildes baiti (vai None ja kļūda)."""
     image_url = replicate_upload(image_bytes, filename)
-    out_url = seedream_predict(image_url)
+    out_url = seedream_predict(image_url, prompt)
     if not out_url:
         return None
     r = requests.get(out_url, timeout=120, verify=_VERIFY)
@@ -185,15 +185,26 @@ def process_bytes_checked(image_bytes: bytes, filename: str) -> bytes | None:
     jauna) — mēģina VĒLREIZ. Atgriež TĪRUS baitus vai None, ja neizdevās
     dabūt tīru bildi. Pārbaudes kļūda (None) = fail-open (baitus atdod).
     """
-    for attempt in (1, 2):
-        out = _seedream_bytes(image_bytes, filename)
+    # Raimonds 2026-10-27 («100 % success rate»): 1) apskatās, KUR ūdenszīme; 2) Seedream ar mērķētu norādi;
+    # 3) FRESH EYES pārbaude (detail=high, jebkura aģentūra); 4) ja palikusi — vēlreiz uz REZULTĀTA ar jauno
+    # atrašanās vietu, līdz 3 reizēm; tikai tad padodas (bilde netiek publicēta).
+    look = watermark_check.locate_watermark(image_bytes, any_agency=True)
+    where = (look or {}).get("where") or ""
+    cur = image_bytes
+    for attempt in (1, 2, 3):
+        prompt = PROMPT
+        if where:
+            prompt += (f" The watermark / logo / overlay text that must be removed is located here: {where}. "
+                       "Remove it completely and reconstruct the underlying scene naturally.")
+        out = _seedream_bytes(cur, filename, prompt)
         if out is None:
             return None
-        wm = watermark_check.has_watermark_bytes(out, any_agency=True)   # ss.lv foto: arī citu aģentūru zīmes
-        if wm is not True:
+        fresh = watermark_check.locate_watermark(out, any_agency=True)   # fresh eyes: ss.lv + citu aģentūru zīmes
+        if fresh is None or not fresh.get("watermark"):
             return out  # tīra vai pārbaude neizdevās (fail-open)
-        print(f"      ! ūdenszīme PALIKUSI pēc Seedream "
-              f"(mēģinājums {attempt}/2) — {filename}")
+        where = fresh.get("where") or where
+        cur = out
+        print(f"      ! ūdenszīme PALIKUSI pēc Seedream (mēģinājums {attempt}/3, {where}) — {filename}")
     return None
 
 

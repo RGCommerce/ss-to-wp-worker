@@ -92,6 +92,44 @@ WM_PROMPT_ANY_AGENCY = (
 # Vision call
 # ---------------------------------------------------------------------------
 
+def locate_watermark(image_bytes: bytes, any_agency: bool = True) -> dict | None:
+    """Kā has_watermark_bytes, bet atdod arī KUR ({"watermark": bool, "where": str}) — Raimonds 2026-10-27:
+    «jāapskatās, jāatrod ūdenszīme, jānoņem, jāpārbauda ar fresh eyes; ja palikusi — no jauna»."""
+    if not OPENAI_API_KEY:
+        return None
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    body = {
+        "model": OPENAI_VISION_MODEL,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": WM_PROMPT_ANY_AGENCY if any_agency else WM_PROMPT},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high" if any_agency else "low"}},
+        ]}],
+        "max_tokens": 120,
+    }
+    for attempt in range(1, 4):
+        try:
+            r = requests.post("https://api.openai.com/v1/chat/completions",
+                              headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                              json=body, timeout=60, verify=_VERIFY)
+        except requests.RequestException:
+            if attempt < 3:
+                time.sleep(3 * attempt)
+                continue
+            return None
+        if r.status_code == 429:
+            time.sleep(15)
+            continue
+        if r.status_code != 200:
+            return None
+        try:
+            obj = json.loads(r.json()["choices"][0]["message"]["content"])
+            return {"watermark": bool(obj.get("watermark")), "where": str(obj.get("where") or "")}
+        except Exception:
+            return None
+    return None
+
+
 def has_watermark_bytes(image_bytes: bytes, any_agency: bool = False) -> bool | None:
     """Viena bilde → True (ir ss.com ūdenszīme) / False (tīra) / None (pārbaude
     neizdevās — API kļūda vai nav atslēgas; sauciens pats lemj fail-open).
