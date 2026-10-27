@@ -3134,6 +3134,11 @@ def process_intake(intake_id: str, do_notify: bool = True) -> dict:
     d = INTAKE_DIR / intake_id
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    if meta.get("status") in ("ready", "error", "new", None):
+        # «Pārlasīt»: kamēr AI lasa, piedāvājums ir atpakaļ 2. solī (ne «apstiprināms» ar veco reportu) — Raimonds 2026-10-27
+        meta["status"] = "new"
+        meta.pop("error", None)
+        meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     try:
         analysis = analyze(intake_id)
         try:
