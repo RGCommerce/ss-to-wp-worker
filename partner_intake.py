@@ -1163,7 +1163,9 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
 
 def _our_listings(conn, bp_id: int) -> list[dict]:
     """Mūsu sludinājumi ēkā: mūsu avoti + VISS, kas ir mājaslapā (arī auto-publicētie ss.lv — Basteja 332 m²
-    #111385 bija mājaslapā, bet netika atpazīts, Raimonds 2026-10-24)."""
+    #111385 bija mājaslapā, bet netika atpazīts, Raimonds 2026-10-24).
+    Debug_status NULL = mūsu listings, kam tobrīd AI analizators aizpilda laukus pēc bilžu apstrādes (dažas minūtes
+    pēc apstiprināšanas) — arī TĀDS ir mūsējais (Hausmaņa 30,5 m² #111914 tika «izveidots vēlreiz» → partial, 2026-10-27)."""
     return conn.execute(
         """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
                   on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
@@ -1171,10 +1173,11 @@ def _our_listings(conn, bp_id: int) -> list[dict]:
                   cardinality(local_image_paths_processed) AS n_processed,
                   cardinality(local_image_paths_raw) AS n_raw
              FROM properties.listings
-            WHERE building_profile_id = %s AND "Debug_status" = 'ok'
+            WHERE building_profile_id = %s
+              AND ("Debug_status" = 'ok' OR ("Debug_status" IS NULL AND source = ANY(%s)))
               AND (source = ANY(%s) OR wp_post_id IS NOT NULL OR on_website = true)
             ORDER BY id DESC""",
-        (bp_id, list(OUR_SOURCES)),
+        (bp_id, list(OUR_SOURCES), list(OUR_SOURCES)),
     ).fetchall()
 
 
@@ -1190,10 +1193,11 @@ def _our_listings_safe(conn, bp_id: int) -> list[dict]:
                       cardinality(local_image_paths_processed) AS n_processed,
                       cardinality(local_image_paths_raw) AS n_raw
                  FROM properties.listings
-                WHERE building_profile_id = %s AND "Debug_status" = 'ok'
+                WHERE building_profile_id = %s
+                  AND ("Debug_status" = 'ok' OR ("Debug_status" IS NULL AND source = ANY(%s)))
                   AND (source = ANY(%s) OR wp_post_id IS NOT NULL OR on_website = true)
                 ORDER BY id DESC""",
-            (bp_id, list(OUR_SOURCES)),
+            (bp_id, list(OUR_SOURCES), list(OUR_SOURCES)),
         ).fetchall()
 
 
