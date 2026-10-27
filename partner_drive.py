@@ -201,17 +201,9 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
         return result
     if not col["details"] and not col.get("list_only"):
         raise RuntimeError("Lapā neatradu nevienu telpas lapu (saites ar platību) — vajag citu URL vai pielāgojumu")
-    prev = src.get("last_intake_id")
-    if prev and not force:
-        mp = partner_intake.INTAKE_DIR / prev / "meta.json"
-        if mp.is_file():
-            try:
-                st = json.loads(mp.read_text(encoding="utf-8")).get("status")
-            except Exception:
-                st = None
-            if st in ("new", "ready"):
-                result["skipped"] = f"iepriekšējais piedāvājums {prev} vēl nav apstiprināts"
-                return result
+    # iepriekšējais vēl gaida apstiprināšanu, bet avots mainījies → jaunais to AIZSTĀJ (vecais = «superseded», panelī
+    # pazūd; Realto 2026-10-27: pēc labojuma «Skenēt no jauna» neko nedeva, jo vecais nolasījums stāvēja ceļā)
+    supersede = _pending_prev(src)
     parsed = {
         "message_id": f"web:{src['id']}:{fp[:12]}",
         "forwarder_name": src.get("name"), "forwarder_email": src.get("agent_email") or "raimonds@rgcommerce.lv",
@@ -229,6 +221,7 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
     result["intake_id"] = meta["intake_id"]
     rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
     result["summary"] = rep.get("summary")
+    _mark_superseded(supersede, meta["intake_id"])
     return result
 
 
@@ -259,18 +252,9 @@ def scan_source(src: dict, force: bool = False) -> dict:
                               "changed": fp != src.get("last_fingerprint"), "fingerprint": fp, "intake_id": None, "skipped": None}
     if not result["changed"] and not force:
         return result
-    # iepriekšējais vēl gaida apstiprināšanu → nekrājam
-    prev = src.get("last_intake_id")
-    if prev and not force:
-        mp = partner_intake.INTAKE_DIR / prev / "meta.json"
-        if mp.is_file():
-            try:
-                st = json.loads(mp.read_text(encoding="utf-8")).get("status")
-            except Exception:
-                st = None
-            if st in ("new", "ready"):
-                result["skipped"] = f"iepriekšējais piedāvājums {prev} vēl nav apstiprināts"
-                return result
+    # iepriekšējais vēl gaida apstiprināšanu, bet avots mainījies → jaunais to AIZSTĀJ (vecais = «superseded», panelī
+    # pazūd; Realto 2026-10-27: pēc labojuma «Skenēt no jauna» neko nedeva, jo vecais nolasījums stāvēja ceļā)
+    supersede = _pending_prev(src)
     atts = []
     for fid, data in price_blobs.items():
         name = f"cenas_{fid[:8]}.pdf" if data[:5] == b"%PDF-" else f"cenas_{fid[:8]}.bin"
@@ -293,7 +277,37 @@ def scan_source(src: dict, force: bool = False) -> dict:
     result["intake_id"] = meta["intake_id"]
     rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
     result["summary"] = rep.get("summary")
+    _mark_superseded(supersede, meta["intake_id"])
     return result
+
+
+def _pending_prev(src: dict) -> Optional[str]:
+    """Avota iepriekšējā ieplūde, ja tā vēl nav apstiprināta (new/ready) — to aizstās jaunā."""
+    prev = src.get("last_intake_id")
+    if not prev:
+        return None
+    mp = partner_intake.INTAKE_DIR / prev / "meta.json"
+    if not mp.is_file():
+        return None
+    try:
+        st = json.loads(mp.read_text(encoding="utf-8")).get("status")
+    except Exception:
+        return None
+    return prev if st in ("new", "ready") else None
+
+
+def _mark_superseded(old_id: Optional[str], new_id: str) -> None:
+    if not old_id or old_id == new_id:
+        return
+    mp = partner_intake.INTAKE_DIR / old_id / "meta.json"
+    try:
+        meta = json.loads(mp.read_text(encoding="utf-8"))
+        if meta.get("status") in ("new", "ready"):
+            meta["status"] = "superseded"
+            meta["superseded_by"] = new_id
+            mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as e:
+        logger.warning("partner_drive: superseded %s: %s", old_id, e)
 
 
 def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
