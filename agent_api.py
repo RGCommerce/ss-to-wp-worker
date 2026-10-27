@@ -1640,8 +1640,9 @@ def partner_intake_dismiss(intake_id: str, _auth: None = Depends(require_token))
     if not mp.is_file():
         raise HTTPException(404, "Nav tāda piedāvājuma")
     meta = json.loads(mp.read_text(encoding="utf-8"))
-    if meta.get("status") in ("applied", "partial"):
+    if meta.get("status") == "applied":
         raise HTTPException(409, "Apstiprinātu piedāvājumu nevar noņemt — lieto «Atsaukt»")
+    # partial (daļa ar kļūdām) drīkst noņemt — izveidotie listingi paliek (Hausmaņa 2026-10-27)
     meta["status"] = "dismissed"
     meta["dismissed_at"] = datetime.now(timezone.utc).isoformat()
     mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
