@@ -140,7 +140,10 @@ def _best_images(raw: str, page_url: str, any_domain: bool = False) -> list[str]
         path = urlparse(u).netloc + urlparse(u).path
         mm = re.search(r"-(\d{2,4})x(\d{2,4})(\.\w+)$", path)
         ms = re.search(r"_(tn|thumb|thumbnail|small|sm|xs|web\d*|md|medium|large|lg)(\.\w+)$", path, re.I)
-        if mm:
+        msc = re.search(r"-scaled(\.\w+)$", path, re.I)   # WP «-scaled» = tas pats fails lielā izmērā (Realto cover-scaled.jpg)
+        if msc:
+            base, score = path[: msc.start()] + msc.group(1), 9_000_000
+        elif mm:
             base = path[: mm.start()] + mm.group(3)
             score = int(mm.group(1)) * int(mm.group(2))
         elif ms:
