@@ -46,6 +46,9 @@ load_dotenv(Path(__file__).parent / ".env")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+# FRESH EYES / publicēšanas vārts partneru bildēm: stiprāks modelis (mini «high» palaida garām blāvu «EFTEN CAPITAL»
+# spoku uz raiba fona — Domina 2026-10-27). ~1–2 ¢/pārbaude.
+OPENAI_VISION_MODEL_STRICT = os.getenv("OPENAI_VISION_MODEL_STRICT", "gpt-4o")
 STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", "./storage"))
 
 _VERIFY = os.getenv("VERIFY_SSL", os.getenv("WP_VERIFY_SSL", "1")) \
@@ -81,8 +84,9 @@ WM_PROMPT_ANY_AGENCY = (
     "or website addresses.\n"
     "Return ONLY a JSON object with EXACTLY these fields:\n"
     "- \"watermark\": true if ANY such overlaid watermark/logo/copyright/phone text is visible "
-    "anywhere in the image (even partially or faintly), false otherwise.\n"
-    "- \"where\": short note where it was seen (e.g. \"top-left\"), or \"\".\n"
+    "anywhere in the image (even partially, faintly, or as a ghost/remnant after editing), false otherwise.\n"
+    "- \"where\": short note where it was seen (e.g. \"top-left\", \"center\"), or \"\".\n"
+    "- \"text\": the overlay text/brand you can read (e.g. \"EfTEN Capital\"), or \"\".\n"
     "Real-world signage, house numbers, shop signs or documents physically present in the scene "
     "do NOT count — only overlays added on top of the photo. Return ONLY valid JSON."
 )
@@ -92,17 +96,80 @@ WM_PROMPT_ANY_AGENCY = (
 # Vision call
 # ---------------------------------------------------------------------------
 
-def locate_watermark(image_bytes: bytes, any_agency: bool = True) -> dict | None:
-    """Kā has_watermark_bytes, bet atdod arī KUR ({"watermark": bool, "where": str}) — Raimonds 2026-10-27:
-    «jāapskatās, jāatrod ūdenszīme, jānoņem, jāpārbauda ar fresh eyes; ja palikusi — no jauna»."""
+def _hint_text(hint: dict | None) -> str:
+    if not hint:
+        return ""
+    t, w = (hint.get("text") or "").strip(), (hint.get("where") or "").strip()
+    if not t and not w:
+        return ""
+    return ("\nIMPORTANT CONTEXT: before editing, this photo HAD an overlaid watermark"
+            + (f" reading \"{t}\"" if t else "") + (f" located at: {w}" if w else "")
+            + ". Inspect that area with extreme care for ANY faint ghost, outline, blur halo or partial letters of it. "
+              "If you can still make out any trace of it, answer watermark=true.")
+
+
+def _crop_zoom(image_bytes: bytes, where: str) -> bytes | None:
+    """Tuvinājums vietai («center», «top-left», …) — blāvs spoks uz raiba fona pilnā bildē paslīd garām."""
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        W, H = im.size
+        w = (where or "center").lower()
+        fx0, fx1, fy0, fy1 = 0.2, 0.8, 0.2, 0.8
+        if "left" in w:
+            fx0, fx1 = 0.0, 0.55
+        if "right" in w:
+            fx0, fx1 = 0.45, 1.0
+        if "top" in w or "upper" in w:
+            fy0, fy1 = 0.0, 0.55
+        if "bottom" in w or "lower" in w:
+            fy0, fy1 = 0.45, 1.0
+        crop = im.crop((int(W * fx0), int(H * fy0), int(W * fx1), int(H * fy1)))
+        scale = min(2.0, 1600 / max(crop.size))
+        if scale > 1:
+            crop = crop.resize((int(crop.size[0] * scale), int(crop.size[1] * scale)), Image.LANCZOS)
+        buf = io.BytesIO()
+        crop.save(buf, "JPEG", quality=92)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def fresh_eyes(image_bytes: bytes, hint: dict | None = None) -> dict | None:
+    """Pēc tīrīšanas — 3 balsis ar stingro modeli: (1) pilnā bilde AR norādi, (2) tuvinājums uz vietu AR norādi,
+    (3) tuvinājums BEZ norādes. Ūdenszīme = ≥2 balsis. Tests 2026-10-27: paslīdējusī Domina (blāvs spoks) T,T,F → ir;
+    tīrā Eften T,F,F → nav (viena pārbaude ar norādi mēdz pārspīlēt, bez norādes — nepamanīt)."""
+    crop = _crop_zoom(image_bytes, (hint or {}).get("where") or "center")
+    votes: list[dict] = []
+    v1 = locate_watermark(image_bytes, any_agency=True, hint=hint, strict=True)
+    if v1 is None:
+        return None
+    votes.append(v1)
+    if crop:
+        v2 = locate_watermark(crop, any_agency=True, hint=hint, strict=True)
+        v3 = locate_watermark(crop, any_agency=True, hint=None, strict=True)
+        votes += [v for v in (v2, v3) if v is not None]
+    yes = [v for v in votes if v.get("watermark")]
+    if len(yes) >= 2 or (len(votes) == 1 and yes):
+        best = yes[0]
+        return {"watermark": True, "where": best.get("where") or (hint or {}).get("where") or "center",
+                "text": best.get("text") or (hint or {}).get("text") or "", "votes": f"{len(yes)}/{len(votes)}"}
+    return {"watermark": False, "where": "", "text": "", "votes": f"{len(yes)}/{len(votes)}"}
+
+
+def locate_watermark(image_bytes: bytes, any_agency: bool = True, hint: dict | None = None, strict: bool = False) -> dict | None:
+    """Kā has_watermark_bytes, bet atdod arī KUR un KO ({"watermark", "where", "text"}) — Raimonds 2026-10-27:
+    «jāapskatās, jāatrod ūdenszīme, jānoņem, jāpārbauda ar fresh eyes; ja palikusi — no jauna».
+    strict=True → stiprāks modelis; hint → ko/kur meklēt (pēc tīrīšanas)."""
     if not OPENAI_API_KEY:
         return None
     b64 = base64.b64encode(image_bytes).decode("ascii")
     body = {
-        "model": OPENAI_VISION_MODEL,
+        "model": OPENAI_VISION_MODEL_STRICT if strict else OPENAI_VISION_MODEL,
         "response_format": {"type": "json_object"},
         "messages": [{"role": "user", "content": [
-            {"type": "text", "text": WM_PROMPT_ANY_AGENCY if any_agency else WM_PROMPT},
+            {"type": "text", "text": (WM_PROMPT_ANY_AGENCY if any_agency else WM_PROMPT) + _hint_text(hint)},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high" if any_agency else "low"}},
         ]}],
         "max_tokens": 120,
@@ -124,7 +191,7 @@ def locate_watermark(image_bytes: bytes, any_agency: bool = True) -> dict | None
             return None
         try:
             obj = json.loads(r.json()["choices"][0]["message"]["content"])
-            return {"watermark": bool(obj.get("watermark")), "where": str(obj.get("where") or "")}
+            return {"watermark": bool(obj.get("watermark")), "where": str(obj.get("where") or ""), "text": str(obj.get("text") or "")}
         except Exception:
             return None
     return None
@@ -241,7 +308,11 @@ def check_files(cache_dir: Path, paths: list[Path],
             print(f"      ! wm-check read {p.name}: {e}")
             out[p.name] = None
             continue
-        verdict = has_watermark_bytes(data, any_agency=any_agency)
+        if any_agency:
+            res = locate_watermark(data, any_agency=True, strict=True)
+            verdict = None if res is None else bool(res.get("watermark"))
+        else:
+            verdict = has_watermark_bytes(data)
         out[p.name] = verdict
         if verdict is not None:
             cache[p.name] = {

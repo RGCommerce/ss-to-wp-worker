@@ -175,7 +175,7 @@ def _seedream_bytes(image_bytes: bytes, filename: str, prompt: str | None = None
     return r.content
 
 
-def process_bytes_checked(image_bytes: bytes, filename: str) -> bytes | None:
+def process_bytes_checked(image_bytes: bytes, filename: str, min_passes: int = 1) -> bytes | None:
     """Seedream + ss.com ūdenszīmes drošības pārbaude (watermark_check).
 
     Ja pārbaude saka, ka ūdenszīme PALIKUSI (Seedream to reizēm uzzīmē no
@@ -185,23 +185,30 @@ def process_bytes_checked(image_bytes: bytes, filename: str) -> bytes | None:
     # Raimonds 2026-10-27 («100 % success rate»): 1) apskatās, KUR ūdenszīme; 2) Seedream ar mērķētu norādi;
     # 3) FRESH EYES pārbaude (detail=high, jebkura aģentūra); 4) ja palikusi — vēlreiz uz REZULTĀTA ar jauno
     # atrašanās vietu, līdz 3 reizēm; tikai tad padodas (bilde netiek publicēta).
-    look = watermark_check.locate_watermark(image_bytes, any_agency=True)
-    where = (look or {}).get("where") or ""
+    look = watermark_check.locate_watermark(image_bytes, any_agency=True, strict=True) or {}
+    hint = {"where": look.get("where") or "", "text": look.get("text") or ""}
     cur = image_bytes
     for attempt in (1, 2, 3):
         prompt = PROMPT
-        if where:
-            prompt += (f" The watermark / logo / overlay text that must be removed is located here: {where}. "
-                       "Remove it completely and reconstruct the underlying scene naturally.")
+        if hint["where"] or hint["text"]:
+            prompt += (" The watermark / logo / overlay text that must be removed"
+                       + (f" reads \"{hint['text']}\"" if hint["text"] else "")
+                       + (f" and is located here: {hint['where']}" if hint["where"] else "")
+                       + ". Remove it completely, including any faint ghost or outline, and reconstruct the underlying scene naturally.")
         out = _seedream_bytes(cur, filename, prompt)
         if out is None:
             return None
-        fresh = watermark_check.locate_watermark(out, any_agency=True)   # fresh eyes: ss.lv + citu aģentūru zīmes
+        if attempt < min_passes:
+            # obligāts papildu piegājiens (partneru web foto): tīra jau notīrīto — spoki pazūd (Domina 2026-10-27)
+            cur = out
+            continue
+        # FRESH EYES: stingrs modelis (3 balsis), zina ko/kur meklēt, + tuvinājums uz vietu
+        fresh = watermark_check.fresh_eyes(out, hint if (hint["where"] or hint["text"]) else None)
         if fresh is None or not fresh.get("watermark"):
             return out  # tīra vai pārbaude neizdevās (fail-open)
-        where = fresh.get("where") or where
+        hint = {"where": fresh.get("where") or hint["where"], "text": fresh.get("text") or hint["text"]}
         cur = out
-        print(f"      ! ūdenszīme PALIKUSI pēc Seedream (mēģinājums {attempt}/3, {where}) — {filename}")
+        print(f"      ! ūdenszīme PALIKUSI pēc Seedream (mēģinājums {attempt}/3, {hint}) — {filename}")
     return None
 
 

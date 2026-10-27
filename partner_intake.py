@@ -1855,6 +1855,97 @@ def _guess_district(conn, street: Optional[str], city: Optional[str], bp_id: Opt
                 return _canon(rows[0]["d"])
     except Exception:
         conn.rollback()
+    # 5) jauna ēka bez datiem DB (Eften Ieriķu 3 → Domina bez rajona, 2026-10-27) → tuvākie mūsu listingi ar
+    #    rajonu (Google dod koordinātas; Rīgai Google apkaimi neatdod, tikai priekšpilsētu)
+    nn = _nn_district(conn, street, city)
+    if nn:
+        return _canon(nn)
+    g = _google_district(street, city)
+    return _canon(g) if g else ""
+
+
+def _geocode_coords(street: Optional[str], city: Optional[str]) -> Optional[tuple[float, float]]:
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key or not street or not any(ch.isdigit() for ch in street):
+        return None
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({"address": f"{street}, {city or 'Rīga'}", "components": "country:LV", "key": key})
+    try:
+        with urllib.request.urlopen(f"https://maps.googleapis.com/maps/api/geocode/json?{q}", timeout=12) as r:
+            j = json.loads(r.read().decode("utf-8"))
+        res = (j.get("results") or [None])[0]
+        if not res or res.get("partial_match"):
+            return None
+        loc = res["geometry"]["location"]
+        return float(loc["lat"]), float(loc["lng"])
+    except Exception:
+        return None
+
+
+def _nn_district(conn, street: Optional[str], city: Optional[str], radius_m: int = 500) -> str:
+    """Rajons pēc tuvākajiem mūsu listingiem ar koordinātām (≤7, ≤500 m, vairākums pēc mazajiem burtiem);
+    atgriež visbiežāk DB lietoto rakstību (vef/VEF → «VEF»). Ieriķu 3 → VEF, Jūrkalnes 15 → Šampēteris-Pleskodāle."""
+    pt = _geocode_coords(street, city)
+    if not pt:
+        return ""
+    lat, lng = pt
+    try:
+        rows = conn.execute(
+            """SELECT district, (6371000*acos(least(1, cos(radians(%s))*cos(radians(lat))*cos(radians(lng)-radians(%s))
+                                                  + sin(radians(%s))*sin(radians(lat))))) AS m
+                 FROM properties.listings
+                WHERE lat IS NOT NULL AND lng IS NOT NULL AND nullif(btrim(coalesce(district,'')),'') IS NOT NULL
+                  AND "Debug_status" = 'ok'
+                ORDER BY m LIMIT 7""", (lat, lng, lat)).fetchall()
+    except Exception:
+        conn.rollback()
+        return ""
+    near = [r for r in rows if r["m"] is not None and float(r["m"]) <= radius_m]
+    if len(near) < 2:
+        return ""
+    # vairākums pēc normalizētas atslēgas; vairāki rajoni vienā («Teika, VEF») skaitās katram
+    votes: dict[str, int] = {}
+    for r in near:
+        for part in str(r["district"]).split(","):
+            k = part.strip().lower()
+            if k:
+                votes[k] = votes.get(k, 0) + 1
+    if not votes:
+        return ""
+    key, n = max(votes.items(), key=lambda kv: kv[1])
+    if n < 2:
+        return ""
+    try:
+        sp = conn.execute(
+            """SELECT btrim(district) d, count(*) c FROM properties.listings
+                WHERE lower(btrim(district)) = %s GROUP BY 1""", (key,)).fetchall()
+        # rakstība: ar vairāk lielajiem burtiem (VEF > Vef > vef; Šampēteris-Pleskodāle), tad biežākā
+        best = max(sp, key=lambda r: (sum(ch.isupper() for ch in r["d"]), r["c"])) if sp else None
+        return best["d"] if best else key
+    except Exception:
+        conn.rollback()
+        return key
+
+
+def _google_district(street: Optional[str], city: Optional[str]) -> str:
+    """Google Geocoding → «neighborhood» (Teika, Purvciems …). Tikai ar mājas numuru; priekšpilsētu neņem."""
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key or not street or not any(ch.isdigit() for ch in street):
+        return ""
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({"address": f"{street}, {city or 'Rīga'}", "components": "country:LV", "language": "lv", "key": key})
+    try:
+        with urllib.request.urlopen(f"https://maps.googleapis.com/maps/api/geocode/json?{q}", timeout=12) as r:
+            j = json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        logger.info("partner_intake: google rajons %r: %s", street, e)
+        return ""
+    for res in j.get("results") or []:
+        comp = {t: c["long_name"] for c in res.get("address_components") or [] for t in c.get("types") or []}
+        if comp.get("neighborhood"):
+            return comp["neighborhood"]
     return ""
 
 
@@ -2321,7 +2412,9 @@ def _process_images(listing_id: int, building_mode: str = "never", building_fns:
                     if f.name.startswith(CLEAN_PREFIX):
                         shutil.copy2(f, dst)
                     else:
-                        data = image_pipeline.process_bytes_checked(f.read_bytes(), f.name)
+                        # img_lnk_* = partnera/web foto ar (iespējamu) aģentūras logo → vismaz 2 Seedream piegājieni
+                        data = image_pipeline.process_bytes_checked(f.read_bytes(), f.name,
+                                                                     min_passes=2 if f.name.startswith("img_lnk_") else 1)
                         if data is None:
                             out["failed"] += 1
                             continue
