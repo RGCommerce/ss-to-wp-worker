@@ -1909,9 +1909,13 @@ def partner_intake_upload(
 class DriveSourceReq(BaseModel):
     id: Optional[str] = None
     name: str
-    kind: Optional[str] = None       # drive (noklusēti) | web
+    kind: Optional[str] = None       # drive (noklusēti) | web | sslv
     folder: Optional[str] = None     # Drive mapes saite vai ID
     url: Optional[str] = None        # mājaslapas saraksta lapa (kind=web)
+    phones: Optional[str] = None     # kind=sslv: partnera numurs(i)
+    street: Optional[str] = None     # kind=sslv: ēkas adrese
+    city: Optional[str] = None       # kind=sslv
+    days: Optional[int] = None       # kind=sslv: pēdējo dienu logs (15)
     price_files: list[str] = Field(default_factory=list)   # cenu failu saites/ID
     agent_email: Optional[str] = None
     contact_name: Optional[str] = None

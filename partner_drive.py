@@ -26,7 +26,9 @@ from typing import Any, Optional
 
 logger = logging.getLogger("partner_drive")
 
-SCHEDULES = {"daily": timedelta(hours=24), "weekly": timedelta(days=7)}
+SCHEDULES = {"hourly": timedelta(hours=1), "daily": timedelta(hours=24), "weekly": timedelta(days=7)}
+SSLV_DEFAULT_DAYS = 15        # «pēdējās 15 dienas» (Raimonds 2026-10-28)
+SSLV_MAX_UNITS = 30           # drošības griesti vienai ieplūdei
 MAX_FOLDER_DEPTH = 3
 
 
@@ -74,9 +76,29 @@ def upsert_source(data: dict) -> dict:
     kind = (data.get("kind") or ("web" if data.get("url") else "drive")).strip().lower()
     web_url = (data.get("url") or "").strip()
     folder_id = None
+    sslv: dict = {}
     if kind == "web":
         if not re.match(r"^https?://[^\s]+$", web_url):
             raise ValueError("Mājaslapas saite nav derīga (jāsākas ar http)")
+    elif kind == "sslv":
+        # partnera ss.lv numurs + adrese (Raimonds 2026-10-28): katrs jauns ss.lv sludinājums ar ŠO numuru ŠAJĀ ēkā
+        # pēdējās N dienās → ieplūde apstiprināšanai (manuāli, nekad automātiski)
+        tails = _phone_tails(data.get("phones") or data.get("contact_phone") or "")
+        if not tails:
+            raise ValueError("Vajag partnera telefona numuru (vismaz 7 cipari)")
+        street = (data.get("street") or "").strip()
+        city = (data.get("city") or "Rīga").strip() or "Rīga"
+        if not street or not any(ch.isdigit() for ch in street):
+            raise ValueError("Vajag adresi ar mājas numuru (piem. «Krišjāņa Barona iela 95a»)")
+        bps = _resolve_bps(street, city)
+        if not bps:
+            raise ValueError(f"Ēka «{street}, {city}» DB nav atrasta — pārbaudi adresi")
+        try:
+            days = int(data.get("days") or SSLV_DEFAULT_DAYS)
+        except Exception:
+            days = SSLV_DEFAULT_DAYS
+        sslv = {"phones": sorted(tails), "street": street, "city": city, "days": max(1, min(days, 120)),
+                "bp_ids": [int(b["id"]) for b in bps], "bp_address": bps[0].get("full_address") or street}
     else:
         folder_id = _drive_id(data.get("folder") or data.get("folder_id") or "", "folder")
         if not folder_id:
@@ -100,7 +122,8 @@ def upsert_source(data: dict) -> dict:
         "contact_email": (data.get("contact_email") or (cur or {}).get("contact_email") or "").strip(),
         "contact_phone": (data.get("contact_phone") or (cur or {}).get("contact_phone") or "").strip(),
         "notes": (data.get("notes") or (cur or {}).get("notes") or "").strip(),
-        "schedule": data.get("schedule") if data.get("schedule") in SCHEDULES else (cur or {}).get("schedule") or "daily",
+        **sslv,
+        "schedule": data.get("schedule") if data.get("schedule") in SCHEDULES else (cur or {}).get("schedule") or ("hourly" if kind == "sslv" else "daily"),
         "enabled": bool(data.get("enabled", (cur or {}).get("enabled", True))),
         "created_at": (cur or {}).get("created_at") or _now().isoformat(),
     }
@@ -225,10 +248,199 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
     return result
 
 
+def _phone_tails(s) -> set[str]:
+    """Telefona teksts (vairāki ar , ; / |) → pēdējo 8 ciparu kopa (kā auto_publish_poller._tails)."""
+    out: set[str] = set()
+    for part in re.split(r"[,;/|\n]", str(s or "")):
+        digits = re.sub(r"\D", "", part)
+        if len(digits) >= 7:
+            out.add(digits[-8:])
+    return out
+
+
+def _resolve_bps(street: str, city: str) -> list[dict]:
+    import partner_intake
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
+        conn.read_only = True
+        return partner_intake._find_bps(conn, street, city, None, None) or []
+
+
+def _decided_sslv_ids(source_id: str) -> set[int]:
+    """ss.lv sludinājumi, par kuriem Raimonds jau IR lēmis (bija apstiprinātā/daļējā šī avota ieplūdē) — nerāda otrreiz."""
+    import partner_intake
+    done: set[int] = set()
+    if not partner_intake.INTAKE_DIR.is_dir():
+        return done
+    for d in partner_intake.INTAKE_DIR.iterdir():
+        mp, rp = d / "meta.json", d / "report.json"
+        if not mp.is_file() or not rp.is_file():
+            continue
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            if meta.get("drive_source_id") != source_id or meta.get("status") not in ("applied", "partial"):
+                continue
+            rep = json.loads(rp.read_text(encoding="utf-8"))
+            for a in rep.get("addresses") or []:
+                for u in a.get("units") or []:
+                    if u.get("sslv_listing_id"):
+                        done.add(int(u["sslv_listing_id"]))
+        except Exception:
+            continue
+    return done
+
+
+def _sslv_rows(src: dict) -> list[dict]:
+    """ss.lv sludinājumi DB: šī avota ēka(s) + partnera numurs + pēdējās N dienas + aktīvi (Debug_status ok)."""
+    import partner_intake
+    import psycopg
+    from psycopg.rows import dict_row
+    tails = list(src.get("phones") or [])
+    bp_ids = [int(x) for x in (src.get("bp_ids") or [])]
+    if not tails or not bp_ids:
+        return []
+    pats = [f"%{t}" for t in tails]
+    with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
+        conn.read_only = True
+        rows = conn.execute(
+            """SELECT id, street, city, district, area_m2, floor, price, price_type, price_per_m2, "Space_group" AS space_group,
+                      "Agent_comment" AS agent_comment, "Apsaimniekosanas_maksa" AS maint, link, phone_numbers, date_posted,
+                      created_at, on_website, wp_post_id, occupancy_status,
+                      coalesce(array_length(local_image_paths_raw,1),0) AS n_raw
+                 FROM properties.listings
+                WHERE source = 'sslv' AND "Debug_status" = 'ok'
+                  AND building_profile_id = ANY(%s)
+                  AND created_at >= now() - make_interval(days => %s)
+                  AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
+                               WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s""",
+            (bp_ids, int(src.get("days") or SSLV_DEFAULT_DAYS), pats, SSLV_MAX_UNITS)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
+    """Gatava analīze BEZ AI: katrs ss.lv sludinājums = viena telpa (lauki no DB). `sslv_listing_id` = pārņemšanai."""
+    import partner_intake
+    props = partner_intake._schema()["properties"]["addresses"]["items"]["properties"]["units"]["items"]["properties"]
+
+    def blank() -> dict:
+        u: dict = {}
+        for k, spec in props.items():
+            t = spec.get("type")
+            types = t if isinstance(t, list) else [t]
+            if "array" in types:
+                u[k] = []
+            elif "null" in types:
+                u[k] = None
+            elif "boolean" in types:
+                u[k] = False
+            elif "string" in types:
+                u[k] = ""
+            else:
+                u[k] = None
+        return u
+
+    units = []
+    for r in rows:
+        u = blank()
+        sale = (r.get("price_type") or "monthly") != "monthly"
+        price = partner_intake._num(r.get("price"))
+        area = partner_intake._num(r.get("area_m2"))
+        u.update({
+            "ref": f"ss.lv #{r['id']}", "area_m2": area, "floor": str(r.get("floor") or ""),
+            "deal": "sale" if sale else "rent",
+            "rent_total": None if sale else price, "sale_price": price if sale else None,
+            "rent_per_m2_min": (partner_intake._num(r.get("price_per_m2")) if not sale else None),
+            "space_type": r.get("space_group") if r.get("space_group") in partner_intake.SPACE_GROUPS else None,
+            "description_lv": (r.get("agent_comment") or "")[:600],
+            "offer_type": "standard", "confidence": 1.0,
+            "evidence": f"ss.lv sludinājums {r.get('link') or ''} ({str(r.get('date_posted') or r.get('created_at'))[:10]})",
+            "partner_notes": f"ss.lv sludinājums ievietots {str(r.get('date_posted') or r.get('created_at'))[:10]}",
+            "sslv_listing_id": int(r["id"]), "sslv_link": r.get("link"),
+        })
+        if u.get("space_type") is None:
+            u["space_type"] = None
+        units.append(u)
+    first = rows[0] if rows else {}
+    return {
+        "is_vacancy_offer": True,
+        "partner": {"company": src.get("name"), "contact_name": src.get("contact_name") or None,
+                    "email": src.get("contact_email") or None, "phone": ", ".join(f"+371{t}" for t in src.get("phones") or []),
+                    "website": None},
+        "list_date": None, "looks_complete": False, "language": "lv",
+        "addresses": [{"street": src.get("bp_address") or src.get("street") or first.get("street"),
+                       "city": src.get("city") or first.get("city") or "Rīga", "district": first.get("district"),
+                       "building_name": None, "address_known": True, "list_complete_here": False, "units": units}],
+        "skipped_items": [], "warnings": [],
+    }
+
+
+def scan_sslv_source(src: dict, force: bool = False) -> dict:
+    """Partnera ss.lv numurs + ēka: jauni sludinājumi pēdējās N dienās → ieplūde (bez AI). Nospiedums = sludinājumu id kopa
+    (mīnus jau izlemtie) → mainās tikai, kad parādās jauns. Vecā neapstiprinātā ieplūde tiek aizstāta."""
+    import partner_intake
+    scanned_at = _now()
+    rows = _sslv_rows(src)
+    decided = _decided_sslv_ids(src["id"])
+    rows = [r for r in rows if int(r["id"]) not in decided]
+    ids = sorted(int(r["id"]) for r in rows)
+    fp = hashlib.sha1(("sslv:" + ",".join(map(str, ids))).encode("utf-8")).hexdigest()
+    result: dict = {"source_id": src["id"], "name": src["name"], "scanned_at": scanned_at.isoformat(),
+                    "unit_folders": len(rows), "price_files": 0, "changed": fp != src.get("last_fingerprint"), "fingerprint": fp,
+                    "intake_id": None, "skipped": None, "web_recipe": None, "list_only": False}
+    if not rows:
+        result["skipped"] = "nav jaunu ss.lv sludinājumu ar šo numuru šajā ēkā"
+        result["changed"] = False
+        return result
+    if not result["changed"] and not force:
+        return result
+    supersede = _pending_prev(src)
+    links = "\n".join(f"- #{r['id']} {r.get('street') or ''} · {r.get('area_m2') or '?'} m² · {r.get('floor') or '?'} · "
+                      f"{r.get('price') or '?'} € · https://www.{r['link']}" if r.get("link") and not str(r["link"]).startswith("http")
+                      else f"- #{r['id']} {r.get('street') or ''} · {r.get('area_m2') or '?'} m² · {r.get('floor') or '?'} · {r.get('price') or '?'} € · {r.get('link') or ''}"
+                      for r in rows)
+    body = (f"PARTNERA SS.LV SLUDINĀJUMI — {src['name']} ({', '.join(src.get('phones') or [])}), ēka {src.get('bp_address') or src.get('street')}, "
+            f"pēdējās {src.get('days') or SSLV_DEFAULT_DAYS} dienas ({scanned_at.strftime('%Y-%m-%d')}).\n"
+            f"Katrs sludinājums = viena telpa; apstiprinot tas tiek PĀRŅEMTS (nevis izveidots no jauna) un publicēts mājaslapā.\n\n{links}\n")
+    parsed = {
+        "message_id": f"sslv:{src['id']}:{fp[:12]}",
+        "forwarder_name": src.get("name"), "forwarder_email": src.get("agent_email") or "raimonds@rgcommerce.lv",
+        "subject": f"{src['name']} — ss.lv sludinājumi {scanned_at.strftime('%Y-%m-%d')}",
+        "body": body,
+        "orig_sender": {"name": src.get("contact_name") or src.get("name"), "email": src.get("contact_email") or ""},
+        "attachments_raw": [], "date": scanned_at.isoformat(),
+    }
+    meta = partner_intake._store_intake(parsed, "sslv")
+    meta["drive_source_id"] = src["id"]
+    meta["drive_fingerprint"] = fp
+    meta["sslv_listing_ids"] = ids
+    meta["prebuilt_analysis"] = _sslv_analysis(src, rows)
+    d = partner_intake.INTAKE_DIR / meta["intake_id"]
+    (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    # ss.lv galerijas kandidāti bildēm — tie paši sludinājumi (bez e-pasta linku meklēšanas)
+    cands = [{"inbox_id": int(r["id"]), "street": r.get("street"), "city": r.get("city"),
+              "area_m2": str(r["area_m2"]) if r.get("area_m2") else None, "floor": str(r["floor"]) if r.get("floor") else None,
+              "price": str(r["price"]) if r.get("price") else None,
+              "link": (r["link"] if str(r.get("link") or "").startswith("http") else f"https://www.{r['link']}") if r.get("link") else None,
+              "is_agent": False, "phone": r.get("phone_numbers"), "last_updated": None,
+              "same_room_score": 1.5, "floor_ok": True, "from_email": True, "gallery_n": int(r.get("n_raw") or 0)}
+             for r in rows if r.get("link")]
+    (d / "sslv_links.json").write_text(json.dumps(cands, ensure_ascii=False, indent=1), encoding="utf-8")
+    result["intake_id"] = meta["intake_id"]
+    rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
+    result["summary"] = rep.get("summary")
+    _mark_superseded(supersede, meta["intake_id"], src["id"])
+    return result
+
+
 def scan_source(src: dict, force: bool = False) -> dict:
     """Viens avots: mapes saraksts + cenu faili → nospiedums → ja mainījies (vai force) → ieplūde."""
     if (src.get("kind") or "drive") == "web":
         return scan_web_source(src, force=force)
+    if src.get("kind") == "sslv":
+        return scan_sslv_source(src, force=force)
     import link_media
     import partner_intake
     scanned_at = _now()

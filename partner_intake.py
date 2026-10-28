@@ -1009,6 +1009,12 @@ def analyze(intake_id: str) -> dict:
     šo sarakstu. Tā AI nejaušība (Domuss: 5 vs 8 telpas tam pašam PDF) neaiziet līdz aģentam."""
     d = INTAKE_DIR / intake_id
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    if meta.get("prebuilt_analysis"):
+        # ss.lv numura avots (partner_drive.scan_sslv_source): lauki nāk no mūsu DB, AI nav vajadzīgs
+        data = json.loads(json.dumps(meta["prebuilt_analysis"]))
+        data["_meta"] = {"model": "db", "seconds": 0, "text_chars": 0, "images": 0, "consistency": {"runs": 0, "prebuilt": True}}
+        (d / "analysis.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return data
     text, images = build_ai_input(d, meta)
     from openai import OpenAI
     from concurrent.futures import ThreadPoolExecutor
@@ -2116,6 +2122,32 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                 dec = unit_dec.get(str(u["idx"]), u.get("decision"))
                 if dec == "create" and str(u["idx"]) in prev_created_idx:
                     continue  # jau izveidots iepriekšējā apstiprināšanā
+                if dec == "create" and u.get("sslv_listing_id"):
+                    # ss.lv numura avots (Raimonds 2026-10-28): sludinājums jau ir DB (source sslv) → PĀRŅEM: partnera
+                    # piesaiste + atzīme, bildes no raw caur Seedream, tad mājaslapa. Nav rollback-dzēšams (nav mūsu izveidots).
+                    lid = int(u["sslv_listing_id"])
+                    try:
+                        sets = ["partner_id = %s", "partner_unit_ref = %s", "partner_list_id = %s", '"Debug_note" = %s',
+                                "occupancy_status = NULL", "updated_at = now()"]
+                        vals: list = [partner_id, u.get("ref"), list_id,
+                                      f"Partneris: {partner.get('company') or '?'} (ss.lv numurs); pārņemts {report.get('received_at','')[:10]}"]
+                        if u.get("_floor_override"):
+                            sets.append("floor = %s"); vals.append(u["floor"])
+                        if u.get("_area_override"):
+                            sets.append("area_m2 = %s"); vals.append(_numstr(u["area_m2"]))
+                        if u.get("space_type") in SPACE_GROUPS:
+                            sets.append('"Space_group" = %s'); vals.append(u["space_type"])
+                        conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
+                        conn.commit()
+                        result.setdefault("adopted", []).append(lid)
+                        if isinstance(img_dec.get(str(u["idx"])), dict):
+                            u["_img_sel"] = img_dec[str(u["idx"])]
+                        image_jobs.append((lid, u, bool(web_dec.get(str(u["idx"])))))
+                        result["created_units"].append([lid, u["idx"]])
+                    except Exception as e:
+                        conn.rollback()
+                        result["errors"].append(f"telpa #{u['idx']}: pārņemt ss.lv #{lid}: {type(e).__name__}: {str(e)[:160]}")
+                    continue
                 if dec == "create":
                     try:
                         if not (addr.get("district") or "").strip():
