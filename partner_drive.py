@@ -164,54 +164,91 @@ def upsert_source(data: dict) -> dict:
     return src
 
 
+def _strip_street_type(street: str) -> str:
+    """«Skanstes iela 27» → «Skanstes 27» (kā paneļa stripStreetType) — ss.lv/skrāpera inbox raksta bez tipa vārda."""
+    st = (street or "").split(",")[0]
+    st = re.sub(r"\b(iela|gatve|bulvāris|bulvaris|prospekts|laukums|dambis|šoseja|soseja|līnija|linija|krastmala|aleja|ceļš|cels)\b",
+                " ", st, flags=re.I)
+    return re.sub(r"\s+", " ", st).strip()
+
+
+def _stem_house(street: str) -> tuple[str, str] | None:
+    """Paneļa streetStemHouse: (pēdējā vārda 4 burti bez diakritikas, mājas nr) — «Krišjāņa Barona iela 108» → («baro», «108»)."""
+    norm = (_strip_street_type(street) or "").lower().translate(str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr"))
+    toks = [t for t in re.split(r"\s+", norm) if t]
+    house_tok = next((t for t in reversed(toks) if re.search(r"\d", t)), "")
+    m = re.match(r"\d+[a-z]?", house_tok)
+    house = m.group(0) if m else ""
+    words = [t for t in toks if not re.search(r"\d", t) and len(re.sub(r"[^a-z]", "", t)) >= 3]
+    stem = re.sub(r"[^a-z]", "", words[-1])[:4] if words else ""
+    return (stem, house) if stem and house else None
+
+
 def _sslv_street_variants(street: str) -> set[str]:
-    """«Skanstes iela 27» → {«Skanstes iela 27», «Skanstes 27»} — ss.lv/skrāpera inbox raksta bez «iela»
-    (gatve/bulvāris/dambis paliek)."""
     st = re.sub(r"\s+", " ", (street or "").strip())
     out = {st} if st else set()
-    short = re.sub(r"\s+iela\b", "", st, flags=re.I).strip()
+    short = _strip_street_type(st)
     if short:
         out.add(short)
     return out
 
 
 def _sync_trusted_numbers(src: dict) -> int:
-    """ss.lv rāda numuru maskētu («27-07-***», atver tikai ar JS); skrāperis (sslv-scraper railway_worker) numuru
-    atklāj ar Puppeteer TIKAI aģentu sludinājumiem uzticamās adresēs (properties.trusted_numbers: iela + numurs,
-    prefiksa sakritība). Bez tā inbox rindai phone_numbers=NULL un mūsu avots to neatrod (Skanstes 27 bghcj,
-    Raimonds 2026-10-28). Tāpēc katrs ss.lv avots pats reģistrē savas ēkas × numurus kā uzticamus un atstata
-    trusted_checked_at, lai skrāperis pārbauda arī JAU esošos sludinājumus."""
+    """TĀ PATI loģika kā paneļa poga «Numurs nav aģents» (buildings/actions.saveTrustedAddresses), bet automātiski
+    katram ss.lv avotam (Raimonds 2026-10-28: «kas man svarīgi, tiem ieslēdzas nav aģents — smooth»):
+      1) (numurs, iela) → properties.trusted_numbers ss.lv rakstībā (no inbox pēc stem+house; citādi adrese ± tips);
+      2) numurs ārā no phone_blacklist;
+      3) esošās inbox rindas ar šo numuru šajā ielā → is_agent='false' (inbox_to_listings tās ievelk listings);
+      4) ielas aģentu rindām trusted_checked_at=NULL → skrāperis (Puppeteer) atklāj maskētos numurus un flipo.
+    ss.lv numuru rāda maskētu («27-07-***»), skrāperis to atver tikai uzticamās adresēs → bez šī inbox rindai
+    phone NULL un avots to neredz (Skanstes 27 bghcj)."""
     import partner_intake
     import psycopg
     from psycopg.rows import dict_row
     phones = [p for p in (src.get("phones") or []) if p]
-    streets: set[str] = set()
-    for a in _src_addresses(src):
-        for cand in (a.get("bp_address"), a.get("street")):
-            if cand:
-                streets |= _sslv_street_variants(cand)
-    if not phones or not streets:
+    if not phones:
         return 0
+    tails = sorted({re.sub(r"\D", "", p)[-8:] for p in phones if len(re.sub(r"\D", "", p)) >= 7})
     norm = lambda x: re.sub(r"\s+", " ", (x or "").strip().lower()).translate(str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr"))
     added = 0
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
-        have = {(norm(r["street"]), re.sub(r"\D", "", r["phone"] or "")[-8:])
-                for r in conn.execute("SELECT street, phone FROM properties.trusted_numbers").fetchall()}
-        for ph in phones:
-            for st in streets:
-                if (norm(st), ph[-8:]) in have:
+        have = {norm(r["street"]) for r in conn.execute("SELECT street FROM properties.trusted_numbers").fetchall()}
+        for a in _src_addresses(src):
+            display = a.get("bp_address") or a.get("street") or ""
+            sh = _stem_house(display)
+            if not sh:
+                continue
+            like = f"%{sh[0]}%{sh[1]}%"
+            # ss.lv ielas formas šai adresei (inbox), lai skrāperis sakrīt precīzi
+            rows = conn.execute(
+                """SELECT DISTINCT street FROM properties.scrape_inbox
+                    WHERE translate(lower(btrim(coalesce(street,''))), 'āēīōūčšžģķļņŗ', 'aeioucszgklnr') LIKE %s""",
+                (like,)).fetchall()
+            store = {(r["street"] or "").strip() for r in rows if r.get("street") and _stem_house(r["street"]) == sh}
+            store |= _sslv_street_variants(display)
+            for st in sorted(store):
+                k = norm(st)
+                if not k or k in have:
                     continue
                 conn.execute("""INSERT INTO properties.trusted_numbers (phone, street, note, created_by)
                                 VALUES (%s, %s, %s, %s)""",
-                             (ph, st, f"partneru avots {src.get('name')} ({src.get('id')})", "partner_intake"))
-                have.add((norm(st), ph[-8:]))
+                             (phones[0], st, f"partneru avots {src.get('name')} ({src.get('id')})", "partner_intake"))
+                have.add(k)
                 added += 1
-        # jau noskrāpētie šo ēku aģentu sludinājumi bez numura → skrāperis tos pārbauda vēlreiz
-        conn.execute("""UPDATE properties.scrape_inbox SET trusted_checked_at = NULL
-                         WHERE lower(btrim(coalesce(is_agent,''))) = 'true'
-                           AND coalesce(btrim(phone_numbers),'') = ''
-                           AND translate(lower(btrim(coalesce(street,''))), 'āēīōūčšžģķļņŗ', 'aeioucszgklnr') = ANY(%s)""",
-                     ([norm(x) for x in streets],))
+            if tails:
+                conn.execute(
+                    """UPDATE properties.scrape_inbox SET is_agent = 'false'
+                        WHERE right(regexp_replace(coalesce(phone_numbers,''), '[^0-9]', '', 'g'), 8) = ANY(%s)
+                          AND translate(lower(btrim(coalesce(street,''))), 'āēīōūčšžģķļņŗ', 'aeioucszgklnr') LIKE %s
+                          AND lower(btrim(coalesce(is_agent,''))) = 'true'""", (tails, like))
+            conn.execute(
+                """UPDATE properties.scrape_inbox SET trusted_checked_at = NULL
+                    WHERE translate(lower(btrim(coalesce(street,''))), 'āēīōūčšžģķļņŗ', 'aeioucszgklnr') LIKE %s
+                      AND lower(btrim(coalesce(is_agent,''))) = 'true'""", (like,))
+        if tails:
+            # uzticams numurs un melnais saraksts ir pretruna (kā panelī)
+            conn.execute("""DELETE FROM properties.phone_blacklist
+                             WHERE right(regexp_replace(phone_number, '[^0-9]', '', 'g'), 8) = ANY(%s)""", (tails,))
         conn.commit()
     return added
 
