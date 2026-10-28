@@ -984,16 +984,8 @@ def publish_anketa(payload: dict) -> dict:
                         WHERE id = %s""",
                     (ai_paths, listing_id),
                 )
-            elif is_import and import_source in ("agent_pdf", "agent_manual"):
-                # bez bildēm klasifikators rindu atmestu kā low_evidence (slēpta) → paliek 'ok' kā līdz šim;
-                # kad poller pratīs renderēt PDF lapas pats (source_file_path), šo var noņemt
-                conn.execute(
-                    """UPDATE properties.listings SET "Debug_status" = 'ok',
-                              "Debug_note" = left(coalesce("Debug_note", '') || ' | AI klasifikators izlaists: nav bilžu', 500)
-                        WHERE id = %s""",
-                    (listing_id,),
-                )
-                log.append("  → nav bilžu: AI klasifikators izlaists (Debug_status=ok)")
+            # (imports bez foto: poller pats renderē PDF lapas no source_file_path un importu nekad neliek
+            #  low_evidence — Prompta aģents 2026-10-28, zars prompti; tāpēc izņēmuma «paliek ok» vairs nav)
             listing_ids.append(listing_id)
 
         # IMPORTS — Step 4/5 izlaiž (nav WP rindas). Piesaista avota PDF + pdf_jobs
