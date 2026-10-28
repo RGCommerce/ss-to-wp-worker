@@ -169,7 +169,7 @@ def _sslv_street_variants(street: str) -> set[str]:
     (gatve/bulvāris/dambis paliek)."""
     st = re.sub(r"\s+", " ", (street or "").strip())
     out = {st} if st else set()
-    short = re.sub(r"\s+iela", "", st, flags=re.I).strip()
+    short = re.sub(r"\s+iela\b", "", st, flags=re.I).strip()
     if short:
         out.add(short)
     return out
