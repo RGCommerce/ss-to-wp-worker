@@ -388,12 +388,31 @@ def _phone_tails(s) -> set[str]:
 
 
 def _resolve_bps(street: str, city: str) -> list[dict]:
+    """Ēkas profils pēc adreses; ja precīzi neatrod (rakstības kļūda «Skanste 27» → «Skanstes iela 27», Raimonds
+    2026-10-28) — ēku meklētājs (bez diakritikas, pa daļām) un ņem to ar to pašu mājas numuru."""
     import partner_intake
     import psycopg
     from psycopg.rows import dict_row
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
-        return partner_intake._find_bps(conn, street, city, None, None) or []
+        found = partner_intake._find_bps(conn, street, city, None, None) or []
+        if found:
+            return found
+        m = re.search(r"\d+[a-zA-Z]?", street or "")
+        house = (m.group(0) if m else "").lower()
+        if not house:
+            return []
+        try:
+            cands = partner_intake.search_buildings(conn, street, limit=8)
+        except Exception:
+            cands = []
+        same_city = [c for c in cands if not city or (c.get("city") or "").strip().lower()[:4] == city.strip().lower()[:4]]
+        for c in same_city or cands:
+            fa = (c.get("full_address") or "")
+            mm = re.search(r"\d+[a-zA-Z]?", fa)
+            if mm and mm.group(0).lower() == house:
+                return [{"id": int(c["id"]), "full_address": fa, "city": c.get("city"), "how": "fuzzy"}]
+        return []
 
 
 def _decided_sslv_ids(source_id: str) -> set[str]:
