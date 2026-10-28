@@ -520,6 +520,24 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         source = source_override
         if "phone_numbers" not in locked:
             locked.append("phone_numbers")
+        if source_override in ("agent_pdf", "agent_manual"):
+            # PDF/manuālais imports iet caur to pašu AI klasifikatoru kā anketa EASY (Prompta aģents 2026-10-28):
+            # lockē EASY pamatlaukus + tikai tos FULL laukus, ko aģents/PDF tiešām aizpildīja; pārējo (tips,
+            # potenciāls, ķekši, plānojums, lielākā zāle…) aizpilda AI no PDF teksta/bildēm.
+            locked = list(EASY_LOCKED_FIELDS)
+            for f in FULL_LOCKED_FIELDS:
+                if f in locked:
+                    continue
+                v = unit.get(f)
+                if v is None or v == "":
+                    v = unit.get(f.lower())
+                if v not in (None, "", "unknown", "not checked"):
+                    locked.append(f)
+            locked.append("phone_numbers")
+            if unit.get("Cik_telpas") or unit.get("cik_telpas"):
+                locked.append("Cik_telpas")
+            if unit.get("cik_WC") or unit.get("cik_wc"):
+                locked.append("cik_WC")
     # FULL mode: Debug_status='ok' uzreiz (AI worker neaiztiks)
     # EASY mode: NULL → AI worker paķers + papildinās
     debug_status = "ok" if mode == "full" else None
@@ -725,10 +743,13 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         # AI VIENMĒR iet cauri (Raimonds: bez AI neko likt nedrīkst) → Debug_status=NULL.
         cols["Debug_status"] = None
 
-    # IMPORTS: statuss 'ok' vienmēr (nav AI pēcapstrādes — lauki nāk no PDF/aģenta),
-    # piezīme ar avotu, nav ss.lv linka.
-    if force_ok:
+    # IMPORTS: partneru ieplūdei statuss 'ok' (bildes nāk vēlāk fonā → partner_intake pats uzliek NULL pēc bildēm);
+    # PDF/manuālajam importam NULL → agent_ai_poller klasificē (Prompta aģents 2026-10-28: «PDF importētie neiet
+    # cauri jaunajam klasifikatoram»). IMPORT_AI=0 atgriež veco (uzreiz 'ok').
+    if force_ok and (source_override not in ("agent_pdf", "agent_manual") or os.getenv("IMPORT_AI", "1") == "0"):
         cols["Debug_status"] = "ok"
+    elif force_ok:
+        cols["Debug_status"] = None
     if debug_note:
         cols["Debug_note"] = debug_note[:500]
 
@@ -963,12 +984,41 @@ def publish_anketa(payload: dict) -> dict:
                         WHERE id = %s""",
                     (ai_paths, listing_id),
                 )
+            elif is_import and import_source in ("agent_pdf", "agent_manual"):
+                # bez bildēm klasifikators rindu atmestu kā low_evidence (slēpta) → paliek 'ok' kā līdz šim;
+                # kad poller pratīs renderēt PDF lapas pats (source_file_path), šo var noņemt
+                conn.execute(
+                    """UPDATE properties.listings SET "Debug_status" = 'ok',
+                              "Debug_note" = left(coalesce("Debug_note", '') || ' | AI klasifikators izlaists: nav bilžu', 500)
+                        WHERE id = %s""",
+                    (listing_id,),
+                )
+                log.append("  → nav bilžu: AI klasifikators izlaists (Debug_status=ok)")
             listing_ids.append(listing_id)
 
         # IMPORTS — Step 4/5 izlaiž (nav WP rindas). Piesaista avota PDF + pdf_jobs
         # «done» rindu (LP «Pievienot PDF LP» un /publish «Lejupielādēt» lieto pdf_jobs).
         if is_import:
             conn.commit()  # listings rindas ir; tālākais best-effort
+            if import_token:
+                # PDF teksta slānis → original_text (klasifikators lasa arī tekstu, ne tikai bildes); pirms
+                # attach_pdf_to_listing, kas failu pārvieto
+                try:
+                    import pdf_import
+                    _src = pdf_import.find_token_pdf(import_token)
+                    if _src:
+                        _txt, _ = pdf_import.extract_text(_src)
+                        if (_txt or "").strip():
+                            conn.execute(
+                                """UPDATE properties.listings SET original_text = %s
+                                    WHERE id = ANY(%s) AND coalesce(original_text, '') = ''""",
+                                (_txt[:20000], listing_ids),
+                            )
+                            conn.commit()
+                            log.append(f"✓ PDF teksts ({len(_txt)} z.) → original_text")
+                except Exception as e:
+                    conn.rollback()
+                    warnings.append(f"PDF teksts → original_text neizdevās: {type(e).__name__}: {e}")
             return _finish_import(conn, listing_ids, bp_id, mode, import_source,
                                   import_token, import_file_name, requested_by_email,
                                   log, warnings)
