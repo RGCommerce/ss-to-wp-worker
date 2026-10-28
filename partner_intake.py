@@ -2310,10 +2310,16 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     if sel.get("sslv_link"):
         want_link = _bare_sslv(sel["sslv_link"])
         sslv = [c for c in sslv if c.get("link") == want_link] + [c for c in sslv if c.get("link") != want_link]
+    link_photos = bool(((u.get("images") or {}).get("links") or {}).get("photos"))
+    if sel_sslv and link_photos and not sel.get("sslv_link"):
+        # Realto 111895 (2026-10-28): panelis ss.lv galeriju ieķeksēja automātiski, kamēr partnera foto vēl lādējās →
+        # listingā 2 sludinājumu bildes. Partnera foto + ss.lv kopā TIKAI ar skaidri izvēlētu ss.lv sludinājumu (sslv_link).
+        sel_sslv = []
+        out["sslv_skipped"] = "partnerim ir savas bildes; ss.lv galerija bez izvēlēta sludinājuma netiek ņemta"
     if sel_sslv is not None:
         sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no izvēlētā (1.) kandidāta galerijas
-    elif ((u.get("images") or {}).get("links") or {}).get("photos"):
-        sslv = []   # partnerim ir savas (Drive) bildes — ss.lv (ar ūdenszīmēm) pēc noklusējuma neņem
+    elif link_photos:
+        sslv = []   # partnerim ir savas (Drive/web) bildes — ss.lv (ar ūdenszīmēm) pēc noklusējuma neņem
     for cand in sslv[:4]:
         try:
             import ai_text_helpers as helpers
