@@ -1635,7 +1635,12 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         diff["price_per_m2"] = {"old": old_rate, "new": new_rate}
                     new_total = u.get("rent_total") or (area * new_rate if (area and new_rate) else None)
                     old_total = _num(match.get("price"))
-                    if new_total and old_total and abs(new_total - old_total) > max(5.0, 0.02 * old_total):
+                    # €/m² ir nomas cenas avots: ja likme NAV mainījusies, kopsummas starpība ir tikai mūsu/AI aprēķina
+                    # atšķirība (ar/bez apsaimniekošanas) — ne partnera cenas maiņa (Spire Mednieku 4A katru dienu
+                    # «atjaunot 3», Raimonds 2026-10-28). Kopsummu salīdzina tikai, ja likmes nav vai tā arī mainījās.
+                    rate_same = new_rate is not None and old_rate is not None and abs(new_rate - old_rate) <= 0.05
+                    if (not rate_same and new_total and old_total
+                            and abs(new_total - old_total) > max(5.0, 0.02 * old_total)):
                         diff["price"] = {"old": old_total, "new": round(new_total, 2)}
                     # atzīmēts «iznomāts», bet partneris to atkal piedāvā → atjaunot kā brīvu
                     reactivate = match.get("occupancy_status") == "occupied"
@@ -1657,8 +1662,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 price_missing = u.get("deal") == "rent" and u.get("rent_per_m2_min") is None and u.get("rent_total") is None
                 # telpa JAU ir DB (sakrīt) → trūkstoša cena/tips nav iemesls «izlaist» — cena jau ir DB; noklusētais
                 # «jau DB — nemainīt» (Raimonds 2026-10-26: «kāpēc uzreiz nepiedāvāja jau ir DB?»)
-                needs_review = (status == "ambiguous" or conf < 0.6 or not a_out["address_known"]
-                                or (status != "match" and (not u.get("space_type") or price_missing)))
+                # «pārbaudīt» tikai tam, ko vēl nezinām: sakritusī telpa JAU ir DB — zema AI pārliecība tur neko nemaina
+                # (Spire Barona 15 143,4 m² katru dienu «pārbaudīt», Raimonds 2026-10-28)
+                needs_review = (status == "ambiguous"
+                                or (status != "match" and (conf < 0.6 or not a_out["address_known"]
+                                                           or not u.get("space_type") or price_missing)))
                 decision = ("review" if (needs_review and status != "match") else
                             ("update" if (status == "match" and (diff or reactivate)) else
                              ("keep" if status == "match" else "create")))
@@ -3171,8 +3179,8 @@ def list_intakes(limit: int = 50) -> list[dict]:
             meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
         except Exception:
             continue
-        if meta.get("status") in ("superseded", "dismissed"):
-            continue   # aizstāts ar jaunāku tā paša avota nolasījumu / aģents noņēma no saraksta
+        if meta.get("status") in ("superseded", "dismissed", "nochange"):
+            continue   # aizstāts ar jaunāku nolasījumu / aģents noņēma / automātiskais skenējums bez izmaiņām
         rep = None
         if (d / "report.json").is_file():
             try:

@@ -242,9 +242,9 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     (d / "web_links.json").write_text(json.dumps(partner_web.web_links(col), ensure_ascii=False, indent=1), encoding="utf-8")
     result["intake_id"] = meta["intake_id"]
-    rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
+    rep = partner_intake.process_intake(meta["intake_id"], do_notify=False)
     result["summary"] = rep.get("summary")
-    _mark_superseded(supersede, meta["intake_id"], src["id"])
+    _finish_scan_intake(meta["intake_id"], rep, supersede, src, result)
     return result
 
 
@@ -429,9 +429,9 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
              for r in rows if r.get("link")]
     (d / "sslv_links.json").write_text(json.dumps(cands, ensure_ascii=False, indent=1), encoding="utf-8")
     result["intake_id"] = meta["intake_id"]
-    rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
+    rep = partner_intake.process_intake(meta["intake_id"], do_notify=False)
     result["summary"] = rep.get("summary")
-    _mark_superseded(supersede, meta["intake_id"], src["id"])
+    _finish_scan_intake(meta["intake_id"], rep, supersede, src, result)
     return result
 
 
@@ -487,10 +487,49 @@ def scan_source(src: dict, force: bool = False) -> dict:
     (partner_intake.INTAKE_DIR / meta["intake_id"] / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     result["intake_id"] = meta["intake_id"]
-    rep = partner_intake.process_intake(meta["intake_id"], do_notify=True)
+    rep = partner_intake.process_intake(meta["intake_id"], do_notify=False)
     result["summary"] = rep.get("summary")
-    _mark_superseded(supersede, meta["intake_id"], src["id"])
+    _finish_scan_intake(meta["intake_id"], rep, supersede, src, result)
     return result
+
+
+def _actionable(report: dict) -> dict:
+    """Vai automātiskā skenējuma ieplūdē ir KAS darāms: jaunas telpas, cenas/atjaunošanas maiņas, mūsu telpas, kas
+    partnera sarakstā vairs nav (= iznomāt). Ja nekā — ieplūde ir troksnis (Raimonds 2026-10-28: «katru dienu ko mēs
+    tur būdīsim; apstiprināšanai jānāk tikai jauniem vai cenas maiņām»)."""
+    new = updates = missing = 0
+    for a in report.get("addresses") or []:
+        for u in a.get("units") or []:
+            if u.get("status") != "match":
+                new += 1
+            elif u.get("decision") == "update":
+                updates += 1
+        missing += sum(1 for m in a.get("missing_in_list") or [] if m.get("default_checked", True))
+    return {"new": new, "updates": updates, "missing": missing, "any": bool(new or updates or missing)}
+
+
+def _finish_scan_intake(intake_id: str, report: dict, supersede: Optional[str], src: dict, result: dict) -> None:
+    """Pēc apstrādes: ja ir ko darīt → Telegram + vecā neapstiprinātā ieplūde aizstāta; ja nav → ieplūde «nochange»
+    (sarakstā neparādās, paziņojuma nav), vecā paliek."""
+    import partner_intake
+    act = _actionable(report)
+    result["actionable"] = act
+    if act["any"]:
+        try:
+            report["telegram_sent"] = partner_intake.notify(report)
+        except Exception as e:
+            logger.warning("partner_drive: notify %s: %s", intake_id, e)
+        _mark_superseded(supersede, intake_id, src["id"])
+        return
+    mp = partner_intake.INTAKE_DIR / intake_id / "meta.json"
+    try:
+        meta = json.loads(mp.read_text(encoding="utf-8"))
+        meta["status"] = "nochange"
+        meta["nochange_at"] = _now().isoformat()
+        mp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as e:
+        logger.warning("partner_drive: nochange %s: %s", intake_id, e)
+    result["skipped"] = "nav izmaiņu — viss jau DB (ieplūde paslēpta)"
 
 
 def _pending_prev(src: dict) -> Optional[str]:
