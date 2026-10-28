@@ -27,7 +27,11 @@ from typing import Any, Optional
 logger = logging.getLogger("partner_drive")
 
 SCHEDULES = {"hourly": timedelta(hours=1), "daily": timedelta(hours=24), "weekly": timedelta(days=7)}
-SSLV_DEFAULT_DAYS = 15        # «pēdējās 15 dienas» (Raimonds 2026-10-28)
+SSLV_DEFAULT_DAYS = 30        # ss.lv ievietošanas datums pēdējās N dienās (Barona aeonb/hpmnn bija 16/23 d. veci, 2026-10-28)
+SSLV_LIVE_DAYS = 7            # scrape_inbox rinda = «dzīva», ja skrāperis to redzējis pēdējās N dienās
+SSLV_URL_TYPES = (("/offices/", "Birojs"), ("/premises/shops/", "Tirdzniecība"), ("/premises/storehouses", "Noliktava"),
+                  ("/storehouses", "Noliktava"), ("/premises/production", "Ražošana"), ("/premises/catering", "Restorans/Cafe"),
+                  ("/premises/beauty", "Studija"), ("/premises/medical", "Medicīna"), ("/plots-and-lands/", "Zeme"))
 SSLV_MAX_UNITS = 30           # drošības griesti vienai ieplūdei
 MAX_FOLDER_DEPTH = 3
 
@@ -267,7 +271,7 @@ def _resolve_bps(street: str, city: str) -> list[dict]:
         return partner_intake._find_bps(conn, street, city, None, None) or []
 
 
-def _decided_sslv_ids(source_id: str) -> set[int]:
+def _decided_sslv_ids(source_id: str) -> set[str]:
     """ss.lv sludinājumi, par kuriem Raimonds jau IR lēmis (bija apstiprinātā/daļējā šī avota ieplūdē) — nerāda otrreiz."""
     import partner_intake
     done: set[int] = set()
@@ -284,11 +288,16 @@ def _decided_sslv_ids(source_id: str) -> set[int]:
             rep = json.loads(rp.read_text(encoding="utf-8"))
             for a in rep.get("addresses") or []:
                 for u in a.get("units") or []:
-                    if u.get("sslv_listing_id"):
-                        done.add(int(u["sslv_listing_id"]))
+                    if u.get("sslv_link"):
+                        done.add(_norm_link(u["sslv_link"]))
         except Exception:
             continue
     return done
+
+
+def _norm_link(link) -> str:
+    l = re.sub(r"^https?://", "", str(link or "").strip()).replace("www.", "", 1)
+    return re.sub(r"^ss\.com/", "ss.lv/", l).split("#")[0].split("?")[0]
 
 
 def _sslv_rows(src: dict) -> list[dict]:
@@ -301,23 +310,61 @@ def _sslv_rows(src: dict) -> list[dict]:
     if not tails or not bp_ids:
         return []
     pats = [f"%{t}" for t in tails]
+    days = int(src.get("days") or SSLV_DEFAULT_DAYS)
+    keys = {partner_intake._street_key(x) for x in (src.get("street"), src.get("bp_address")) if x}
+    out: list[dict] = []
+    seen_links: set[str] = set()
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
+        # 1) jau AI-apstrādāti ss.lv listingi (properties.listings, source sslv) — apstiprinot PĀRŅEM
         rows = conn.execute(
             """SELECT id, street, city, district, area_m2, floor, price, price_type, price_per_m2, "Space_group" AS space_group,
-                      "Agent_comment" AS agent_comment, "Apsaimniekosanas_maksa" AS maint, link, phone_numbers, date_posted,
-                      created_at, on_website, wp_post_id, occupancy_status,
+                      "Agent_comment" AS agent_comment, link, phone_numbers, date_posted, created_at, on_website,
                       coalesce(array_length(local_image_paths_raw,1),0) AS n_raw
                  FROM properties.listings
                 WHERE source = 'sslv' AND "Debug_status" = 'ok'
                   AND building_profile_id = ANY(%s)
-                  AND created_at >= now() - make_interval(days => %s)
+                  AND coalesce(nullif(date_posted,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
                   AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
                                WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s""",
-            (bp_ids, int(src.get("days") or SSLV_DEFAULT_DAYS), pats, SSLV_MAX_UNITS)).fetchall()
-    return [dict(r) for r in rows]
+            (bp_ids, days, pats, SSLV_MAX_UNITS)).fetchall()
+        for r in rows:
+            d = dict(r)
+            d["origin"] = "listing"
+            d["sslv_listing_id"] = int(d["id"])
+            if d.get("link"):
+                seen_links.add(_norm_link(d["link"]))
+            out.append(d)
+        # 2) skrāpera inbox (properties.scrape_inbox) — viss, kas ŠOBRĪD ir ss.lv ar šo numuru (arī bez AI apstrādes,
+        #    arī ja listings rinda dzēsta): Barona Cēsu 31 aeonb/hpmnn bija tikai inbox (2026-10-28). Apstiprinot IZVEIDO.
+        inbox = conn.execute(
+            """SELECT id AS inbox_id, street, city, district, area_m2, floor, price, price_type, price_per_m2,
+                      "Space_group" AS space_group, "Agent_comment" AS agent_comment, link, phone_numbers, date_posted,
+                      last_updated, created_at, building_profile_id, uuid
+                 FROM properties.scrape_inbox
+                WHERE coalesce(skip_reason,'') NOT IN ('blacklisted_phone')
+                  AND (building_profile_id = ANY(%s) OR building_profile_id IS NULL)
+                  AND coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
+                  AND coalesce(nullif(date_posted,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
+                  AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
+                               WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
+                ORDER BY last_updated DESC NULLS LAST, id DESC
+                LIMIT %s""",
+            (bp_ids, SSLV_LIVE_DAYS, days, pats, SSLV_MAX_UNITS * 4)).fetchall()
+        for r in inbox:
+            d = dict(r)
+            if not d.get("link") or _norm_link(d["link"]) in seen_links:
+                continue
+            if d.get("building_profile_id") not in bp_ids and partner_intake._street_key(d.get("street") or "") not in keys:
+                continue   # cita ēka (bez ēkas profila → pēc ielas atslēgas)
+            seen_links.add(_norm_link(d["link"]))
+            d["origin"] = "inbox"
+            d["id"] = int(d["inbox_id"])
+            d["n_raw"] = 0
+            out.append(d)
+    return out[:SSLV_MAX_UNITS]
 
 
 def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
@@ -353,13 +400,18 @@ def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
             "deal": "sale" if sale else "rent",
             "rent_total": None if sale else price, "sale_price": price if sale else None,
             "rent_per_m2_min": (partner_intake._num(r.get("price_per_m2")) if not sale else None),
-            "space_type": r.get("space_group") if r.get("space_group") in partner_intake.SPACE_GROUPS else None,
+            "space_type": (r.get("space_group") if r.get("space_group") in partner_intake.SPACE_GROUPS
+                           else next((t for seg, t in SSLV_URL_TYPES if seg in str(r.get("link") or "")), None)),
             "description_lv": (r.get("agent_comment") or "")[:600],
             "offer_type": "standard", "confidence": 1.0,
             "evidence": f"ss.lv sludinājums {r.get('link') or ''} ({str(r.get('date_posted') or r.get('created_at'))[:10]})",
             "partner_notes": f"ss.lv sludinājums ievietots {str(r.get('date_posted') or r.get('created_at'))[:10]}",
-            "sslv_listing_id": int(r["id"]), "sslv_link": r.get("link"),
+            "sslv_listing_id": int(r["sslv_listing_id"]) if r.get("sslv_listing_id") else None,
+            "sslv_link": r.get("link"),
         })
+        if r.get("origin") == "inbox":
+            u["ref"] = f"ss.lv inbox #{r['id']}"
+            u["evidence"] = f"ss.lv sludinājums (skrāpera inbox) {r.get('link') or ''}"
         if u.get("space_type") is None:
             u["space_type"] = None
         units.append(u)
@@ -384,9 +436,9 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
     scanned_at = _now()
     rows = _sslv_rows(src)
     decided = _decided_sslv_ids(src["id"])
-    rows = [r for r in rows if int(r["id"]) not in decided]
-    ids = sorted(int(r["id"]) for r in rows)
-    fp = hashlib.sha1(("sslv:" + ",".join(map(str, ids))).encode("utf-8")).hexdigest()
+    rows = [r for r in rows if _norm_link(r.get("link")) not in decided]
+    ids = sorted(_norm_link(r.get("link")) or str(r["id"]) for r in rows)
+    fp = hashlib.sha1(("sslv:" + ",".join(ids)).encode("utf-8")).hexdigest()
     result: dict = {"source_id": src["id"], "name": src["name"], "scanned_at": scanned_at.isoformat(),
                     "unit_folders": len(rows), "price_files": 0, "changed": fp != src.get("last_fingerprint"), "fingerprint": fp,
                     "intake_id": None, "skipped": None, "web_recipe": None, "list_only": False}
