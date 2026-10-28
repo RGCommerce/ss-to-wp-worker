@@ -1,0 +1,105 @@
+{
+ "_note": "Raimonda apstiprinātās A klases ēkas (A_KLASES_EKAS_parbaude.docx). AI A klasi drīkst atstāt TIKAI šīm ēkām.",
+ "buildings": [
+  {
+   "building_profile_id": 51585645,
+   "address": "Balasta dambis 2",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 105244628,
+   "address": "Kārļa Ulmaņa gatve 119",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 105243775,
+   "address": "Malduguņu iela 4",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 10947442,
+   "address": "Ranķa dambis 30",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 10947400,
+   "address": "Republikas Laukums 2A",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 51585655,
+   "address": "Satekles iela 1C",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 51588769,
+   "address": "Satekles iela 2B",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 51610062,
+   "address": "Skanstes iela 25",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 51587238,
+   "address": "Ulbrokas iela 34a",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 134033217,
+   "address": "Vaiņodes 1",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 101168130,
+   "address": "Valdemāra 63",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 51591698,
+   "address": "Zaļā iela 1",
+   "source": "biroji 2026-10-27"
+  },
+  {
+   "building_profile_id": 10947456,
+   "address": "Aviacijas 18",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 105143409,
+   "address": "Grenču iela 5",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 51588766,
+   "address": "Latgales iela 462",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 413086958,
+   "address": "Lielvārži, Ķekavas novads",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 99881697,
+   "address": "Lielvārži, Ķekavas novads",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 51631640,
+   "address": "Loģistikas parks &amp;#8211; Berģi",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 105244040,
+   "address": "Plieņciema iela, Pleskodāle, Tēriņi, Mārupes pagasts, Mārupe, Mārupes novads, Vidzeme, LV-1046, Latvia",
+   "source": "noliktavas 2026-10-27"
+  },
+  {
+   "building_profile_id": 642,
+   "address": "Rītausmas 11a",
+   "source": "noliktavas 2026-10-27"
+  }
+ ]
+}

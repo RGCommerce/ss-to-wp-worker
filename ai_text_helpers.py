@@ -38,6 +38,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 MODEL = os.getenv("MODEL", "gpt-5.4")
+PROMPT_VERSION = "2026-10-25"  # sinhrons ar test_runner_db.PROMPT_VERSION
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "5"))
 EMPTY_SLEEP_SECONDS = int(os.getenv("EMPTY_SLEEP_SECONDS", "30"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
@@ -54,7 +55,9 @@ PROMPT = r"""
 Analyze one SS.lv commercial property listing using:
 - the listing text
 - ALL provided images in original order
-- the last image is especially important because it may be a plan
+- a FLOOR PLAN may be ANY image in the gallery (first, middle or last) — detect it by
+  content (drawing with walls, dimensions, room numbers / m² labels), not by position;
+  if several plans exist (several floors), use all of them
 
 You must inspect ALL images in sequence before filling fields.
 
@@ -110,25 +113,28 @@ Allowed:
 - Unknown
 
 ## building_class
-Primary:
-- PHOTO (facade + interior)
-Secondary:
-- TEXT if directly useful
+Class of the BUILDING (Raimonds 2026-10-27) — NOT of the unit's interior finish.
+An A-class building can have a grey-finish / unfinished unit inside; a nicely renovated
+unit in an old building is still B.
 
-Rules:
-- A = modern, premium-quality commercial building/space, clearly high standard
-- B = maintained, functional, heated, usable commercial/industrial object; decent standard, not premium
-- C = visibly outdated, rough, neglected, unheated, low-comfort, low-finish, or technically weak object
+A — ONLY a new or recently built, purpose-built, representative office / business centre
+    in a strong business location, with top-tier features. Benchmarks in Riga: Satekles
+    business centre, Novira Plaza, Verde, Elemental, Skanstes / Vienības-gatve new BCs,
+    Teikums, Origo One, Place Eleven. Typical signs (several together): modern glass /
+    curtain-wall facade, built roughly after 2008, BREEAM / LEED, professional
+    management + reception, access control / turnstiles, several modern lifts,
+    underground parking, central ventilation + cooling, named business centre.
+    A new-build PROJECT of that kind (renders / under construction) in a prime location
+    may be A.
+B — everything decent but not that: older buildings (pre-war, Soviet, 1990s–2000s) even
+    when renovated or with a renovated facade; "just nice" modern buildings that are not a
+    landmark BC; small business parks; mixed-use residential buildings; ordinary
+    renders of non-prime projects. Location alone does not make A.
+C — visibly outdated, rough, neglected, unheated, technically weak buildings.
+Industrial / warehouse buildings: A only for brand-new modern logistics / business-park
+    buildings; otherwise B or C as before.
+If facade / building cannot be judged -> unknown (do NOT default to A).
 
-Important:
-- industrial / warehouse / production use ALONE does not mean C
-- simple facade ALONE does not mean C
-- brick facade ALONE does not mean C
-- if the object is clean, maintained, heated, visually usable, and has decent windows/finishes, prefer B over C
-- if the space/object is clearly unheated or Apkure = Nav with enough evidence, it cannot be A or B -> use C
-- use C only when there is clear evidence of lower standard, such as visible neglect, worn-out condition, poor comfort, missing/weak engineering, or clearly unheated stock
-
-If insufficient evidence -> unknown
 
 ### Space_condition
 Allowed:
@@ -144,7 +150,6 @@ Allowed:
 Allowed:
 - Jā
 - Nē
-- Daļēji
 - unknown
 
 ### Logu_type
@@ -154,12 +159,6 @@ Allowed:
 - Maz logu
 - Nav logi
 - unknown
-
-### Dalama_telpa
-Allowed:
-- Jā
-- Nē
-- Unkown
 
 ### street_entrance
 Allowed:
@@ -274,14 +273,51 @@ Good example:
 ---
 
 ## electric_power_kw
+
+Meaning:
+Electrical connection power available to the unit/object, in kilowatts (kW).
+
+Output format (STRICT):
+- a plain number string in kW, e.g. "63", "43.5", "150", "1000"
+- no units, no "kW", no "~", no words, no ranges
+- if nothing usable -> unknown
+
 Primary:
 - TEXT
 Secondary:
-- PHOTO if exact readable number exists on electrical panel
+- PHOTO only if a rating is clearly readable on the main switch / fuse / meter board
 
-If exact power is not visible or text does not specify -> unknown
+Recognize ALL of these text forms (Latvian / Russian / English):
+1. Explicit kW: "jauda 150 kW", "elektrība 100 kW", "200KW", "pieslēgums 50 kW",
+   "elektroapgāde 900 kW", "мощность 100 кВт", "power 60 kW" -> that number.
+   MW -> multiply by 1000 ("1 MW" -> 1000, "0.2 MW" -> 200).
+2. Amperes (connection / main fuse / input protection): "63A", "3x63A", "80 A pieslēgums",
+   "ievadaizsardzība 100 A", "drošinātāji 250 A", "3 fāžu 50 A", "ввод 63А":
+   convert to kW (commercial connections are 3-phase 400 V by default):
+   kW = A x 0.69  (63 A -> 43.5, 80 A -> 55, 100 A -> 69, 250 A -> 172.5)
+   Only if text clearly says single-phase ("1 fāze", "vienfāzes", "220 V", "230 V"):
+   kW = A x 0.23.
+   If text gives BOTH amperes and kW -> use the kW number as written.
+   kVA (transformer / connection capacity, "630 kVA transformators"): kW = kVA x 0.9;
+   if amperes are ALSO given, prefer the amperes conversion.
+3. Several sub-units each with its own power ("40 kW veikals, 10 kW kafejnīca") -> sum
+   of what is offered ("50").
+4. Current + expandable ("110 kW, iespēja palielināt līdz 297 kW", "200 kW, iespējams
+   palielināt līdz 1 MW") -> CURRENT value ("110", "200"), not the future one.
+5. Photo: main breaker / fuse rating readable (e.g. "63A" printed on the main switch,
+   "C63", "3x80A") -> convert with rule 2. Do not guess from the size of the board.
 
-Do not invent approximate kW.
+Do NOT use as power (these are NOT the electrical connection):
+- heating boiler / furnace / heat pump / generator kW ("katls 50 kW", "kurtuve 50 kW",
+  "siltumsūknis 12 kW", "ģenerators")
+- solar station kW ("saules elektrostacija 30 kW", "saules paneļi")
+- motor / equipment / compressor kW
+- consumption or meter values in kWh, or electricity tariffs (EUR/kWh)
+- voltage / phase info only: "380", "380 V", "400 V", "3 fāzes", "trīsfāzu", "380 kWh"
+  (sellers write "380 kWh" meaning 380 V three-phase) -> this is NOT a power -> unknown
+  unless a kW or A number is ALSO given.
+
+Never estimate power from building type, area or use.
 
 ---
 
@@ -351,41 +387,52 @@ Allowed values:
 - Nav
 - unknown
 
+Meaning: parking available to the tenant / clients of THIS object.
+
 Primary Source: TEXT
-Secondary Source: PHOTO (IMG_TERRITORY / IMG_FACADE)
+Secondary Source: PHOTO (IMG_TERRITORY / IMG_FACADE) — a REAL parking lot visible in
+photos counts even if the text says nothing about parking.
 
-Rules:
+Priority: TEXT beats PHOTO; the more specific statement beats the general one
+("bezmaksas" / "par maksu" beats "pagalmā").
 
-IF
-- tekstā skaidri minēts, ka stāvvietas ir bezmaksas
-OR
-- tekstā skaidri minēts, ka parking ir included / bez maksas
-THEN Parkings = Ir vietas bezmaksas
+Definitions + signals:
 
-ELSE IF
-- tekstā skaidri minēts, ka parking ir par atsevišķu samaksu
-THEN Parkings = Ir vietas par maksu
+1. Ir vietas bezmaksas — text says the object's own spaces are free:
+   "bezmaksas stāvvieta", "bez maksas", "iekļauta nomas maksā / cenā", "free parking",
+   "бесплатная парковка".
+2. Ir vietas par maksu — text says own spaces exist for an extra fee:
+   "par maksu", "par papildu samaksu", "maksas stāvvieta", "iespēja nomāt stāvvietu",
+   "X EUR/mēn par vietu", "platная парковка".
+3. Ir vietas — the object has its OWN spaces, price not stated. Text signals:
+   "stāvvieta pagalmā", "slēgta / privāta / sava stāvvieta", "stāvvietas teritorijā",
+   "pie ēkas", "stāvvietas klientiem", "N stāvvietas", "pazemes stāvvieta / garāža",
+   "slēgta teritorija ar stāvlaukumu", "liels stāvlaukums".
+   PHOTO signals (count even without text): marked parking bays at the building,
+   a yard / fenced territory with a parking area behind gates, a parking lot on the
+   object's territory, an underground garage entrance of the building.
+4. Tikai ielas parking — only public / street parking: text says "ielas stāvvieta",
+   "uz ielas", "stāvvieta pieejama tuvumā", "publiska / pilsētas stāvvieta blakus",
+   "stāvvieta blakus ielā"; OR photos clearly show only a street frontage with no yard,
+   territory or lot belonging to the object. This is a VALID value (typical city centre),
+   not a defect.
+5. Nav — text says there is no parking ("stāvvietas nav", "bez stāvvietas"), or text +
+   photos clearly show a pedestrian zone / closed courtyard with no vehicle access.
+6. unknown — text says nothing and photos show neither a lot, a yard, nor the street
+   situation.
 
-ELSE IF
-- tekstā vai bildēs skaidri redzams, ka pie objekta ir savas stāvvietas
-AND
-- nav skaidrs, vai tās ir bezmaksas vai par maksu
-THEN Parkings = Ir vietas
+DO NOT infer from silence:
+- "centrs" / "Rīgas centrs" / "Vecrīga" alone is NOT evidence of street-only parking.
+- if text is silent and photos are only interiors -> unknown, NOT "Tikai ielas parking".
 
-ELSE IF
-- nav redzamas vai minētas privātas vietas
-AND
-- redzams vai secināms tikai ielas parking
-THEN Parkings = Tikai ielas parking
-
-ELSE IF
-- tekstā skaidri minēts, ka parking nav
-OR
-- ir pietiekami daudz pierādījumu, ka parking nav
-THEN Parkings = Nav
-
-ELSE
-Parkings = unknown
+Traps (NOT evidence):
+- cars parked on the street in a facade photo do NOT mean "Tikai ielas parking" by
+  themselves (check for a yard / lot first)
+- public transport stop, "velonovietne" (bike parking) are NOT parking
+- one car in a yard photo without any marked bays or text is weak — prefer unknown
+  unless the yard is clearly a parking area
+- "garāža" at an autoservice is a work bay, not customer parking
+- a loading yard with trucks = territory for logistics; parking only if bays / text say so
 ---
 
 ## Space_group
@@ -401,8 +448,23 @@ Rules:
 - If clear retail/shop/showcase logic -> Tirdzniecība
 - If clear warehouse logic -> Noliktava
 - If clear production logic -> Ražošana
-- If clear stock-office hybrid AND the unit is on the 1st floor or has clear direct ground access -> StockOfiss
-- If the unit is not on the 1st floor, do not use StockOfiss
+- StockOfiss -> see definition below; use it ONLY when BOTH a pallet gate AND a shop-like
+  customer entrance are visible / stated, on the 1st floor
+
+StockOfiss (Raimonds 2026-10-27) = a SHOP + STOCK unit: one ground-floor space that
+has BOTH (a) an overhead / sectional GATE through which pallets can be brought in, AND
+(b) a SHOP-LIKE, presentable customer entrance (glass door / showroom front facing the
+street or a public parking lot, signage possible), with high ceilings, so it can work as
+a shop, a stock room and an office at once. A mezzanine / 2nd-level office is optional.
+Typical: business-park units like "Ulbrokas 34a", "Grenču 5", "Plieņciema 5".
+NOT StockOfiss:
+- a warehouse / hall with an office but no shop-like customer entrance (only gates and a
+  plain service door) -> Noliktava
+- a unit whose main entrance is a loading RAMP / dock -> Noliktava
+- a hangar / arch hall / rough industrial building, not presentable as a shop
+- a unit inside a closed / fenced industrial territory with no public frontage
+- a shop or office without a gate (pallets cannot be brought in) -> Tirdzniecība / Birojs
+- any unit above the 1st floor
 
 MEDICĪNA (active medical use only):
 - Use Medicīna ONLY if visible or text-supported ACTIVE medical functionality:
@@ -419,6 +481,16 @@ PVD (active food / PVD-licensed use only):
   - sanitary tile walls + stainless steel surfaces actively in use
   - text states active PVD registration / food production / commercial kitchen
 - A real food-prep / production kitchen without customer-facing hospitality -> PVD
+- An EMPTY but fitted-out production room counts too (Raimonds): tiled walls AND tiled /
+  washable floor WITH floor drains AND an exhaust hood or ventilation ducts -> PVD, even
+  if the equipment has been removed and even if the rest of the unit is an office hall.
+  For such mixed units set Mazgajamas_sienas_check = checked (the production room has
+  washable walls).
+- SIZE DOES NOT MATTER (Raimonds): a 200 m² unit with an obvious ~20 m² production
+  kitchen IS a PVD unit (cook in one part, store / pack in the rest). No minimum area.
+- A kitchen WITHOUT a customer seating hall (no dining tables, no bar / serving counter
+  facing guests) is PVD, not Restorans/Cafe. Use Restorans/Cafe only when a customer-
+  facing hall is visible.
 - Renovation potential alone does NOT qualify for PVD primary
 - For renovation potential, use Potential_space_group instead
 
@@ -429,13 +501,16 @@ SPORTA ZĀLE (active gym/training use only):
   - sports flooring (parquet, rubber, sports mats, gym-grade surface)
   - text mentions "sporta zāle", "fitness", "treniņi", "krossfit", "yoga", "pilates", "aerobika"
 
-STUDIJA:
-- Use Studija only if the space is clearly suited for studio-type use such as
-  photo studio, design studio, dance studio, beauty studio, or other open
-  creative/service studio use
-- Do NOT use Studija for ordinary office rooms, cabinet-type plānojumu, narrow
-  rooms, standard administrative premises, or typical multi-room office layouts
-- If the space is clearly a normal office, prefer Birojs and do not use Studija
+STUDIJA (active studio use only):
+- Use Studija ONLY if the space is visibly fitted out / actively used as a studio:
+  photo studio (backdrops, softboxes, cyclorama), dance / yoga / pilates studio
+  (large hall with mirrors, barres, sprung or sports floor, no gym machines),
+  beauty / cosmetology studio (salon chairs, mirrors, wash basins), recording or
+  art studio
+- A hall WITHOUT such fit-out is NOT active Studija -> classify by current use and
+  put Studija into Potential_space_group if the HALL RULE below passes
+- Do NOT use Studija for ordinary office rooms, cabinet-type layouts, narrow rooms,
+  standard administrative premises
 
 RESTORANS/CAFE:
 - Use Restorans/Cafe only if the space is clearly suited for restaurant, cafe,
@@ -491,62 +566,53 @@ may still physically qualify. Conversely, marketing keywords alone (e.g.
 "medicīnai", "kafenīcai piemērots") without matching infrastructure do NOT
 qualify.
 
-### Medicīna potential — 4-check baseline
-Include "Medicīna" in Potential_space_group if ALL FOUR pass:
-1. Vides_pieejamiba_check = checked
-2. Ventilacijas_sistema_check = checked OR feasible
-   (industrial ceiling, A-class building with ventilation infrastructure)
-3. cik_WC indicates ≥1 dedicated WC in the unit (NOT "WC koplietošanā" /
-   "koplietošanas WC" / "shared WC")
-4. Ir_izlietne_telpa_check = checked OR water extension feasibility:
-   - text mentions "var ievilkt ūdeni", "iespējams izbūvēt sanmezglus",
-     "ūdens pievadi", "kanalizācija pieejama"
-   - dedicated WC presence implies extendable plumbing to all rooms (MK 60 allows)
+### Medicīna potential — GATES (Raimonds 2026-10-25; all must pass, mechanical)
+Medicīna in Potential_space_group means "a medical code (MK 60) could realistically be
+obtained here". Include it ONLY if ALL gates pass:
+GATE 1 — Vides_pieejamiba_check = checked (positive step-free evidence; see that field).
+   unknown or not checked -> NO Medicīna. Never infer accessibility from "1. stāvs".
+GATE 2 — the unit: cik_WC shows ≥ 1 WC inside the unit (not shared), AND area_m2 ≥ 50,
+   AND Space_condition is not "Kapitālais remonts".
+GATE 3 — no hard physical veto: not a basement / half-basement, no internal stairs,
+   doors not clearly narrow.
+Water / sink: Ir_izlietne_telpa_check = checked OR plumbing extension plausible (WC in
+   unit implies extendable plumbing) — supportive, not a gate.
+Ventilation: checked OR feasible (modern / A-B class) — supportive, not a gate.
+EXCEPTION — existing medical code: if TEXT or PHOTOS show an ACTIVE medical practice
+   (dental chair, "stomatoloģija" / "klīnika" / "ārstu prakse" signage, med code 1264
+   mentioned) -> include Medicīna even if accessibility fails, and mention in
+   Debug_note: "esošs med kods — pārņemams tikai ar to pašu SIA / krēsla nomu".
+Marketing text ("piemērots medicīnai") does NOT open any gate by itself.
+CONSISTENCY: if Medicīna is in Potential_space_group, then Vides_pieejamiba_check must
+be checked (or the existing-code exception applies). Otherwise remove Medicīna.
 
-### PVD potential — 3-check baseline
-Include "PVD" in Potential_space_group if ALL THREE pass:
-1. Wash-friendly surfaces — any of:
-   - Mazgajamas_sienas_check = checked
-   - Gridas_materials in: Keramikas flīzes, Porcelāna flīzes, Epoksīda grīda,
-     Poliuretāna-cementa grīda, Gumijas grīda, Betona grīda ar trapiem,
-     Slīpēts betons, Mikrocements, PVC / vinils
-   - A-class warehouse/production building with ventilation + water present
-     (industrial baseline boost — modern sandwich-panel walls are food-grade
-     washable; renovation feasible)
-2. Water extension feasibility — any of:
-   - Ir_izlietne_telpa_check = checked
-   - cik_WC indicates ≥1 dedicated WC in unit
-   - text mentions "var ievilkt ūdeni" / "iespējams izbūvēt sanmezglus" /
-     "ūdens pievadi" / "kanalizācija pieejama"
-3. Ventilacijas_sistema_check = checked OR feasible
+### PVD potential — decided by CODE GATES after the model (Raimonds 2026-10-27)
+Your job: fill Gridas_materials, Mazgajamas_sienas_check and Ventilacijas_sistema_check
+honestly — the code then decides PVD. For your own Potential_space_group, follow the
+same logic:
+- a WASHABLE FLOOR is mandatory (tiles, porcelain, epoxy, PU-cement, polished /
+  hardened concrete, microcement, concrete with visible drains, rubber, linoleum,
+  quartz vinyl). Raw / dusty / sandy concrete, carpet, laminate, wood, parquet -> no PVD.
+- PLUS washable walls OR a ventilation system (the missing one can be added).
+- a SHOP / unit inside a shopping centre needs washable floor AND washable walls — a
+  tiled shop floor with mall ventilation is just a shop, not PVD.
+- an office (Birojs / office building) above the 1st floor is never PVD; a warehouse or
+  production space on an upper floor can be.
+- text with PVD registration / food production / production kitchen -> PVD.
+Marketing words ("piemērots pārtikai") alone do not qualify.
 
-PVD STRONG TEXT SIGNALS (raise confidence; not required):
-- "trapi grīdā" / "floor drains"
-- "slapja ražošana" / "wet production"
-- "PVD reģistrēts" / "PVD aktīvs"
-- "atļauts pārtikai" / "speciāli pārtikai"
-
-### Sporta zāle potential — 4-check baseline
-Include "Sporta zāle" in Potential_space_group if ALL FOUR pass:
-1. Vides_pieejamiba_check = checked
-2. Open space layout — any of:
-   - Cik_telpas = "1" or low (≤2)
-   - photos show clearly open, undivided space without fixed partition walls
-   - simple gray/concrete/bare interior finish works as baseline
-   - no rigid cabinet/office partitioning visible
-3. Ventilacijas_sistema_check = checked OR feasible
-   (CO2 removal during training is essential)
-4. Water/WC feasibility — any of:
-   - cik_WC indicates ≥1 dedicated WC OR Ir_izlietne_telpa_check = checked
-   - text mentions extension feasibility for changing rooms / showers
-
-Size note: area_m2 ≥ 200m² preferred (500-1500m² ideal), but smaller spaces
-(100m²+) can qualify if they visually present as a gym/training space.
+### Sporta zāle potential — decided by CODE GATES after the model (Raimonds 2026-10-27)
+Fill Planojums, Lielaka_zale_m2 and Vides_pieejamiba_check honestly; the code decides.
+Logic: the HALL must justify the whole unit — open layout or hall + small support rooms,
+hall ≥ 100 m² AND ≥ 60 % of the unit area. A big labyrinth of cabinets with one hall is
+NOT a gym. Plain warehouses / production halls / autoservices are NOT gym candidates.
+Not accessible -> no gym.
 
 ### Other categories (existing rules)
-StockOfiss:
-- Allowed only if unit is on the 1st floor or has clear direct ground access
-- If the unit is above the 1st floor, do not include StockOfiss
+StockOfiss (potential): include only if the unit already has BOTH a pallet gate and a
+shop-like customer entrance (see the StockOfiss definition under Space_group), or one of
+them is trivially present and the other is clearly stated as possible in the text. A plain
+warehouse with a gate is NOT a StockOfiss candidate.
 
 Restorans/Cafe:
 - Allowed only if the space could realistically function as a restaurant,
@@ -558,14 +624,55 @@ Restorans/Cafe:
 - If the space is more suitable for food production / catering / prep
   without customer-facing hospitality use, prefer PVD
 
-Studija:
-- Allowed only if the space could realistically function as an open studio-type space
-- Do not include Studija for standard office premises with small or separate
-  rooms, administrative layouts, or typical cabinet-style offices
+Studija — HALL RULE (Raimonds 2026-10-25):
+Studija in Potential_space_group means: "this unit contains AT LEAST ONE real hall-type
+room, so a dance / yoga / training / photo studio can be built here". The number of
+other rooms does NOT matter — a 6-room unit with one big hall IS Studija; a 1-room
+40 m² office is NOT.
+- Include Studija ONLY if Lielaka_zale_m2 is a number ≥ 70 (exact or "~"), i.e. one
+  undivided room of about 70 m² or more, shortest side roughly ≥ 6 m, usable by a
+  group of people
+- Supporting rooms (changing room, WC, reception, small cabinets, kitchenette) are
+  a plus, never a minus
+- The hall must be reachable without passing through another tenant's premises
+- Daylight: hall has windows ("Lielie Logi" / "Standarta logi"); a basement hall
+  without windows does NOT qualify
+- Text signals that help: "zāle", "liela zāle", "atvērtā plānojuma", "open space",
+  "viena liela telpa", "loft", "augsti griesti", "deju zāle", "treniņu zāle"
+- Do NOT include Studija for: cabinet-style offices where every room < 70 m²; narrow
+  shops (width ~4 m) even if long; an office with a 30 m² meeting room; warehouses /
+  production halls with concrete floor and 4 m+ ceilings — those are Sporta zāle
+  candidates, not Studija; rooms without windows
+- If the biggest room size cannot be established (Lielaka_zale_m2 = unknown) -> do
+  NOT include Studija
+- Planojums helps when there is no plan: Planojums = "Atvērts" with unit area ≥ 70, or
+  Planojums = "Zāle + palīgtelpas" with the estimated hall (see Lielaka_zale_m2 link
+  rule) ≥ 70 -> the hall exists -> Studija. Planojums = "Kabinetu" or "Sekciju" -> no
+  hall -> no Studija.
+
+MANDATORY CONSISTENCY (hall rule is mechanical, not a judgement):
+- If Lielaka_zale_m2 is a number ≥ 70 (exact or "~") AND Logu_type is not "Nav logi"
+  AND the hall is not an industrial concrete-floor warehouse/production hall
+  -> Potential_space_group MUST contain "Studija", even when Space_group is Birojs,
+  Tirdzniecība, Medicīna or anything else, and even if the current use is a plain
+  office. The "General fallback" below does NOT override this.
+- If you did not include Studija, then Lielaka_zale_m2 must be < 70 or unknown.
+
+Birojs as a POTENTIAL use of a warehouse / production / autoservice unit (Raimonds):
+only if the WHOLE unit could become an office — an office / mixed building, normal
+entrance, no industrial gates, not a basement. A small office room inside a warehouse
+is an auxiliary room, NOT office potential.
+
+Birojs as a POTENTIAL use of a SHOP (Tirdzniecība) (Raimonds 2026-10-27):
+- a shop with a MEGA SHOPFRONT — floor-to-ceiling display windows / full glass storefront
+  facing a street or mall, prime retail frontage -> keep it retail, do NOT add Birojs
+- a ground-floor shop with ordinary / smaller windows, or in a non-central / quiet location
+  -> Birojs is a good potential (showroom-office, e.g. an interior designer)
 
 General fallback:
 - If Space_group is clearly Birojs and there is no strong evidence for any
-  other realistic use-case, return unknown
+  other realistic use-case, return unknown — EXCEPT the mandatory Studija hall
+  rule above (a ≥ 70 m² hall with windows always adds Studija)
 
 ---
 
@@ -621,10 +728,32 @@ Primary:
 Secondary:
 - TEXT
 
-If clearly furnished -> Jā
-If clearly empty -> Nē
-If partly furnished -> Daļēji
-If too incomplete to tell -> unknown
+Meaning (Raimonds 2026-10-26): can a tenant MOVE IN AND START WORKING with the furniture
+that stays? Two answers only — there is NO "partly". Leftovers are NOT furniture.
+
+Jā — the unit is FULLY fitted out as a working, lived-in space — what a broker would
+honestly advertise as "mēbelēts" (Raimonds: if in doubt -> Nē). e.g.:
+- office: EVERY main room is furnished as a finished office — workplaces filling the
+  room, storage, meeting / lounge furniture, lamps / decor, it looks like a company works
+  there or a turnkey office. A couple of desks with chairs standing in otherwise bare
+  rooms (no storage, no decor, rooms look half-empty) is NOT furnished -> Nē.
+  Text "mēbelēts", "ar mēbelēm", "aprīkots birojs", "furnished" -> Jā.
+- cafe / restaurant: customer tables + chairs and service counter in place
+- salon / medical / studio: working equipment and furniture in place for the activity
+Nē — everything else, in particular:
+- empty rooms
+- leftovers: one desk + chair, a few loose chairs, an old cabinet, empty shelves,
+  tables without chairs, items being moved out, boxes
+- built-in kitchenette / kitchen cabinets, built-in wardrobes, radiators, blinds —
+  these are fit-out, NOT furniture
+- warehouse racks, workbenches, production equipment
+- RENDERS / VISUALISATIONS / virtual staging (computer-generated images, "projekts",
+  "vizualizācija", building under construction, "fit-out", "pelēkā apdare", "tiks
+  nodots") — furniture in renders is not real -> Nē, even if the render is full of
+  furniture. If ALL interior images are renders -> Nē.
+Text beats photos: "bez mēbelēm" -> Nē; "mēbelēts" -> Jā (unless photos show an empty
+space).
+unknown — no interior photos and no text about furniture.
 
 ---
 
@@ -696,7 +825,6 @@ Allowed values:
 - Keramikas flīzes
 - Porcelāna flīzes
 - Dabīgais akmens
-- PVC / vinils
 - Kvarca vinils
 - Linolejs
 - Gumijas grīda
@@ -717,6 +845,34 @@ Rules:
 - if floor material is clearly stated in text, use that
 - else if floor material is clearly visible in images, use the best matching canonical value
 - else unknown
+
+WHICH FLOOR (one value only):
+- judge the floor of the MAIN WORKING SPACE(S) only — ignore kitchen / kitchenette,
+  WC, bathroom, corridor, lobby, staircase, shared areas, balcony
+- if main rooms have different floors -> the floor of the LARGEST main room; if they are
+  about equal -> the floor seen in most interior photos
+- condition does NOT change the material (worn linoleum is still "Linolejs"; damage
+  belongs to Space_condition)
+- "Betona grīda ar trapiem" ONLY if floor drains (trapi / grates) are actually visible or
+  stated — never assume drains.
+- a floor that is sand, gravel, dirt, crushed stone or a dusty unfinished base with no
+  real floor finish -> "Betona grīda" at most (it is NOT a finished washable floor); if it
+  is clearly not even concrete -> unknown
+
+"PVC / vinils" is RETIRED — never output it. Choose between:
+- Linolejs = soft PVC sheet flooring laid in one piece with welded seams; uniform or
+  speckled / marbled pattern, often glossy, no plank / tile joints; typical in offices,
+  clinics, schools, older commercial spaces; also small old PVC tiles
+- Kvarca vinils = modern rigid vinyl (LVT / SPC / kvarcvinils) in separate PLANKS or
+  TILES with visible joints, wood or stone imitation
+Kvarca vinils vs Lamināts (wood-look planks look the same in photos):
+- "Kvarca vinils" ONLY if the text says vinils / kvarcvinils / LVT / SPC, OR the same
+  plank floor clearly continues into a kitchen / WC / wet area (laminate is not laid
+  there); otherwise -> Lamināts
+Paklājflīzes vs smooth floors:
+- carpet tiles are MATT, textile surface, square tile grid, NO reflections
+- if the floor reflects windows / lamps it is NOT carpet (Linolejs, Kvarca vinils,
+  flīzes, slīpēts betons, epoksīds…)
 
 Important:
 - do not invent exotic materials not on the list
@@ -749,7 +905,6 @@ Approximate mapping:
 - Keramikas flīzes -> ~250
 - Porcelāna flīzes -> ~400
 - Dabīgais akmens -> ~400
-- PVC / vinils -> ~250
 - Kvarca vinils -> ~250
 - Linolejs -> ~250
 - Gumijas grīda -> ~250
@@ -766,21 +921,6 @@ Additional logic:
 - never output a high estimate unless the visual evidence clearly supports heavy-duty floor logic
 ---
 
-## Dalama_telpa
-Allowed:
-- Jā
-- Nē
-- Unkown
-
-Primary:
-- PLAN
-- INTERIOR + TEXT
-
-If space is clearly open/flexible/divisible -> Jā
-If clearly not divisible / many fixed small rooms / rigid structure -> Nē
-If insufficient -> Unkown
-
----
 ### Auto_pacelajs_check
 
 Meaning:
@@ -801,6 +941,16 @@ Rules:
 - if text clearly states auto lift / car lift / vehicle lift / pacēlājs automašīnām -> checked
 - if text says pacēlājs in a clear autoservice / garage / service bay context, interpret it as Auto_pacelajs_check = checked, not Treifelis_Pacelajs
 - if text says service pit / bedre, that supports autoservice context but does NOT by itself prove a car lift
+- a car lift looks like: two posts (columns) with swing arms, four posts with drive-on
+  runways, or a scissor platform the width of a car; often branded on the post
+- NOT a car lift: inspection pit (bedre), paint / spray booth, tripod stands, work lamps,
+  jack stands, trolley / transmission jacks, tyre changer, wheel balancer, shelving posts,
+  a mobile INFRARED PAINT-DRYING LAMP (single column on a wheeled base with a lamp head /
+  arm) — common in body shops and paint booths
+- a single free-standing post with a lamp / tool head is not a car lift; a lift has a
+  matching pair (or four) of posts on both sides of the car, or a platform under the car.
+  A heavy steel post with an OVERHEAD CROSSBEAM running to a second post (even if the
+  second post is partly outside the frame) IS a two-post car lift.
 - if enough evidence exists and no car lift is present -> not checked
 - if evidence is insufficient -> unknown
 ---
@@ -837,6 +987,100 @@ Rules:
 - do not return an exact room count from photos alone
 
 ---
+
+## Lielaka_zale_m2
+
+Meaning:
+Floor area (m²) of the LARGEST single undivided room in the unit — "the hall".
+Used to decide Studija / Sporta zāle potential and to let clients filter by hall size.
+
+Allowed output:
+- exact number string in m², e.g. "120" — when the size is stated in text or readable
+  on a plan
+- approximate number string with ~, e.g. "~90" — when inferred from a plan without
+  labels or from photos of an obviously large hall
+- unknown — when no source gives confidence
+
+Sources, in priority:
+1. TEXT: room sizes listed ("zāle 120 m², ģērbtuve 15 m²", "telpa 85 kv.m",
+   "divas telpas 60 + 25 m²") -> the biggest stated room. If the unit is clearly ONE
+   room ("viena telpa", "atvērtā plānojuma", Cik_telpas = 1) -> the whole area.
+2. PLAN image (any position in the gallery): read the m² label of the biggest room;
+   if no labels, estimate from proportions vs the known total area (use ~).
+3. PHOTOS: only when the hall is obviously large — visible wall to wall, a row of
+   several windows along one wall, 5+ ceiling lights in rows, many desks / mats /
+   people would fit. Estimate conservatively with ~ (e.g. "~80"). If unsure -> unknown.
+
+Do NOT:
+- return the total unit area when the unit is clearly divided into several rooms
+- count corridors, WC, storage, kitchenette as the hall
+- guess from the building type or from the listing category
+
+Link with Planojums:
+- Planojums = "Atvērts" -> Lielaka_zale_m2 = the whole unit area (exact, from area field)
+- Planojums = "Zāle + palīgtelpas" and no text / plan size -> if total area ≥ 100 m²,
+  estimate the hall as roughly 60 % of the total with "~" (e.g. 213 m² -> "~130");
+  if total area < 100 m² -> unknown
+
+---
+
+## Skatlogi
+Meaning: does the unit have a MEGA SHOPFRONT — floor-to-ceiling display windows / a full
+glass storefront along most of its street (or mall / parking) frontage, at entrance
+level? Prime retail frontage.
+- Jā: big glass display windows from (near) floor to ceiling forming the facade of the
+  unit, typical ground-floor shop / showroom frontage
+- Nē: ordinary windows with a wall sill, small shop windows, upper floors, warehouses
+- unknown: facade / frontage not visible
+(Internal field used by the code; not stored.)
+
+## Planojums
+
+Meaning:
+Physical LAYOUT TYPE of the unit — how the floor area is divided. A type, not a size,
+so it can usually be read from ordinary photos even when no plan exists. Works for
+all groups (office, shop, warehouse, production, medical).
+
+Allowed values:
+- Atvērts
+- Zāle + palīgtelpas
+- Kabinetu
+- Sekciju
+- unknown
+
+Definitions:
+- Atvērts = ONE undivided room is the whole unit; only WC / kitchenette / tiny entry
+  besides it. Open-space office, shop hall, one warehouse hall, one production hall.
+- Zāle + palīgtelpas = ONE dominant large room (a real hall: roughly ≥ 50 m² AND at
+  least half of the unit area) PLUS several smaller rooms (changing room, cabinets,
+  reception, storage, office corner). Krustpils-type: hall + 5 rooms; warehouse hall
+  with an office block; shop hall with a back storage.
+- Kabinetu = corridor + several small / medium rooms, none of them a real hall
+  (biggest room < ~50 m² or less than half of the area). Cabinet office, clinic,
+  salon with rooms, hotel-type. A 43 m² shop split into 4 rooms is Kabinetu, not
+  "Zāle + palīgtelpas".
+- Sekciju = several similar separate blocks, each with its own door / gate: storage
+  boxes, autoservice bays, a row of production shops, self-storage.
+- unknown = not enough evidence.
+
+Sources, in priority:
+1. PLAN image (any position) — read the layout directly.
+2. TEXT: "atvērtā plānojuma", "open space", "viena liela telpa" -> Atvērts;
+   "zāle un palīgtelpas", "liela zāle + 2 kabineti", "halle ar biroju" -> Zāle + palīgtelpas;
+   "4 kabineti", "kabinetu sistēma", "koridors", "N atsevišķas telpas (no tām neviena
+   dominējoša)" -> Kabinetu; "boksi", "sekcijas", "atsevišķas noliktavas ar vārtiem",
+   "N boksi" -> Sekciju.
+3. PHOTOS — count DISTINCT rooms (not photos!): the same room shot from 3 angles is
+   ONE room (same windows, floor, walls, lights). Then:
+   - one big room + only WC/kitchen -> Atvērts
+   - one big room + several small rooms -> Zāle + palīgtelpas
+   - only small/medium rooms + corridor with doors -> Kabinetu
+   - repeated similar boxes / bays, each with own door or gate -> Sekciju
+   - photos show only ONE room but the unit area is much larger than that room looks,
+     and nothing shows what is behind the doors -> unknown (not Atvērts)
+
+Do NOT infer from Space_group or building type. A warehouse can be Atvērts, Zāle +
+palīgtelpas or Sekciju — decide from what is seen.
 
 ## cik_WC
 If count/location clearly known from text/plan/photo -> return short exact text
@@ -893,8 +1137,22 @@ Secondary Source:
 Rules:
 - checked ONLY if there is real hoist/crane evidence:
   * a ceiling/beam-mounted hoist or overhead crane is clearly visible in a photo, OR
-  * text explicitly names an industrial hoist/crane: "telferis", "celtnis", "krāna sija",
-    "kran-balka", "konsoles celtnis", "liellaidu celtnis".
+  * CRANE RUNWAY visible: continuous crane rails / runway beams running along the
+    columns high up on both sides of the hall, often with yellow crane-access platforms
+    and ladders at rail height — the crane bridge may be outside the frame, the runway
+    itself is the evidence, OR
+  * text explicitly names an industrial hoist/crane: "telferis", "tālferis", "celtnis",
+    "tilta celtnis", "krāna sija", "kran-balka", "konsoles celtnis", "liellaidu celtnis",
+    "кран-балка", "тельфер", "overhead crane".
+- TEXT WINS (Raimonds): if the listing text names a telferis / celtnis / krāna sija, it is
+  checked — even if no photo shows it. There is no reason to doubt the seller here.
+- the generic word "pacēlājs" / "kravas pacēlājs" / "pacelšanas iekārta" ALONE is NOT
+  enough (Raimonds) — it is usually a freight lift, a scissor lift or a car lift.
+- ventilation ducts, cable trays, sprinkler pipes, roof trusses, light rails, overhead
+  sectional door tracks are NOT a hoist.
+- the photo evidence must be in the OFFERED space; a crane in a neighbouring tenant's
+  hall that is shown only for context does not count if the text/plan shows it is not
+  part of the offer.
 - DO NOT check for building elevators. The words "lifts", "kravas lifts", "pasažieru lifts",
   "kravas un pasažieru lifti", "Stāvs: X/Y/lifts" mean a passenger / freight ELEVATOR, which is a
   different building-level feature, NOT a telferis -> do NOT set checked based on these alone.
@@ -934,10 +1192,42 @@ Allowed:
 Primary:
 - PHOTO + TEXT
 
-Rules:
-- if ventilation system visible or explicitly mentioned -> checked
-- if enough images exist and no ventilation signs and text does not mention it -> not checked
-- if evidence too limited -> unknown
+Meaning: a mechanical air supply / exhaust system (ventilācija, rekuperācija, gaisa
+apmaiņa). Cooling or heating alone is NOT ventilation.
+
+checked — ONLY with SPECIFIC evidence:
+- text mentions ventilation / rekuperācija / "pieplūdes-nosūces" / "gaisa apmaiņas
+  sistēma" / "вентиляция" / "ventilation", OR
+- photo shows AIR DUCTS: large round (spiral) or rectangular sheet-metal ducts with
+  supply / exhaust grilles or diffusers along them, OR
+- ventilation grilles / diffusers / slot diffusers set into a suspended ceiling, OR
+- an air handling unit / rooftop unit / large wall exhaust fans of an industrial hall
+  clearly visible.
+NOT ventilation (do NOT check on these alone):
+- sprinkler pipes (thin pipes with sprinkler heads, often red or grey)
+- water / heating / gas pipes, district-heating mains along beams
+- electrical cables, cable trays, lighting rails, crane beams / crane runways
+- air heaters / gas infrared heaters / red heater boxes hanging under the roof
+- a wall-mounted split air conditioner alone (that is cooling; a ceiling cassette AC
+  counts only together with supply/exhaust grilles or ducts)
+- "lots of engineering on the ceiling" in general — name the duct or grille you see
+- ROUND RECESSED LAMPS / downlights / spotlights (shiny reflector, bulb inside, small
+  round hole in the ceiling) — these are lights, NOT diffusers; a diffuser has visible
+  slots, vanes, swirl blades or a perforated / grille face. A small round element in a
+  suspended ceiling is a LAMP unless the slots / vanes are clearly visible. If you cannot
+  tell lamp vs diffuser -> it is NOT evidence (do not check on it).
+- for ceiling diffusers / grilles to count, at least TWO clearly identifiable
+  (non-lamp) supply/exhaust outlets must be visible, or one plus a visible duct.
+- concrete or steel BEAMS, girders, purlins, roof trusses, column boxings — structure,
+  NOT rectangular ducts; a duct is thin sheet metal (galvanised / painted) with joints
+  or flanges, hanging from the ceiling
+- a single isolated pipe stub / old disused exhaust pipe / one elbow near a window —
+  NOT a system; a ventilation system is a duct NETWORK running through the space with
+  several grilles / outlets
+not checked — enough interior photos show the ceiling / upper walls and none of the
+  specific evidence above is present, and text does not mention ventilation.
+unknown — ceiling / upper part of the space is not visible enough (e.g. only facade
+  photos) and text is silent.
 
 ---
 
@@ -993,11 +1283,26 @@ Rules:
 ---
 
 ## Ir_izlietne_telpa_check
-This means sink in the unit/space, not generic assumption.
+Meaning (Raimonds 2026-10-26): a sink installed IN THE WORKING ROOM ITSELF — a cabinet /
+treatment room / salon / workshop area where the work is done (cosmetologist's cabinet,
+hair-washing basin, dental / doctor's cabinet sink, lab sink, a sink on the wall of the
+office / shop room). Needed by salons, medical cabinets, studios.
 
-- visible sink in relevant space -> checked
-- enough evidence and clearly absent -> not checked
-- insufficient evidence -> unknown
+checked:
+- photo shows a sink / wash basin mounted in a working room (next to a treatment table,
+  salon chair, desk area, shop floor), or a hair-washing basin
+- text: "izlietne kabinetā", "katrā kabinetā izlietne", "ūdens kabinetos", "izlietne telpā"
+NOT counted (these do NOT make it checked):
+- kitchen / kitchenette / tea-point sink (virtuve, virtuvīte)
+- WC / toilet / bathroom / shower-room sink (sanmezgls, vannas istaba)
+- shared / corridor sinks, utility / cleaning sinks in a technical room
+- WAREHOUSE / PRODUCTION / AUTOSERVICE spaces: a small hand-wash or utility sink on a
+  wall (in a side / technical room, by the gate, a tap on the hall wall) does NOT count.
+  For these spaces check ONLY if the text says so, or there is a real work-water station
+  (several sinks, stainless washing line, food-prep / production wash area).
+not checked — enough interior photos of the working rooms, and the only sinks seen are
+  in the kitchen / WC / bathroom (or none at all).
+unknown — working rooms not shown well enough to tell.
 
 ---
 
@@ -1037,30 +1342,58 @@ Allowed:
 - unknown
 
 Meaning:
-Whether the unit/space is accessible for clients with physical limitations
-(legal requirement for medical premises per MK 60, and a practical requirement
-for gym/training spaces with client flow).
+Can a WHEELCHAIR USER get from the public street INTO the unit and to its WC WITHOUT
+help — no steps anywhere on the route (or a ramp / lift where there are), doors wide
+enough (≥ 90 cm), no level changes inside. This is the legal baseline for a medical
+code (MK 60). Judge the ROUTE, not the floor number.
 
 Primary:
-- TEXT (explicit mentions of lift, ramp, accessibility, floor number)
+- PHOTO: facade, entrance door, lobby / stairwell, interior level changes, plan
 Secondary:
-- PHOTO (visible passenger lift, ramp at entrance, wide ground-level entrance)
+- TEXT: "lifts", "pandus", "vides pieejamība", "1. stāvs", "kāpnes", "puspagrabs",
+  "cokolstāvs", "pagrabstāvs", "bēniņi", "mansards"
 
-Rules:
-- checked if any of:
-  - floor field indicates "1. stāvs" / "1" (ground floor — accessibility automatic)
-  - text mentions "lifts" / "lifti" / "X lifti"
-  - text mentions "piekļuve cilvēkiem ar kustību traucējumiem"
-  - text mentions "vides pieejamība" / "vides pieejama"
-  - text mentions "rampa" as passenger access (NOT loading ramp)
-  - photos show passenger lift door, accessibility ramp at building entrance,
-    or wide ground-level entrance for the unit
-- not checked if all of:
-  - floor is clearly above 1st (e.g., "2", "3", "5", "6")
-  - no lift evidence in text or photos
-  - no passenger ramp visible
-  - clearly walk-up staircase only
-- unknown if floor cannot be determined and no lift/ramp evidence
+"1. stāvs" ALONE IS NOT EVIDENCE. Most Riga ground floors are raised 0.5–1.5 m above the
+sidewalk and reached by steps. Only a visible or stated step-free route counts.
+
+checked — ONLY with positive evidence of a step-free route. An EXTERIOR photo of the
+actual entrance door (or explicit text) is REQUIRED; interior photos alone, a nice
+modern interior or a modern facade without the entrance visible are NOT enough.
+A modern residential/commercial building whose entrance sits on a podium with steps
+and no visible ramp is "not checked".
+- entrance door at sidewalk / ground level with no steps in front (threshold ≤ 1 small
+  step) AND no level change seen inside, OR
+- a ramp at the entrance (passenger ramp, not a loading ramp), OR
+- a passenger lift visible or stated AND the lobby to the lift has no steps, OR
+- a modern building (built after ~2000: glass facade, business centre, underground
+  parking) where a lift is standard, AND no steps seen between street and lift
+- text explicitly: "vides pieejamība", "pandus", "piekļuve cilvēkiem ratiņkrēslā", "lifts"
+
+not checked — any ONE of these barriers seen or stated:
+- steps / stairs at the entrance with no ramp (2 or more steps)
+- a staircase inside the unit or in the lobby before any lift (split-level, mezzanine,
+  spiral stairs, raised platform with steps)
+- unit below street level: half-basement / basement — windows at or below sidewalk
+  level, stairs leading DOWN from the entrance, small windows high under the ceiling
+- raised ground floor: facade shows ground-floor window sills ~1 m or more above the
+  sidewalk and no ramp / level entrance is visible
+- floor 2 or higher in a historic / walk-up building with no lift evidence
+- attic / mansard level (sloped ceilings, roof windows) without a lift stated
+- entrance door clearly narrow (single-leaf old door < 80 cm) or the route is a
+  narrow corridor with a turn a wheelchair cannot make
+- text: "kāpnes", "bez lifta", "puspagrabs", "cokolstāvs", "pagrabs"
+
+unknown — no entrance / facade / stairwell photo and no text about the route.
+unknown means NOT accessible for any downstream decision.
+
+Multi-level unit (ground floor + mezzanine / 2nd level): judge the ground-floor part;
+if that part is step-free -> checked, and say "tikai 1. stāva daļa" in the reason.
+
+Vides_pieejamiba_iemesls (reason) — ALWAYS fill, 1 short Latvian sentence citing what
+you saw: e.g. "4 pakāpieni pie ieejas, pandusa nav (foto 2)", "ieeja ietves līmenī bez
+pakāpieniem (foto 13), lifts vestibilā", "3. stāvs, lifts nav redzams, vēsturiska ēka",
+"puspagrabs — logi ietves līmenī (foto 1)", "nav ieejas/fasādes foto". For unknown
+say what is missing.
 
 Important:
 Distinguish PASSENGER lift/ramp (Vides_pieejamiba_check) from LOADING ramp
@@ -1438,7 +1771,7 @@ JSON_SCHEMA = {
         "Agent_comment": {"type": "string"},
         "Mebeleta_telpa": {
             "type": "string",
-            "enum": ["Jā", "Nē", "Daļēji", "unknown"]
+            "enum": ["Jā", "Nē", "unknown"]
         },
         "Logu_type": {
             "type": "string",
@@ -1458,7 +1791,6 @@ JSON_SCHEMA = {
                 "Keramikas flīzes",
                 "Porcelāna flīzes",
                 "Dabīgais akmens",
-                "PVC / vinils",
                 "Kvarca vinils",
                 "Linolejs",
                 "Gumijas grīda",
@@ -1473,10 +1805,6 @@ JSON_SCHEMA = {
         },
         "Gridas_izturiba_kg_m2": {"type": "string"},
         "Griestu_augstums": {"type": "string"},
-        "Dalama_telpa": {
-            "type": "string",
-            "enum": ["Jā", "Nē", "Unkown"]
-        },
         "Auto_pacelajs_check": {
             "type": "string",
             "enum": ["checked", "not checked", "unknown"]
@@ -1486,6 +1814,12 @@ JSON_SCHEMA = {
             "enum": ["checked", "not checked", "unknown"]
         },
         "Cik_telpas": {"type": "string"},
+        "Lielaka_zale_m2": {"type": "string"},
+        "Planojums": {
+            "type": "string",
+            "enum": ["Atvērts", "Zāle + palīgtelpas", "Kabinetu", "Sekciju", "unknown"]
+        },
+        "Skatlogi": {"type": "string", "enum": ["Jā", "Nē", "unknown"]},
         "cik_WC": {"type": "string"},
         "Apkure": {
             "type": "string",
@@ -1537,6 +1871,7 @@ JSON_SCHEMA = {
             "type": "string",
             "enum": ["checked", "not checked", "unknown"]
         },
+        "Vides_pieejamiba_iemesls": {"type": "string"},
         "Vides_pieejamiba_check": {
             "type": "string",
             "enum": ["checked", "not checked", "unknown"]
@@ -1601,10 +1936,12 @@ JSON_SCHEMA = {
         "Griestu_augstums",
         "Gridas_materials",
         "Gridas_izturiba_kg_m2",
-        "Dalama_telpa",
         "street_entrance",
         "Auto_pacelajs_check",
         "Cik_telpas",
+        "Lielaka_zale_m2",
+        "Planojums",
+        "Skatlogi",
         "cik_WC",
         "Apkure",
         "Treifelis_Pacelajs",
@@ -1621,6 +1958,7 @@ JSON_SCHEMA = {
         "Sava_eka_check",
         "Nozogota_teritorija_check",
         "Vides_pieejamiba_check",
+        "Vides_pieejamiba_iemesls",
         "Mazgajamas_sienas_check",
         "Has_conference_room",
         "Zemes_gabals_m2",
@@ -1656,10 +1994,12 @@ DEFAULT_OUTPUT = {
     "Griestu_augstums": "unknown",
     "Gridas_materials": "unknown",
     "Gridas_izturiba_kg_m2": "unknown",
-    "Dalama_telpa": "Unkown",
     "Auto_pacelajs_check": "unknown",
     "street_entrance": "unknown",
     "Cik_telpas": "unknown",
+    "Lielaka_zale_m2": "unknown",
+    "Planojums": "unknown",
+    "Skatlogi": "unknown",
     "cik_WC": "unknown",
     "Apkure": "unknown",
     "Treifelis_Pacelajs": "unknown",
@@ -1676,6 +2016,7 @@ DEFAULT_OUTPUT = {
     "Sava_eka_check": "unknown",
     "Nozogota_teritorija_check": "unknown",
     "Vides_pieejamiba_check": "unknown",
+    "Vides_pieejamiba_iemesls": "unknown",
     "Mazgajamas_sienas_check": "unknown",
     "Has_conference_room": "unknown",
     "Zemes_gabals_m2": "Nav minēts",
@@ -1978,6 +2319,448 @@ def build_messages(listing_url: str, listing_text: str, image_urls: List[str]) -
     return [{"role": "user", "content": content}]
 
 
+
+# ---------------------------------------------------------------------------
+# MEDICĪNAS VĀRTI (Raimonds 2026-10-25/26) — deterministiski, PĒC AI.
+# Modelis promptā vārdu «obligāti» apiet, tāpēc Medicīnu Potential_space_group
+# galīgi nosaka kods. Identiska kopija: test_runner_db.py ↔ ai_text_helpers.py.
+#   0) aktīva prakse (Space_group = Medicīna)  → paliek (esošs kods, piezīme)
+#   1) ēkas profils owner_adapts_premises = False → NOŅEM vienmēr
+#   2) ēkas profils owner_adapts_premises = True  → PIELIEK
+#   3) citādi: pieejamība (AI vai bp.has_accessibility) = checked
+#      ∧ WC telpā (ne koplietošanā) ∧ platība ≥ 50 ∧ ne kapitālais remonts
+#      → PIELIEK, citādi NOŅEM. «unknown» pieejamība = NOŅEM.
+# ---------------------------------------------------------------------------
+MED = "Medicīna"
+
+
+def _to_float(v):
+    try:
+        return float(str(v).replace(",", ".").replace("~", "").strip())
+    except Exception:
+        return None
+
+
+def _wc_in_unit(cik_wc) -> bool:
+    s = str(cik_wc or "").lower()
+    if not s or s == "unknown" or "koplieto" in s or "shared" in s:
+        return False
+    return any(ch.isdigit() for ch in s) or "wc telpā" in s or "sanmezgl" in s
+
+
+def fetch_building_flags(conn, building_profile_id):
+    """{has_accessibility, owner_adapts_premises} no ēkas profila (None = nav zināms)."""
+    if not building_profile_id:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT has_accessibility, owner_adapts_premises, has_fenced "
+                "FROM properties.building_profiles WHERE id = %s",
+                (building_profile_id,),
+            )
+            r = cur.fetchone()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    if not r:
+        return {}
+    if isinstance(r, dict):
+        return {"has_accessibility": r.get("has_accessibility"),
+                "owner_adapts_premises": r.get("owner_adapts_premises"),
+                "has_fenced": r.get("has_fenced")}
+    return {"has_accessibility": r[0], "owner_adapts_premises": r[1], "has_fenced": r[2]}
+
+
+def apply_medicine_gates(result, area_m2=None, building_flags=None):
+    """Maina result["Potential_space_group"] (Medicīna) + papildina Debug_note.
+    Atgriež īsu iemeslu (str)."""
+    bf = building_flags or {}
+    pot_raw = str(result.get("Potential_space_group") or "")
+    pot = [p.strip() for p in pot_raw.split(",")
+           if p.strip() and p.strip().lower() != "unknown"]
+    had = MED in pot
+
+    access = str(result.get("Vides_pieejamiba_check") or "unknown")
+    if bf.get("has_accessibility") is True:
+        access = "checked"
+    elif bf.get("has_accessibility") is False:
+        access = "not checked"
+
+    area = _to_float(area_m2) or _to_float(result.get("area_m2"))
+    cond = str(result.get("Space_condition") or "")
+
+    if str(result.get("Space_group") or "") == MED:
+        want, why = True, "esošs med kods — pārņemams tikai ar to pašu SIA / krēsla nomu"
+    elif str(result.get("Space_group") or "") in ("Noliktava", "Ražošana", "Autoserviss", "StockOfiss"):
+        # Raimonds 2026-10-27: noliktavā/ražošanā med kods nevar būt vispār (arī ar ēkas pogu)
+        want, why = False, f"{result.get('Space_group')} — med nekad"
+    elif bf.get("owner_adapts_premises") is False:
+        want, why = False, "īpašnieks NEpielāgo (ēkas profils)"
+    elif bf.get("owner_adapts_premises") is True:
+        want, why = True, "īpašnieks pielāgo (ēkas profils)"
+    elif access != "checked":
+        want, why = False, f"pieejamība={access}"
+    elif not _wc_in_unit(result.get("cik_WC")):
+        want, why = False, "nav WC telpā"
+    elif area is None or area < 50:
+        want, why = False, f"platība {area} < 50"
+    elif cond == "Kapitālais remonts":
+        want, why = False, "kapitālais remonts"
+    else:
+        want, why = True, "pieejams + WC telpā + ≥50 m²"
+
+    if want and not had:
+        pot.append(MED)
+    if not want and had:
+        pot = [p for p in pot if p != MED]
+    result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
+
+    if want != had or str(result.get("Space_group") or "") == MED:
+        note = str(result.get("Debug_note") or "")
+        result["Debug_note"] = (note + f" | med: {why}")[:500]
+    return why
+
+
+
+# ---------------------------------------------------------------------------
+# PVD VĀRTI (Raimonds 2026-10-27) — deterministiski, PĒC AI. Identiski abos repo.
+#   0) aktīvs PVD (Space_group=PVD) vai PVD kods/pārtikas ražošana tekstā → paliek
+#   1) ēkas profils owner_adapts_premises = False → NOŅEM;  = True → PIELIEK
+#   2) birojs / biroju ēka virs 1. stāva → NOŅEM (noliktava/ražotne augšstāvā drīkst)
+#   3) MAZGĀJAMA GRĪDA obligāta  ∧  (mazgājamas sienas  ∨  ventilācija) → PIELIEK, citādi NOŅEM
+# ---------------------------------------------------------------------------
+PVD = "PVD"
+PVD_WASHABLE_FLOORS = {
+    "Keramikas flīzes", "Porcelāna flīzes", "Epoksīda grīda", "Poliuretāna-cementa grīda",
+    "Betona grīda ar trapiem", "Slīpēts betons", "Betons ar hardeneri", "Mikrocements",
+    "Gumijas grīda", "Linolejs", "Kvarca vinils",
+}
+_PVD_TEXT_RE = None
+
+
+def _floor_number(floor_raw):
+    import re as _re
+    m = _re.search(r"-?\d+", str(floor_raw or ""))
+    return int(m.group(0)) if m else None
+
+
+def apply_pvd_gates(result, floor_raw=None, building_flags=None, listing_text=""):
+    import re as _re
+    global _PVD_TEXT_RE
+    if _PVD_TEXT_RE is None:
+        _PVD_TEXT_RE = _re.compile(r"(PVD\s*(kod|reģistr|atļauj|aktīv)|pārtikas (ražošan|uzņēmum)|"
+                                   r"ražošanas virtuv|cehs pārtik|food production)", _re.I)
+    bf = building_flags or {}
+    pot = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+           if p.strip() and p.strip().lower() != "unknown"]
+    had = PVD in pot
+    sg = str(result.get("Space_group") or "")
+    btype = str(result.get("building_type") or "")
+    floor_n = _floor_number(floor_raw)
+    gfloor = str(result.get("Gridas_materials") or "")
+    walls = str(result.get("Mazgajamas_sienas_check") or "") == "checked"
+    vent = str(result.get("Ventilacijas_sistema_check") or "") == "checked"
+
+    if sg == PVD or (listing_text and _PVD_TEXT_RE.search(listing_text)):
+        want, why = True, "aktīvs PVD / PVD kods tekstā"
+    elif bf.get("owner_adapts_premises") is False:
+        want, why = False, "īpašnieks NEpielāgo (ēkas profils)"
+    elif bf.get("owner_adapts_premises") is True:
+        want, why = True, "īpašnieks pielāgo (ēkas profils)"
+    elif (sg == "Birojs" or btype == "Biroju ēka") and floor_n is not None and floor_n > 1:
+        want, why = False, f"birojs {floor_n}. stāvā"
+    elif gfloor not in PVD_WASHABLE_FLOORS:
+        want, why = False, f"grīda nav mazgājama ({gfloor or 'unknown'})"
+    elif (sg == "Tirdzniecība" or btype == "Tirdzniecības centrs") and not walls:
+        # Raimonds 2026-10-27 (Dzelzavas 74 «Mego»): veikala flīžu grīda + centra
+        # ventilācija ≠ PVD — veikalam vajag arī mazgājamas sienas
+        want, why = False, "veikals / tirdzn. centrs bez mazgājamām sienām"
+    elif not (walls or vent):
+        want, why = False, "nav ne mazgājamu sienu, ne ventilācijas"
+    else:
+        want, why = True, f"mazgājama grīda ({gfloor}) + {'sienas' if walls else 'ventilācija'}"
+
+    if want and not had:
+        pot.append(PVD)
+    if not want and had:
+        pot = [p for p in pot if p != PVD]
+    result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
+    if want != had:
+        result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | pvd: {why}")[:500]
+    return why
+
+
+
+# ---------------------------------------------------------------------------
+# SPORTA ZĀLES VĀRTI (Raimonds 2026-10-27) — deterministiski, PĒC AI. Identiski abos repo.
+#   0) aktīva Sporta zāle (Space_group) → paliek
+#   1) tīra noliktava / ražošana / autoserviss → NOŅEM (klients tās pievieno filtrā pats)
+#   2) pieejamība «not checked» → NOŅEM
+#   3) plānojums Atvērts / Zāle+palīgtelpas  ∧  zāle ≥ 100 m²  ∧  zāle ≥ 60 % no platības
+#      (labirints ar mazu zāli — Valdemāra 76 — NĒ) → PIELIEK, citādi NOŅEM
+# ---------------------------------------------------------------------------
+GYM = "Sporta zāle"
+
+
+def apply_gym_gates(result, area_m2=None):
+    pot = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+           if p.strip() and p.strip().lower() != "unknown"]
+    had = GYM in pot
+    sg = str(result.get("Space_group") or "")
+    plan = str(result.get("Planojums") or "")
+    area = _to_float(area_m2)
+    hall = _to_float(result.get("Lielaka_zale_m2"))
+    if hall is None and plan == "Atvērts":
+        hall = area
+    access = str(result.get("Vides_pieejamiba_check") or "unknown")
+
+    if sg == GYM:
+        want, why = True, "aktīva sporta zāle"
+    elif sg in ("Noliktava", "Ražošana", "Autoserviss"):
+        want, why = False, f"{sg} — izslēgts (klients pievieno filtrā)"
+    elif access == "not checked":
+        want, why = False, "nav pieejams"
+    elif plan not in ("Atvērts", "Zāle + palīgtelpas"):
+        want, why = False, f"plānojums {plan or 'unknown'}"
+    elif hall is None or hall < 100:
+        want, why = False, f"zāle {hall} < 100 m²"
+    elif area and hall / area < 0.6:
+        want, why = False, f"zāle tikai {round(100*hall/area)} % no platības (labirints)"
+    else:
+        want, why = True, f"zāle {hall:.0f} m² ({'?' if not area else round(100*hall/area)} %)"
+
+    if want and not had:
+        pot.append(GYM)
+    if not want and had:
+        pot = [p for p in pot if p != GYM]
+    result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
+    if want != had:
+        result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | sports: {why}")[:500]
+    return why
+
+
+
+# ---------------------------------------------------------------------------
+# STOCKOFISS VĀRTI (Raimonds 2026-10-27) — PĒC AI. Identiski abos repo.
+# Obligāti: paceļamie vārti (Pacelamie_varti_check=checked) ∧ ne augstāk par 1. stāvu
+# ∧ ieeja no ielas nav «not checked». Citādi StockOfiss noņem gan no Potential, gan
+# Space_group StockOfiss → Noliktava. Veikala-ieejas spriedumu dara modelis (prompts).
+# ---------------------------------------------------------------------------
+STOCK = "StockOfiss"
+
+
+def apply_stockofiss_gates(result, floor_raw=None):
+    pot = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+           if p.strip() and p.strip().lower() != "unknown"]
+    gate = str(result.get("Pacelamie_varti_check") or "") == "checked"
+    street = str(result.get("street_entrance") or "unknown")
+    fl = _floor_number(floor_raw)
+    ok = gate and street != "not checked" and (fl is None or fl <= 1)
+    why = "ok" if ok else ("nav vārtu" if not gate else ("nav ieejas no ielas" if street == "not checked" else f"{fl}. stāvs"))
+    if not ok:
+        if STOCK in pot:
+            pot = [p for p in pot if p != STOCK]
+            result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | stockofiss: {why}")[:500]
+        if str(result.get("Space_group") or "") == STOCK:
+            result["Space_group"] = "Noliktava" if gate else "Tirdzniecība"
+            result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | stockofiss→{result['Space_group']}: {why}")[:500]
+    result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
+    return why
+
+
+
+# ---------------------------------------------------------------------------
+# BIROJS POTENCIĀLS NOLIKTAVĀM/RAŽOŠANAI/AUTOSERVISAM (Raimonds 2026-10-27).
+# «Birojs potenciālā» = VISU telpu var pārtaisīt par biroju (nevis maza biroja telpa
+# noliktavā — tā ir papildtelpa). Atļauts tikai: biroju / jaukta tipa ēka ∧ nav
+# paceļamo vārtu ∧ nav pagrabs. Industriāla ēka / vārti → NOŅEM.
+# ---------------------------------------------------------------------------
+OFFICE = "Birojs"
+
+
+def apply_office_from_industrial_gates(result, floor_raw=None):
+    sg = str(result.get("Space_group") or "")
+    # Veikals ar mega skatlogiem paliek veikals — Birojs potenciālu NOŅEM (Raimonds 2026-10-27)
+    if sg == "Tirdzniecība" and str(result.get("Skatlogi") or "") == "Jā":
+        _p = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+              if p.strip() and p.strip().lower() != "unknown"]
+        if OFFICE in _p:
+            _p = [p for p in _p if p != OFFICE]
+            result["Potential_space_group"] = ", ".join(_p) if _p else "unknown"
+            result["Debug_note"] = (str(result.get("Debug_note") or "") + " | birojs-pot: veikals ar skatlogiem")[:500]
+        return "skatlogi"
+    # Neapkurināts (Apkure=Nav) industriālā ēkā nevar būt birojs — ne aktīvs, ne potenciāls
+    if str(result.get("Apkure") or "") == "Nav" and str(result.get("building_type") or "") == "Industriāla ēka":
+        if sg == OFFICE:
+            result["Space_group"] = sg = "Noliktava"
+            result["Debug_note"] = (str(result.get("Debug_note") or "") + " | birojs→Noliktava: neapkurināts, industriāla ēka")[:500]
+        _p = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+              if p.strip() and p.strip().lower() != "unknown" and p.strip() != OFFICE]
+        result["Potential_space_group"] = ", ".join(_p) if _p else "unknown"
+    if sg not in ("Noliktava", "Ražošana", "Autoserviss"):
+        return "n/a"
+    pot = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+           if p.strip() and p.strip().lower() != "unknown"]
+    if OFFICE not in pot:
+        return "nav"
+    btype = str(result.get("building_type") or "")
+    gate = str(result.get("Pacelamie_varti_check") or "") == "checked"
+    fl = str(floor_raw or "").lower()
+    basement = ("pagrab" in fl) or ("cokol" in fl) or (_floor_number(floor_raw) is not None and _floor_number(floor_raw) < 1)
+    if btype in ("Biroju ēka", "Jaukta tipa ēka") and not gate and not basement:
+        return "paliek"
+    why = "industriāla ēka" if btype not in ("Biroju ēka", "Jaukta tipa ēka") else ("vārti" if gate else "pagrabs")
+    pot = [p for p in pot if p != OFFICE]
+    result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
+    result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | birojs-pot: {why}")[:500]
+    return why
+
+
+
+# ---------------------------------------------------------------------------
+# ĒKAS KLASE A — CILVĒKA SARAKSTS (Raimonds 2026-10-27). A klasi nosaka cilvēks ēkas
+# līmenī (a_klases_ekas.json, ķeksēts Word dokumentos). AI A → B, ja ēka NAV sarakstā;
+# sarakstā esošai ēkai klase vienmēr A. Identiski abos repo.
+# ---------------------------------------------------------------------------
+_A_CLASS_IDS = None
+
+
+def _load_a_class_ids():
+    global _A_CLASS_IDS
+    if _A_CLASS_IDS is None:
+        import json as _json, os as _os
+        p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "a_klases_ekas.json")
+        try:
+            with open(p, encoding="utf-8") as f:
+                _A_CLASS_IDS = {int(b["building_profile_id"]) for b in _json.load(f)["buildings"]}
+        except Exception:
+            _A_CLASS_IDS = set()
+    return _A_CLASS_IDS
+
+
+def apply_building_class_gate(result, building_profile_id=None):
+    ids = _load_a_class_ids()
+    try:
+        bid = int(building_profile_id) if building_profile_id else None
+    except Exception:
+        bid = None
+    cls = str(result.get("building_class") or "")
+    if bid is not None and bid in ids:
+        if cls != "A":
+            result["building_class"] = "A"
+            result["Debug_note"] = (str(result.get("Debug_note") or "") + " | klase→A (apstiprināta ēka)")[:500]
+        return "A (saraksts)"
+    if cls == "A":
+        result["building_class"] = "B"
+        result["Debug_note"] = (str(result.get("Debug_note") or "") + " | klase A→B (ēka nav A sarakstā)")[:500]
+        return "A→B"
+    return cls or "unknown"
+
+
+
+# ---------------------------------------------------------------------------
+# IEŽOGOTA TERITORIJA — CILVĒKA SARAKSTS (Raimonds 2026-10-27). Nožogojumu bieži zina
+# tikai aģents (bijis uz vietas). Prioritāte: iezogotas_ekas.json > bp.has_fenced > AI.
+# ---------------------------------------------------------------------------
+_FENCE_MAP = None
+
+
+def _load_fence_map():
+    global _FENCE_MAP
+    if _FENCE_MAP is None:
+        import json as _json, os as _os
+        p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "iezogotas_ekas.json")
+        try:
+            with open(p, encoding="utf-8") as f:
+                _FENCE_MAP = {int(b["building_profile_id"]): bool(b["fenced"]) for b in _json.load(f)["buildings"]}
+        except Exception:
+            _FENCE_MAP = {}
+    return _FENCE_MAP
+
+
+def apply_fence_gate(result, building_profile_id=None, building_flags=None):
+    try:
+        bid = int(building_profile_id) if building_profile_id else None
+    except Exception:
+        bid = None
+    fm = _load_fence_map()
+    val, src = None, None
+    if bid is not None and bid in fm:
+        val, src = fm[bid], "saraksts"
+    elif (building_flags or {}).get("has_fenced") is not None:
+        val, src = bool(building_flags["has_fenced"]), "ēkas profils"
+    if val is None:
+        return str(result.get("Nozogota_teritorija_check") or "unknown")
+    new = "checked" if val else "not checked"
+    if str(result.get("Nozogota_teritorija_check") or "") != new:
+        result["Nozogota_teritorija_check"] = new
+        result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | žogs={new} ({src})")[:500]
+    return f"{new} ({src})"
+
+
+
+# ---------------------------------------------------------------------------
+# IEVAS ZINĀŠANAS ĒKAS LĪMENĪ (2026-10-28, ievas_ekas.json). Cilvēks > ēkas poga > AI.
+#   phase="facts" (PIRMS med vārtiem): pieejamība, apsardze, konferenču zāle
+#   phase="med"   (PĒC med vārtiem):   Med kods var → Medicīna; nevar → noņem
+# ---------------------------------------------------------------------------
+_IEVA = None
+
+
+def _load_ieva():
+    global _IEVA
+    if _IEVA is None:
+        import json as _json, os as _os
+        p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "ievas_ekas.json")
+        try:
+            with open(p, encoding="utf-8") as f:
+                _IEVA = {int(b["building_profile_id"]): b for b in _json.load(f)["buildings"]}
+        except Exception:
+            _IEVA = {}
+    return _IEVA
+
+
+def apply_ieva_gates(result, building_profile_id=None, phase="facts"):
+    try:
+        bid = int(building_profile_id) if building_profile_id else None
+    except Exception:
+        bid = None
+    rec = _load_ieva().get(bid) if bid is not None else None
+    if not rec:
+        return "nav Ievas datu"
+    done = []
+
+    def _set(field, val, label):
+        if str(result.get(field) or "") != val:
+            result[field] = val
+            done.append(f"{label}={val}")
+
+    if phase == "facts":
+        if "pieejama" in rec:
+            _set("Vides_pieejamiba_check", "checked" if rec["pieejama"] else "not checked", "pieejama")
+            result["Vides_pieejamiba_iemesls"] = ("Ievas zināšanas: ratiņkrēslā var iekļūt" if rec["pieejama"]
+                                                  else "Ievas zināšanas: ratiņkrēslā nevar iekļūt")
+        if "apsardze" in rec:
+            _set("Apsargajama_teritorija_check", "checked" if rec["apsardze"] else "not checked", "apsardze")
+        if "konf_zale" in rec:
+            _set("Has_conference_room", "checked" if rec["konf_zale"] else "not checked", "konf")
+    elif phase == "med" and "med" in rec:
+        pot = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
+               if p.strip() and p.strip().lower() != "unknown"]
+        if rec["med"] and "Medicīna" not in pot and str(result.get("Space_group") or "") != "Medicīna":
+            pot.append("Medicīna"); done.append("med+")
+        if not rec["med"] and "Medicīna" in pot:
+            pot = [p for p in pot if p != "Medicīna"]; done.append("med-")
+        result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
+    if done:
+        result["Debug_note"] = (str(result.get("Debug_note") or "") + " | Ieva: " + ", ".join(done))[:500]
+    return ", ".join(done) or "bez izmaiņām"
+
+
 def analyze_with_openai(listing_url: str, listing_text: str, image_urls: List[str]) -> Dict[str, Any]:
     if not image_urls:
         out = DEFAULT_OUTPUT.copy()
@@ -2006,6 +2789,8 @@ def analyze_with_openai(listing_url: str, listing_text: str, image_urls: List[st
 
     if not data.get("Debug_note"):
         data["Debug_note"] = f"Analizēts teksts un {len(image_urls)} attēli"
+    if "[pv:" not in str(data.get("Debug_note", "")):
+        data["Debug_note"] = f"{str(data['Debug_note'])[:440]} [pv:{PROMPT_VERSION}]"
 
     return data
 

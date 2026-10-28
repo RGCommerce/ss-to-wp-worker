@@ -1,0 +1,270 @@
+{
+ "_note": "Raimonda apstiprinātais teritorijas nožogojums ēkas līmenī (IEZOGOTA_TERITORIJA_parbaude.docx, Downloads). Pārraksta AI Nozogota_teritorija_check.",
+ "buildings": [
+  {
+   "building_profile_id": 25,
+   "address": "Brīvības gatve 201",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51588767,
+   "address": "Brīvības gatve 439",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51608513,
+   "address": "Brīvības iela 401e",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51610070,
+   "address": "Bukultu iela 11",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51584970,
+   "address": "Buļļu iela 74",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 554,
+   "address": "Cesvaines 3",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 239152084,
+   "address": "Dākas, Varpas, Ķekavas.nov.",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 105244306,
+   "address": "Dārznieku iela 42",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 51584690,
+   "address": "Daugavgrīvas 83",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 132262326,
+   "address": "Daugavgrīvas iela 114",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 15,
+   "address": "Daugavgrīvas iela 77",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 52562923,
+   "address": "Ganību Dambis 25d",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51587205,
+   "address": "Ganību dambis 63",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 413032848,
+   "address": "Ieloki b/n iela, Vircava",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 413253670,
+   "address": "Ieriķu iela 3, Rīga",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 51584162,
+   "address": "Ilzenes iela 18",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 27,
+   "address": "Ilzenes iela 1b",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 439,
+   "address": "Kleistu 24",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 20,
+   "address": "Klijānu 22",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 80,
+   "address": "Klijānu iela 14",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 265451116,
+   "address": "Krasta iela 3",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51588773,
+   "address": "Krasta iela 3, Salaspils",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51585657,
+   "address": "Krustpils iela 17",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51585659,
+   "address": "Krūzes iela 2b",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 399,
+   "address": "Latgales 433E",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 99881141,
+   "address": "Lielvārde, Mērniekkalns \"Silmaļi\"",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 239152652,
+   "address": "Lielvārde, Mērniekkalns “Silmaļi”.",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 81197231,
+   "address": "Lielvārdes ielā 136",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51590301,
+   "address": "Mālu iela 30",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 251,
+   "address": "Mārkalnes 10",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51586378,
+   "address": "Mārkalnes iela 6",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 52562925,
+   "address": "Maskavas iela 455a",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 171,
+   "address": "Piedrujas iela 18",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 363,
+   "address": "Piedrujas iela 7",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 9123812,
+   "address": "Pirts 13",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 105244277,
+   "address": "Plieņciema iela 5",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 51585647,
+   "address": "Pulkveža Brieža iela 43",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 51607024,
+   "address": "Rankas iela 18",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51587256,
+   "address": "Rencēnu iela 7B",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 99840712,
+   "address": "Rencēnu iela 7B",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51612262,
+   "address": "Rīgas iela 39, Bauska",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51590318,
+   "address": "Rūpnīcu iela 4, Olaine",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 140007424,
+   "address": "Šampētera iela 2",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51588753,
+   "address": "Tvaika iela 44",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51590342,
+   "address": "Ulbrokas iela 23",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 51587238,
+   "address": "Ulbrokas iela 34a",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 81145907,
+   "address": "Ūnijas iela 16",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51605427,
+   "address": "Unijas iela 16B",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51585662,
+   "address": "Uriekstes iela 3",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 143,
+   "address": "Uriekstes iela 4a",
+   "fenced": true
+  },
+  {
+   "building_profile_id": 51586129,
+   "address": "Zemgala gatve 77",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 180883452,
+   "address": "Zemgala gatve 83",
+   "fenced": false
+  },
+  {
+   "building_profile_id": 51584164,
+   "address": "Zemitāna iela 9",
+   "fenced": true
+  }
+ ]
+}

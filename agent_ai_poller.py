@@ -338,6 +338,23 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
     except Exception as e:
         return False, f"OpenAI kļūda: {type(e).__name__}: {str(e)[:300]}"
 
+    # Medicīnas vārti (deterministiski, pēc AI) + ēkas profila pogas — ne zemei.
+    if not land:
+        try:
+            with psycopg.connect(DATABASE_URL) as _c:
+                _bf = helpers.fetch_building_flags(_c, row.get("building_profile_id"))
+            helpers.apply_ieva_gates(result, row.get("building_profile_id"), "facts")
+            helpers.apply_medicine_gates(result, row.get("area_m2"), _bf)
+            helpers.apply_ieva_gates(result, row.get("building_profile_id"), "med")
+            helpers.apply_pvd_gates(result, row.get("floor"), _bf, text or "")
+            helpers.apply_gym_gates(result, row.get("area_m2"))
+            helpers.apply_stockofiss_gates(result, row.get("floor"))
+            helpers.apply_office_from_industrial_gates(result, row.get("floor"))
+            helpers.apply_building_class_gate(result, row.get("building_profile_id"))
+            helpers.apply_fence_gate(result, row.get("building_profile_id"), _bf)
+        except Exception as _ge:
+            logger.warning("med vārti listing=%s: %s", row.get("id"), str(_ge)[:120])
+
     try:
         # Investīcijai: komerc-AI lauki (aizpilda visu) + investment_description.
         _output_fields = (land_ai.LAND_OUTPUT_FIELDS if land

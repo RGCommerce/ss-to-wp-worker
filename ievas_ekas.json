@@ -1,0 +1,1183 @@
+{
+ "_note": "Ievas atbildes ēku līmenī (IEVAI_BIROJU_EKAS_parbaude.docx, 2026-10-28). Pārraksta AI un ēkas pogas.",
+ "buildings": [
+  {
+   "building_profile_id": 51588803,
+   "address": "171, Brīvības iela, Brasa, Riga, Vidzeme, LV-1012, Latvia",
+   "med": false,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51585688,
+   "address": "33, Krišjāņa Valdemāra iela, Centre, Riga, Vidzeme, LV-1010, Latvia",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 52562465,
+   "address": "90, Atmodas iela, Lapskalns, Jelgava, LV-3007, Latvia",
+   "pieejama": false,
+   "apsardze": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585676,
+   "address": "Ādažu iela 29",
+   "med": false,
+   "apsardze": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51616235,
+   "address": "Aisteres iela 11",
+   "med": false,
+   "pieejama": false,
+   "apsardze": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 184366970,
+   "address": "Alauksta iela 11",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51588782,
+   "address": "Aldaru iela 10",
+   "med": false,
+   "pieejama": false,
+   "apsardze": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 150693847,
+   "address": "Antonijas iela 24",
+   "med": true,
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51584166,
+   "address": "Aristida Briāna iela 9a",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 9062702,
+   "address": "Aspazijas bulv. 20",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 232501756,
+   "address": "Aspazijas bulv. 20",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947451,
+   "address": "Aspazijas bulvāris 32",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585702,
+   "address": "Atlasa iela 8",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587261,
+   "address": "Audēju iela 8",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 93119,
+   "address": "Ausekļa iela 3",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 111315,
+   "address": "Avotu iela 31",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585645,
+   "address": "Balasta dambis 2",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 10947608,
+   "address": "Balasta dambis 80a",
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 125,
+   "address": "Baltā 1",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587217,
+   "address": "Baltā iela 1b",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585654,
+   "address": "Bauskas iela 58",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51590350,
+   "address": "Bauskas iela 58a",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 295,
+   "address": "Bērzaunes 6a",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585704,
+   "address": "Bērzaunes iela 1",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51619318,
+   "address": "Bērzaunes iela 11A",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 51588516,
+   "address": "Bērzaunes iela 7",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 9,
+   "address": "Bieķensalas 21",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51585679,
+   "address": "Bieķensalas iela 9",
+   "med": false,
+   "pieejama": false,
+   "apsardze": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587253,
+   "address": "Biķeru iela 4",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 52562120,
+   "address": "Blaumaņa iela 38/40",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51588790,
+   "address": "Braslas iela 22",
+   "med": false
+  },
+  {
+   "building_profile_id": 51585673,
+   "address": "Braslas iela 29",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 508,
+   "address": "Briāna iela 9a",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 297,
+   "address": "Brīvības 162",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 11945,
+   "address": "Brīvības 39",
+   "med": false
+  },
+  {
+   "building_profile_id": 10947538,
+   "address": "Brīvības bulvāris 21",
+   "med": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51608510,
+   "address": "Brīvības gatve 197",
+   "med": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585687,
+   "address": "Brīvības gatve 214B",
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587195,
+   "address": "Brīvības gatve 369",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947643,
+   "address": "Brīvības gatve 401",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 341225900,
+   "address": "Brīvības iela 106A, Rīga",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51608505,
+   "address": "Brīvības iela 155",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51609979,
+   "address": "Brīvības iela 160",
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 82,
+   "address": "Brīvības iela 171",
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51608506,
+   "address": "Brīvības iela 180",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51607008,
+   "address": "Brīvības iela 186",
+   "med": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 100,
+   "address": "Brīvības iela 410",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51608504,
+   "address": "Brīvības iela 83",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587235,
+   "address": "Brīvības iela 85",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585280,
+   "address": "Cēsu iela 31",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 239153995,
+   "address": "Čiekurkalna 2.līnija 74",
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 252,
+   "address": "Citadeles 2",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51586043,
+   "address": "Dēļu iela 5",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 485,
+   "address": "Dižozolu 21",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51590323,
+   "address": "Doma laukums 1",
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 78,
+   "address": "Duntes 23a",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51584159,
+   "address": "Duntes iela 3",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51585652,
+   "address": "Duntes iela 6",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 29,
+   "address": "Dzelzavas 117",
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51587266,
+   "address": "Dzelzavas 45",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51631619,
+   "address": "Dzelzavas iela 120 Z",
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51587247,
+   "address": "Dzirnavu iela 57",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585701,
+   "address": "Elijas iela 17",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51631637,
+   "address": "Elizabetes iela 41/43",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51590356,
+   "address": "Elizabetes iela 51",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51584155,
+   "address": "Elizabetes iela 75",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 239154409,
+   "address": "G.Astras iela 8b",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51606983,
+   "address": "Ģertrūdes iela 12",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51588361,
+   "address": "Ģertrūdes iela 66",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51631636,
+   "address": "Grostonas iela 1",
+   "med": true,
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587204,
+   "address": "Gunāra Astras iela 1C",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51585663,
+   "address": "Gunāra Astras iela 8b",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 239154025,
+   "address": "Gustava Zemgala gat. 12",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947631,
+   "address": "Gustava Zemgala gatve 74",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 181121954,
+   "address": "Gustava Zemgala gatve 78, Rīga",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51584151,
+   "address": "Hanzas iela 14F",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 137,
+   "address": "Ieriķu 15",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51588764,
+   "address": "Ieriķu iela 5",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 428,
+   "address": "Jūrkalnes 1",
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585666,
+   "address": "Jūrkalnes iela 15",
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51588755,
+   "address": "Kaļķu iela 12",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51611590,
+   "address": "Kaļķu iela 26",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 177,
+   "address": "Kalnciema 40",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 105244628,
+   "address": "Kārļa Ulmaņa gatve 119",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 583,
+   "address": "Katlakalna 9a",
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 10947434,
+   "address": "Katrīnas dambis 20",
+   "med": false,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585685,
+   "address": "Katrīnas iela 16A",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51584798,
+   "address": "Katrīnas iela 9",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 239153488,
+   "address": "K. Barona iela 34",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587234,
+   "address": "Ķelnes iela 1",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 541,
+   "address": "Krasta 44",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 101513735,
+   "address": "Kr. Barona iela 108, Rīga",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 99920057,
+   "address": "Kr. Barona iela 46, Rīga",
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585711,
+   "address": "Krišjāņa Valdemāra iela 149",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51587456,
+   "address": "Krišjāņa Valdemāra iela 21",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51588778,
+   "address": "Krišjāņa valdemāra iela 62",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585706,
+   "address": "Krišjāņa Valdemāra iela 76-1a",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51584152,
+   "address": "Krišjāņa Valdemāra iela 8",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585657,
+   "address": "Krustpils iela 17",
+   "med": false,
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947496,
+   "address": "Kr. Valdemāra 33",
+   "med": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 360,
+   "address": "Kuģu 26",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947474,
+   "address": "Lāčplēša iela 20a",
+   "med": true,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 191,
+   "address": "Lāčplēša iela 41",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 1,
+   "address": "Lielirbes 27",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51631630,
+   "address": "Lielirbes iela 1",
+   "med": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 9058191,
+   "address": "Lielirbes iela 13",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585658,
+   "address": "Lielirbes iela 17a",
+   "med": false
+  },
+  {
+   "building_profile_id": 10947609,
+   "address": "Lielvārdes iela 8",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51613126,
+   "address": "Lielvārdes iela 8a",
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 239153810,
+   "address": "Liepājas iela 40. K12",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 105243775,
+   "address": "Malduguņu iela 4",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51584161,
+   "address": "Marijas iela 2",
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585671,
+   "address": "Marijas iela 2a",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 479,
+   "address": "Mārupes iela 4",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51590325,
+   "address": "Mazā nometņu 31, Āgenskalns",
+   "med": false
+  },
+  {
+   "building_profile_id": 51591848,
+   "address": "Mazā nometņu iela 38",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 300,
+   "address": "Mednieku 4a",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51610056,
+   "address": "Medus iela 7",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 239152047,
+   "address": "Meierovica bulv. 16",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51588791,
+   "address": "Mellužu iela 17",
+   "med": false
+  },
+  {
+   "building_profile_id": 51590333,
+   "address": "Merķeļa iela 21",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 206112912,
+   "address": "Merķeļa iela 2, Rīga",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51631656,
+   "address": "Muitas iela 1",
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585650,
+   "address": "Mūkusalas iela 101",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51588789,
+   "address": "Mūkusalas iela 72b",
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585674,
+   "address": "Murjāņu iela 91",
+   "med": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51620854,
+   "address": "Neretas iela 2k1-107",
+   "med": false
+  },
+  {
+   "building_profile_id": 570,
+   "address": "Nometņu 61",
+   "pieejama": true
+  },
+  {
+   "building_profile_id": 338,
+   "address": "Peldu 26/28",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51590500,
+   "address": "Pētersalas iela 1B",
+   "med": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51588798,
+   "address": "Prēses iela 8",
+   "pieejama": true
+  },
+  {
+   "building_profile_id": 51584158,
+   "address": "Pudiķa iela 1",
+   "med": false,
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 51585647,
+   "address": "Pulkveža Brieža iela 43",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51591856,
+   "address": "Raiskuma iela 1",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947442,
+   "address": "Raņķa d. 30",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 51587197,
+   "address": "Raunas iela 5",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947400,
+   "address": "Republikas Laukums 2A",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 257117163,
+   "address": "Robežnieku iela 7, Mārupe",
+   "med": false,
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 494,
+   "address": "Sāremas 1a",
+   "med": false
+  },
+  {
+   "building_profile_id": 51585655,
+   "address": "Satekles iela 1C",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51588769,
+   "address": "Satekles iela 2B",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51588805,
+   "address": "Senču iela 4",
+   "med": false
+  },
+  {
+   "building_profile_id": 51610062,
+   "address": "Skanstes 25",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51585699,
+   "address": "Skanstes iela 27",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585693,
+   "address": "Skanstes iela 50",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 51585691,
+   "address": "Skanstes iela 54a",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 51587246,
+   "address": "Skolas 24",
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 60,
+   "address": "Skolas iela 11",
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 184,
+   "address": "Slokas 21",
+   "med": false,
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 51585891,
+   "address": "Šmerļa iela 3",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 769,
+   "address": "Spilves iela 6",
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 83,
+   "address": "Sporta iela 11",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51588596,
+   "address": "Stabu iela 47",
+   "med": false,
+   "pieejama": false,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 361088446,
+   "address": "stacijas laukums 4, Rīga",
+   "pieejama": true
+  },
+  {
+   "building_profile_id": 51588765,
+   "address": "Straupes iela 3",
+   "med": false
+  },
+  {
+   "building_profile_id": 51584559,
+   "address": "Tēraudlietuves iela 22",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 10947587,
+   "address": "Tērbatas iela 30",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 109315165,
+   "address": "Tērbatas iela 80, Rīga",
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 141,
+   "address": "Tvaika iela 64",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 52562125,
+   "address": "Tvaika iela 65",
+   "med": false
+  },
+  {
+   "building_profile_id": 341248618,
+   "address": "Ulbrokas iela 34, Rīga",
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 239154201,
+   "address": "Ulmaņa g. iela 114a",
+   "pieejama": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 52562123,
+   "address": "Ūnijas iela 8 - k6",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 280,
+   "address": "Uriekstes 2a",
+   "med": false
+  },
+  {
+   "building_profile_id": 134033217,
+   "address": "Vaiņodes 1",
+   "med": true
+  },
+  {
+   "building_profile_id": 103,
+   "address": "Valdemāra 149",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 47,
+   "address": "Valdemāra iela 8",
+   "med": false,
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 101115,
+   "address": "Valentīna 16",
+   "pieejama": false
+  },
+  {
+   "building_profile_id": 20259060,
+   "address": "Vaļņu 18",
+   "pieejama": true
+  },
+  {
+   "building_profile_id": 51584163,
+   "address": "Vesetas iela 7",
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 10947501,
+   "address": "Vienības gatve 109",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51587239,
+   "address": "Vienības gatve 87D",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51585668,
+   "address": "Vienības gatve 87 E",
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51610060,
+   "address": "Viskaļu iela 25",
+   "med": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51591698,
+   "address": "Zaļā iela 1",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true
+  },
+  {
+   "building_profile_id": 51631649,
+   "address": "Zālīšu iela 4",
+   "pieejama": false,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51584157,
+   "address": "Zemgala gatve 76",
+   "med": true,
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": true
+  },
+  {
+   "building_profile_id": 51584164,
+   "address": "Zemitāna iela 9",
+   "pieejama": true,
+   "apsardze": true,
+   "konf_zale": false
+  },
+  {
+   "building_profile_id": 51589157,
+   "address": "Zemitānu iela 9",
+   "pieejama": true
+  },
+  {
+   "building_profile_id": 51584160,
+   "address": "Zigfrīdas annas meierovica 4",
+   "med": false,
+   "pieejama": false,
+   "konf_zale": false
+  }
+ ]
+}
