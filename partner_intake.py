@@ -1631,16 +1631,19 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     matched_ids.add(int(match["id"]))
                     new_rate = u.get("rent_per_m2_min")
                     old_rate = _num(match.get("price_per_m2"))
-                    if new_rate is not None and old_rate is not None and abs(new_rate - old_rate) > 0.05:
-                        diff["price_per_m2"] = {"old": old_rate, "new": new_rate}
                     new_total = u.get("rent_total") or (area * new_rate if (area and new_rate) else None)
                     old_total = _num(match.get("price"))
+                    # kopsumma tā pati (±2 % / 5 €) → cena NAV mainījusies, arī ja no tās atvasinātā likme svārstās
+                    # (Barona 1089 € / 90 m² = 12,1 vs DB 12,0 → viltus «atjaunot», 2026-10-28)
+                    totals_same = bool(new_total and old_total and abs(new_total - old_total) <= max(5.0, 0.02 * old_total))
+                    if (not totals_same and new_rate is not None and old_rate is not None
+                            and abs(new_rate - old_rate) > max(0.15, 0.015 * old_rate)):
+                        diff["price_per_m2"] = {"old": old_rate, "new": new_rate}
                     # €/m² ir nomas cenas avots: ja likme NAV mainījusies, kopsummas starpība ir tikai mūsu/AI aprēķina
                     # atšķirība (ar/bez apsaimniekošanas) — ne partnera cenas maiņa (Spire Mednieku 4A katru dienu
                     # «atjaunot 3», Raimonds 2026-10-28). Kopsummu salīdzina tikai, ja likmes nav vai tā arī mainījās.
-                    rate_same = new_rate is not None and old_rate is not None and abs(new_rate - old_rate) <= 0.05
-                    if (not rate_same and new_total and old_total
-                            and abs(new_total - old_total) > max(5.0, 0.02 * old_total)):
+                    rate_same = new_rate is not None and old_rate is not None and abs(new_rate - old_rate) <= max(0.15, 0.015 * old_rate)
+                    if not totals_same and not rate_same and new_total and old_total:
                         diff["price"] = {"old": old_total, "new": round(new_total, 2)}
                     # atzīmēts «iznomāts», bet partneris to atkal piedāvā → atjaunot kā brīvu
                     reactivate = match.get("occupancy_status") == "occupied"
