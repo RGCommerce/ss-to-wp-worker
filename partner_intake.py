@@ -2038,6 +2038,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     prev_occupied = {int(x) for x in (prev.get("occupied") or [])}
     image_jobs: list = []
     unit_dec = decisions.get("units") or {}
+    linked_ids: set[int] = set()   # «tas pats, kas mūsu #id» — tos neatzīmē kā iznomātus
     web_dec = decisions.get("web") or {}   # {idx: true} — «Arī mājaslapā» (pēc bilžu apstrādes)
     img_dec = decisions.get("images") or {}
     phone_dec = decisions.get("phones") or {}   # {addr_index: "+371 ..."} — aģenta izvēlētais kontakta nr.  # {idx: {sslv, pdf, uploads, own, building, building_fns}} — aģenta bilžu izvēle
@@ -2131,6 +2132,26 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                 addr_phone = (cp or {}).get("phone")
             for u in addr["units"]:
                 dec = unit_dec.get(str(u["idx"]), u.get("decision"))
+                if isinstance(dec, str) and dec.startswith("link:"):
+                    # aģents zina, ka partnera telpa = mūsu esošais listings, lai gan platība/stāvs atšķiras
+                    # (Barona 108: ss.lv 448 m² = mūsu #93413 554 m², Raimonds 2026-10-28) → sasaista, neveido jaunu
+                    try:
+                        lid = int(dec.split(":", 1)[1])
+                        linked_ids.add(lid)
+                        conn.execute("""UPDATE properties.listings
+                                           SET partner_id = COALESCE(%s, partner_id), partner_unit_ref = %s, partner_list_id = %s,
+                                               occupancy_status = NULL, occupied_from = NULL,
+                                               "Debug_note" = %s, updated_at = now()
+                                         WHERE id = %s""",
+                                     (partner_id, u.get("ref"), list_id,
+                                      f"Partneris: {partner.get('company') or '?'} — sasaistīts ar roku ({u.get('ref') or u.get('sslv_link') or '-'})", lid))
+                        conn.commit()
+                        result["updated"].append(lid)
+                        result.setdefault("linked", []).append([lid, u["idx"]])
+                    except Exception as e:
+                        conn.rollback()
+                        result["errors"].append(f"telpa #{u['idx']}: sasaistīt ar #{dec[5:]}: {type(e).__name__}: {str(e)[:150]}")
+                    continue
                 if dec == "create" and str(u["idx"]) in prev_created_idx:
                     continue  # jau izveidots iepriekšējā apstiprināšanā
                 if dec == "create" and u.get("sslv_listing_id"):
@@ -2238,6 +2259,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             conn.rollback()
                             result["errors"].append(f"atjaunot #{lid}: {type(e).__name__}: {str(e)[:150]}")
             for m in addr.get("missing_in_list") or []:
+                if int(m["id"]) in linked_ids:
+                    continue   # sasaistīts ar partnera telpu → brīvs
                 if miss_dec.get(str(m["id"])) == "occupied" and int(m["id"]) not in prev_occupied and int(m["id"]) not in result["occupied"]:
                     lid = int(m["id"])
                     try:
