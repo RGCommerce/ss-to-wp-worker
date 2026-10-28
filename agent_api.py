@@ -1913,8 +1913,9 @@ class DriveSourceReq(BaseModel):
     folder: Optional[str] = None     # Drive mapes saite vai ID
     url: Optional[str] = None        # mājaslapas saraksta lapa (kind=web)
     phones: Optional[str] = None     # kind=sslv: partnera numurs(i)
-    street: Optional[str] = None     # kind=sslv: ēkas adrese
+    street: Optional[str] = None     # kind=sslv: ēkas adrese (vecais, viena)
     city: Optional[str] = None       # kind=sslv
+    addresses: Optional[list[str]] = None   # kind=sslv: vairākas adreses «iela nr[, pilsēta]»
     days: Optional[int] = None       # kind=sslv: pēdējo dienu logs (15)
     price_files: list[str] = Field(default_factory=list)   # cenu failu saites/ID
     agent_email: Optional[str] = None
@@ -1930,6 +1931,16 @@ class DriveSourceReq(BaseModel):
 def partner_drive_sources(_auth: None = Depends(require_token)) -> dict:
     import partner_drive
     return {"ok": True, "items": partner_drive.load_sources()}
+
+
+@router.get("/partner-drive/sslv-addresses")
+def partner_drive_sslv_addresses(phones: str, days: int = 90, _auth: None = Depends(require_token)) -> dict:
+    """Kur šis ss.lv numurs liek sludinājumus (adreses ar skaitu) — avota adrešu izvēlei."""
+    import partner_drive
+    try:
+        return {"ok": True, "items": partner_drive.sslv_number_addresses(phones, days=max(7, min(days, 365)))}
+    except Exception as e:
+        raise HTTPException(500, f"{type(e).__name__}: {str(e)[:200]}")
 
 
 @router.post("/partner-drive/sources")

@@ -90,19 +90,39 @@ def upsert_source(data: dict) -> dict:
         tails = _phone_tails(data.get("phones") or data.get("contact_phone") or "")
         if not tails:
             raise ValueError("Vajag partnera telefona numuru (vismaz 7 cipari)")
-        street = (data.get("street") or "").strip()
-        city = (data.get("city") or "Rīga").strip() or "Rīga"
-        if not street or not any(ch.isdigit() for ch in street):
-            raise ValueError("Vajag adresi ar mājas numuru (piem. «Krišjāņa Barona iela 95a»)")
-        bps = _resolve_bps(street, city)
-        if not bps:
-            raise ValueError(f"Ēka «{street}, {city}» DB nav atrasta — pārbaudi adresi")
+        # adreses: `addresses` (saraksts «iela nr[, pilsēta]» vai {street, city}) un/vai vecais street+city
+        raw_addrs: list = list(data.get("addresses") or [])
+        if data.get("street"):
+            raw_addrs.insert(0, {"street": data.get("street"), "city": data.get("city") or "Rīga"})
+        addresses: list[dict] = []
+        seen_keys: set[str] = set()
+        for ra in raw_addrs:
+            if isinstance(ra, str):
+                parts = [x.strip() for x in ra.split(",")]
+                street, city = parts[0], (parts[1] if len(parts) > 1 and parts[1] else "Rīga")
+            else:
+                street, city = (ra.get("street") or "").strip(), (ra.get("city") or "Rīga").strip() or "Rīga"
+            if not street or not any(ch.isdigit() for ch in street):
+                raise ValueError(f"Adresei vajag mājas numuru: «{street}»")
+            bps = _resolve_bps(street, city)
+            if not bps:
+                raise ValueError(f"Ēka «{street}, {city}» DB nav atrasta — pārbaudi adresi")
+            import partner_intake
+            k = partner_intake._street_key(bps[0].get("full_address") or street)
+            if k in seen_keys:
+                continue
+            seen_keys.add(k)
+            addresses.append({"street": street, "city": city, "bp_ids": [int(b["id"]) for b in bps],
+                              "bp_address": bps[0].get("full_address") or street})
+        if not addresses:
+            raise ValueError("Vajag vismaz vienu ēkas adresi")
         try:
             days = int(data.get("days") or SSLV_DEFAULT_DAYS)
         except Exception:
             days = SSLV_DEFAULT_DAYS
-        sslv = {"phones": sorted(tails), "street": street, "city": city, "days": max(1, min(days, 120)),
-                "bp_ids": [int(b["id"]) for b in bps], "bp_address": bps[0].get("full_address") or street}
+        first = addresses[0]
+        sslv = {"phones": sorted(tails), "addresses": addresses, "days": max(1, min(days, 120)),
+                "street": first["street"], "city": first["city"], "bp_ids": first["bp_ids"], "bp_address": first["bp_address"]}
     else:
         folder_id = _drive_id(data.get("folder") or data.get("folder_id") or "", "folder")
         if not folder_id:
@@ -306,12 +326,13 @@ def _sslv_rows(src: dict) -> list[dict]:
     import psycopg
     from psycopg.rows import dict_row
     tails = list(src.get("phones") or [])
-    bp_ids = [int(x) for x in (src.get("bp_ids") or [])]
+    addrs = _src_addresses(src)
+    bp_ids = sorted({int(b) for a in addrs for b in (a.get("bp_ids") or [])})
     if not tails or not bp_ids:
         return []
     pats = [f"%{t}" for t in tails]
     days = int(src.get("days") or SSLV_DEFAULT_DAYS)
-    keys = {partner_intake._street_key(x) for x in (src.get("street"), src.get("bp_address")) if x}
+    keys = {partner_intake._street_key(x) for a in addrs for x in (a.get("street"), a.get("bp_address")) if x}
     out: list[dict] = []
     seen_links: set[str] = set()
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
@@ -367,6 +388,108 @@ def _sslv_rows(src: dict) -> list[dict]:
     return out[:SSLV_MAX_UNITS]
 
 
+def _src_addresses(src: dict) -> list[dict]:
+    """Avota adreses (jaunais `addresses` saraksts; vecajiem avotiem — street/bp_ids)."""
+    if src.get("addresses"):
+        return list(src["addresses"])
+    if src.get("street"):
+        return [{"street": src.get("street"), "city": src.get("city") or "Rīga", "bp_ids": src.get("bp_ids") or [],
+                 "bp_address": src.get("bp_address") or src.get("street")}]
+    return []
+
+
+def _row_address(src: dict, r: dict) -> dict:
+    """Kurai avota adresei pieder sludinājums (pēc ēkas profila, tad ielas atslēgas); citādi — paša sludinājuma iela."""
+    import partner_intake
+    bp = r.get("building_profile_id")
+    for a in _src_addresses(src):
+        if bp and int(bp) in [int(x) for x in (a.get("bp_ids") or [])]:
+            return a
+    rk = partner_intake._street_key(r.get("street") or "")
+    for a in _src_addresses(src):
+        if rk and rk in {partner_intake._street_key(x) for x in (a.get("street"), a.get("bp_address")) if x}:
+            return a
+    return {"street": r.get("street"), "city": r.get("city") or "Rīga", "bp_address": r.get("street")}
+
+
+def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
+    """Kur ŠIS numurs liek ss.lv sludinājumus (skrāpera inbox + listings, pēdējās N d.): adrese, ēkas profils, skaits,
+    pēdējais datums. Raimonds 2026-10-28: «rīks, kas parāda, kādas adreses šis nr vēl liek — ja interesē, pievienoju»."""
+    import partner_intake
+    import psycopg
+    from psycopg.rows import dict_row
+    tails = _phone_tails(phones)
+    if not tails:
+        return []
+    pats = [f"%{t}" for t in tails]
+    groups: dict[str, dict] = {}
+    with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
+        conn.read_only = True
+        q = """SELECT street, city, building_profile_id AS bp, count(*) AS n,
+                      max(coalesce(nullif(date_posted,'')::timestamptz, created_at)) AS last_posted,
+                      bool_or(coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - interval '7 days') AS live
+                 FROM properties.scrape_inbox
+                WHERE coalesce(skip_reason,'') <> 'blacklisted_phone'
+                  AND coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
+                  AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
+                               WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
+                GROUP BY 1, 2, 3
+               UNION ALL
+               SELECT street, city, building_profile_id, count(*),
+                      max(coalesce(nullif(date_posted,'')::timestamptz, created_at)), true
+                 FROM properties.listings
+                WHERE source = 'sslv' AND "Debug_status" = 'ok'
+                  AND created_at >= now() - make_interval(days => %s)
+                  AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
+                               WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
+                GROUP BY 1, 2, 3"""
+        rows = conn.execute(q, (days, pats, days, pats)).fetchall()
+        for r in rows:
+            street = (r.get("street") or "").strip()
+            if not street or not any(ch.isdigit() for ch in street):
+                continue
+            k = partner_intake._street_key(street) + "|" + (r.get("city") or "").strip().lower()[:6]
+            g = groups.setdefault(k, {"street": street, "city": (r.get("city") or "Rīga").strip(), "bp_id": None,
+                                      "bp_address": None, "n": 0, "last_posted": None, "live": False})
+            g["n"] += int(r["n"] or 0)
+            g["live"] = g["live"] or bool(r.get("live"))
+            if r.get("bp") and not g["bp_id"]:
+                g["bp_id"] = int(r["bp"])
+            lp = r.get("last_posted")
+            if lp and (g["last_posted"] is None or lp > g["last_posted"]):
+                g["last_posted"] = lp
+        for g in groups.values():
+            if g["bp_id"]:
+                row = conn.execute("SELECT full_address FROM properties.building_profiles WHERE id=%s", (g["bp_id"],)).fetchone()
+                g["bp_address"] = (row or {}).get("full_address")
+            else:
+                bps = partner_intake._find_bps(conn, g["street"], g["city"], None, None) or []
+                if bps:
+                    g["bp_id"] = int(bps[0]["id"])
+                    g["bp_address"] = bps[0].get("full_address")
+    out = sorted(groups.values(), key=lambda g: (not g["live"], -(g["n"])))
+    for g in out:
+        g["last_posted"] = str(g["last_posted"])[:10] if g["last_posted"] else None
+    return out
+
+
+def _other_addresses(src: dict) -> list[dict]:
+    """Adreses, kur numurs liek sludinājumus, bet kuras avotā NAV (jauna ēka?) — panelī «+ pievienot»."""
+    import partner_intake
+    have_bps = {int(b) for a in _src_addresses(src) for b in (a.get("bp_ids") or [])}
+    have_keys = {partner_intake._street_key(x) for a in _src_addresses(src) for x in (a.get("street"), a.get("bp_address")) if x}
+    out = []
+    try:
+        for g in sslv_number_addresses(", ".join(src.get("phones") or []), days=90):
+            if (g.get("bp_id") and g["bp_id"] in have_bps) or partner_intake._street_key(g["street"]) in have_keys:
+                continue
+            if g.get("live"):
+                out.append(g)
+    except Exception as e:
+        logger.warning("partner_drive: other_addresses %s: %s", src.get("name"), e)
+    return out[:10]
+
+
 def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
     """Gatava analīze BEZ AI: katrs ss.lv sludinājums = viena telpa (lauki no DB). `sslv_listing_id` = pārņemšanai."""
     import partner_intake
@@ -415,16 +538,22 @@ def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
         if u.get("space_type") is None:
             u["space_type"] = None
         units.append(u)
-    first = rows[0] if rows else {}
+    # telpas grupē pa avota adresēm (viens partneris — vairākas ēkas, Raimonds 2026-10-28)
+    by_addr: dict[str, dict] = {}
+    for r, u in zip(rows, units):
+        a = _row_address(src, r)
+        key = (a.get("bp_address") or a.get("street") or "").lower()
+        g = by_addr.setdefault(key, {"street": a.get("bp_address") or a.get("street") or r.get("street"),
+                                     "city": a.get("city") or r.get("city") or "Rīga", "district": r.get("district"),
+                                     "building_name": None, "address_known": True, "list_complete_here": False, "units": []})
+        g["units"].append(u)
     return {
         "is_vacancy_offer": True,
         "partner": {"company": src.get("name"), "contact_name": src.get("contact_name") or None,
                     "email": src.get("contact_email") or None, "phone": ", ".join(f"+371{t}" for t in src.get("phones") or []),
                     "website": None},
         "list_date": None, "looks_complete": False, "language": "lv",
-        "addresses": [{"street": src.get("bp_address") or src.get("street") or first.get("street"),
-                       "city": src.get("city") or first.get("city") or "Rīga", "district": first.get("district"),
-                       "building_name": None, "address_known": True, "list_complete_here": False, "units": units}],
+        "addresses": list(by_addr.values()),
         "skipped_items": [], "warnings": [],
     }
 
@@ -441,7 +570,8 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
     fp = hashlib.sha1(("sslv:" + ",".join(ids)).encode("utf-8")).hexdigest()
     result: dict = {"source_id": src["id"], "name": src["name"], "scanned_at": scanned_at.isoformat(),
                     "unit_folders": len(rows), "price_files": 0, "changed": fp != src.get("last_fingerprint"), "fingerprint": fp,
-                    "intake_id": None, "skipped": None, "web_recipe": None, "list_only": False}
+                    "intake_id": None, "skipped": None, "web_recipe": None, "list_only": False,
+                    "other_addresses": _other_addresses(src)}
     if not rows:
         result["skipped"] = "nav jaunu ss.lv sludinājumu ar šo numuru šajā ēkā"
         result["changed"] = False
@@ -453,7 +583,8 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
                       f"{r.get('price') or '?'} € · https://www.{r['link']}" if r.get("link") and not str(r["link"]).startswith("http")
                       else f"- #{r['id']} {r.get('street') or ''} · {r.get('area_m2') or '?'} m² · {r.get('floor') or '?'} · {r.get('price') or '?'} € · {r.get('link') or ''}"
                       for r in rows)
-    body = (f"PARTNERA SS.LV SLUDINĀJUMI — {src['name']} ({', '.join(src.get('phones') or [])}), ēka {src.get('bp_address') or src.get('street')}, "
+    body = (f"PARTNERA SS.LV SLUDINĀJUMI — {src['name']} ({', '.join(src.get('phones') or [])}), ēkas: "
+            f"{'; '.join(a.get('bp_address') or a.get('street') or '' for a in _src_addresses(src))}, "
             f"pēdējās {src.get('days') or SSLV_DEFAULT_DAYS} dienas ({scanned_at.strftime('%Y-%m-%d')}).\n"
             f"Katrs sludinājums = viena telpa; apstiprinot tas tiek PĀRŅEMTS (nevis izveidots no jauna) un publicēts mājaslapā.\n\n{links}\n")
     parsed = {
@@ -631,7 +762,7 @@ def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
     for s in sources:
         if s.get("id") == src["id"]:
             s["last_scan_at"] = result.get("scanned_at") or _now().isoformat()
-            s["last_result"] = {k: result.get(k) for k in ("changed", "intake_id", "skipped", "unit_folders", "price_files", "summary")}
+            s["last_result"] = {k: result.get(k) for k in ("changed", "intake_id", "skipped", "unit_folders", "price_files", "summary", "other_addresses")}
             s["last_error"] = error
             if result.get("web_recipe"):
                 s["web_recipe"] = result["web_recipe"]
