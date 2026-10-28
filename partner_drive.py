@@ -249,6 +249,17 @@ def _sync_trusted_numbers(src: dict) -> int:
             # uzticams numurs un melnais saraksts ir pretruna (kā panelī)
             conn.execute("""DELETE FROM properties.phone_blacklist
                              WHERE right(regexp_replace(phone_number, '[^0-9]', '', 'g'), 8) = ANY(%s)""", (tails,))
+            # VIP = numurs uzticams JEBKURĀ adresē → skrāperis atklāj šī numura (prefiksa) sludinājumus visā ss.lv,
+            # ne tikai avota ēkās — tā «Pievienot ēkas» pēc ~15–30 min rāda VISAS partnera ēkas (Raimonds 2026-10-28:
+            # «ievadu partneri → atrod visus ss.lv īpašumus»). auto_publish=false — publicē tikai caur apstiprināšanu;
+            # esošu VIP rindu (auto_publish=true) NEaiztiek.
+            have_vip = {re.sub(r"\D", "", r["phone"] or "")[-8:] for r in conn.execute("SELECT phone FROM properties.vip_owner_numbers").fetchall()}
+            for t in tails:
+                if t in have_vip:
+                    continue
+                conn.execute("""INSERT INTO properties.vip_owner_numbers (phone, note, auto_publish) VALUES (%s, %s, false)
+                                ON CONFLICT (phone) DO NOTHING""",
+                             (f"+371{t}", f"partneru avots {src.get('name')} ({src.get('id')}) — bez auto-publish"))
         conn.commit()
     return added
 
