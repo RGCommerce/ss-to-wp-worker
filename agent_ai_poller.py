@@ -83,6 +83,11 @@ def _recover_stale() -> int:
     return 0
 
 
+# Importa avoti (PDF / manuālais) — Melnā 2026-10-28: pēc INSERT Debug_status NULL → tas pats
+# klasifikators kā anketai. Importētais = aģenta apzināti ielikts → vienmēr 'ok', nekad low_evidence.
+IMPORT_SOURCES = {"agent_pdf", "agent_manual"}
+
+
 def _claim_next() -> Optional[dict]:
     """Paņem nākamo agent_anketa listings ar Debug_status NULL.
 
@@ -106,11 +111,11 @@ def _claim_next() -> Optional[dict]:
                    bp.has_conference_room    AS bp_has_conference_room
             FROM properties.listings l
             LEFT JOIN properties.building_profiles bp ON bp.id = l.building_profile_id
-            WHERE (l.source LIKE %s OR l.source = 'agent_partner')
+            WHERE (l.source LIKE %s OR l.source = ANY(%s))
               AND l."Debug_status" IS NULL
             ORDER BY l.id
             LIMIT 1
-        """, ("agent_anketa%",))
+        """, ("agent_anketa%", sorted(IMPORT_SOURCES | {"agent_partner"})))
         row = cur.fetchone()
         if not row:
             return None
@@ -135,6 +140,21 @@ def _mark_error(listing_id: int, error_msg: str) -> None:
 
 
 # ---------- Tekst- un bilžu sagatavošana ----------
+
+def _mark_import_skipped(listing_id: int, note: str) -> None:
+    """Imports (PDF/manuālais), kam AI neizdevās vai nav bilžu: paliek 'ok' + piezīme — Melnā 2026-10-28:
+    importētais sludinājums ir aģenta apzināti ielikts, to nedrīkst paslēpt ar low_evidence."""
+    if not DATABASE_URL:
+        return
+    with psycopg.connect(DATABASE_URL) as conn:
+        conn.execute(
+            """UPDATE properties.listings
+               SET "Debug_status" = 'ok',
+                   "Debug_note"   = left(coalesce("Debug_note", '') || ' | ' || %s, 500)
+               WHERE id = %s""",
+            (note[:300], listing_id),
+        )
+
 
 def _build_text_from_listing(row: Dict[str, Any]) -> str:
     """Salikt sludinājuma tekstu AI vajadzībām no listings + BP join.
@@ -178,6 +198,9 @@ def _build_text_from_listing(row: Dict[str, Any]) -> str:
         parts.append(f"Aģenta komentārs: {row['Agent_comment']}")
     if row.get("Agent_text_extra"):
         parts.append(f"Papildu informācija: {row['Agent_text_extra']}")
+    # Importa / ss.lv oriģinālais teksts (PDF teksta slānis, ss.lv apraksts) — ja ir
+    if row.get("original_text"):
+        parts.append(f"Oriģinālais apraksts (avota teksts):\n{str(row['original_text'])[:20000]}")
 
     return "\n".join(parts) if parts else "Aģenta anketa bez teksta — analizē tikai bildes."
 
@@ -285,6 +308,25 @@ def _update_listing_with_ai(
 
 # ---------- Proceses iter ----------
 
+def _render_source_pdf_pages(row: Dict[str, Any]) -> List[str]:
+    """Importa avota PDF (source_file_path, STORAGE_ROOT relatīvs) → lapu PNG data-URL saraksts.
+    Melnā 2026-10-28: importiem bez foto klasifikators skatās PDF lapas (pymupdf jau workerī).
+    Lapas NEglabā kā listinga bildes (nav publicējamas)."""
+    try:
+        import pdf_import  # lazy (pymupdf)
+        rel = str(row.get("source_file_path") or "").replace("\\", "/").lstrip("/")
+        path = pdf_import.STORAGE_ROOT / rel
+        if not path.is_file():
+            logger.warning("imports #%s: avota PDF nav uz volume: %s", row.get("id"), rel)
+            return []
+        urls = pdf_import.render_pages(path)
+        logger.info("imports #%s: PDF lapas → %d attēli klasifikatoram", row.get("id"), len(urls))
+        return urls
+    except Exception as e:
+        logger.warning("imports #%s: PDF lapu renderi neizdevās: %s", row.get("id"), str(e)[:150])
+        return []
+
+
 def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
     """Apstrādā vienu listing rindu — AI sauciens + UPDATE."""
     listing_id = int(row["id"])
@@ -301,8 +343,16 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
 
     text = _build_text_from_listing(row)
     image_urls = _build_image_urls_for_openai(row)
+    is_import = str(row.get("source") or "") in IMPORT_SOURCES
+    if not image_urls and is_import and row.get("source_file_path"):
+        # Imports bez foto: PDF lapas (volume) → PNG data-URL modelim, NEglabā kā listinga bildes
+        image_urls = _render_source_pdf_pages(row)
     # Zemei bildes NAV obligātas (teksts galvenais); investīcijai/komerctelpām — svarīgas.
     if not image_urls and not land:
+        if is_import:
+            # Imports = aģenta apzināti ielikts → NEslēpt (low_evidence), atstāt 'ok' ar piezīmi
+            _mark_import_skipped(listing_id, "AI klasifikators izlaists: nav ne bilžu, ne avota PDF")
+            return True, "imports bez bildēm — atstāts 'ok', AI izlaists"
         return False, "Nav piejamu bilžu (local_image_paths_processed tukšs vai nav RGC_MK_TOKEN)"
 
     listing_url_for_prompt = f"agent_anketa://listings/{listing_id}"
@@ -333,8 +383,8 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             result["Debug_status"] = "ok"
         else:
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
-            if row.get("source") == "agent_partner":
-                # Partnera piedāvājums = mūsu apstiprināts sadarbības avots. ss.lv filtra
+            if row.get("source") == "agent_partner" or is_import:
+                # Partnera piedāvājums / PDF-manuālais imports = aģenta apzināti ielikts. ss.lv filtra
                 # klasifikācija (agent_detected/low_evidence — bildes nāk no cita brokera
                 # ss.lv sludinājuma) te nav derīga un izmestu listingu no match (gaida 'ok').
                 result["Debug_status"] = "ok"
@@ -443,7 +493,12 @@ async def run_loop(stop_event: asyncio.Event) -> None:
                 logger.info(f"Agent AI listing#{lid} → ok ({msg})")
             else:
                 try:
-                    await loop.run_in_executor(None, _mark_error, lid, msg)
+                    if str(row.get("source") or "") in IMPORT_SOURCES:
+                        # imports: nekad low_evidence — 'ok' + piezīme (Melnā 2026-10-28)
+                        await loop.run_in_executor(None, _mark_import_skipped, lid,
+                                                   f"AI klasifikators neizdevās: {msg[:200]}")
+                    else:
+                        await loop.run_in_executor(None, _mark_error, lid, msg)
                 except Exception as e:
                     logger.error(f"_mark_error: {e}", exc_info=True)
                 _state["errors_total"] += 1
