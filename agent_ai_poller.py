@@ -218,12 +218,15 @@ AI_OUTPUT_FIELDS = [
     "Apsaimniekosanas_maksa", "NIN", "Komunalie", "Papildu_maksas",
     "Parkings", "Space_group", "Potential_space_group", "Space_condition",
     "Agent_comment", "Mebeleta_telpa", "Logu_type", "Griestu_augstums",
-    "Gridas_materials", "Gridas_izturiba_kg_m2", "Dalama_telpa", "street_entrance",
+    "Gridas_materials", "Gridas_izturiba_kg_m2", "street_entrance",
     "Cik_telpas", "cik_WC", "Apkure", "Treifelis_Pacelajs", "Virtuve_check",
     "Balkons_check", "Apsargajama_teritorija_check", "Ventilacijas_sistema_check",
     "Rampa_logistikai_check", "Rampa_logistikai_count", "Pacelamie_varti_check",
     "Pacelamie_varti_count", "Auto_pacelajs_check", "Sava_ieeja_check",
     "Ir_izlietne_telpa_check", "Sava_eka_check", "Nozogota_teritorija_check",
+    # 2026-10-28: trūka — pieejamība/sienas/konf. zāle + 3 jaunās kolonnas (Zaļā 2026-10-28)
+    "Vides_pieejamiba_check", "Vides_pieejamiba_iemesls", "Mazgajamas_sienas_check",
+    "Has_conference_room", "Lielaka_zale_m2", "Planojums",
     "Zemes_gabals_m2", "Investiciju_strategija",
     "ir_nomnieki", "investment_income", "investment_yield", "nomas_platiba_m2", "Confidence",
 ]

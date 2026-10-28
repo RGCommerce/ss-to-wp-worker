@@ -366,6 +366,8 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
     ai_fields: dict[str, Any] = {}
     ai_ok = False
     ai_note = None
+    ai_result: dict[str, Any] | None = None  # vārtiem pēc BP (nav zemei)
+    ai_allowed: list[str] = []
     if html is not None:
         try:
             if is_land:
@@ -391,6 +393,8 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
                 warnings.append("Galerijas bildes lapā netika atrastas — AI analīze izlaista.")
 
             if result:
+                if not is_land:
+                    ai_result, ai_allowed = result, allowed
                 orig_status = str(result.get("Debug_status") or "").strip()
                 if orig_status and orig_status != "ok":
                     # Apzināts imports — statuss vienmēr 'ok', bet piezīmi paturam
@@ -418,6 +422,28 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
         # Commit BP uzreiz — zemāk INSERT kļūdas gadījumā ir rollback+retry, kas
         # citādi atritinātu arī tikko izveidoto BP (FK violation retry mēģinājumā).
         conn.commit()
+
+        # Deterministiskie vārti PĒC AI (kā test_runner_db / agent_ai_poller): Ievas ēkas,
+        # Medicīna, PVD, Sporta zāle, StockOfiss, Birojs no industriāla, A klase, žogs.
+        # Vajag BP id → tāpēc te, nevis uzreiz pēc AI. Pārbūvē ai_fields no gated result.
+        if ai_result is not None:
+            try:
+                _bf = helpers.fetch_building_flags(conn, bp_id)
+                helpers.apply_ieva_gates(ai_result, bp_id, "facts")
+                helpers.apply_medicine_gates(ai_result, fields.get("area_m2"), _bf)
+                helpers.apply_ieva_gates(ai_result, bp_id, "med")
+                helpers.apply_pvd_gates(ai_result, fields.get("floor"), _bf, text or "")
+                helpers.apply_gym_gates(ai_result, fields.get("area_m2"))
+                helpers.apply_stockofiss_gates(ai_result, fields.get("floor"))
+                helpers.apply_office_from_industrial_gates(ai_result, fields.get("floor"))
+                helpers.apply_building_class_gate(ai_result, bp_id)
+                helpers.apply_fence_gate(ai_result, bp_id, _bf)
+                ai_fields = {k: ai_result.get(k) for k in ai_allowed
+                             if ai_result.get(k) not in (None, "", "unknown")}
+                if ai_result.get("Debug_note"):
+                    ai_note = ((ai_note + "; ") if ai_note else "") + str(ai_result["Debug_note"])[:300]
+            except Exception as _ge:
+                warnings.append(f"Vārti pēc AI neizdevās ({type(_ge).__name__}: {str(_ge)[:120]}).")
 
         price = fields.get("price")
         area = fields.get("area_m2")
@@ -458,6 +484,8 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
             "area_m2": str(area) if area is not None else None,
             "floor": str(fields["floor"]) if fields.get("floor") is not None else None,
             "date_posted": fields.get("date_posted"),
+            # ss.lv oriģinālais teksts — saglabā (Raimonds 2026-10-24: tekstu vienmēr glabāt)
+            "original_text": (text or None),
         }
         if info.get("listing_type"):
             cols["listing_type"] = info["listing_type"]
