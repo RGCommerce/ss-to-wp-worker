@@ -953,6 +953,33 @@ def sslv_import_endpoint(req: SslvImportReq,
 
 
 # ---------------------------------------------------------------------------
+# 7b) «PĀRRĒĶINĀT VĀRTUS ŠAI ĒKAI» — bez AI, tikai kods (Prompta aģents 2026-10-29).
+#     Panelis (ēkas profils) → pēc pogu maiņas (pielāgo / pieejama / nožogota) visām
+#     ēkas telpām pārrēķina Medicīna/PVD potenciālu, pieejamību, žogu; respektē locks;
+#     mājaslapas telpām ieliek wp_export_queue publish. Sk. building_gates_recalc.py.
+# ---------------------------------------------------------------------------
+
+class BuildingGatesReq(BaseModel):
+    requested_by: str = ""
+
+
+@router.post("/building-gates-recalc/{building_profile_id}")
+def building_gates_recalc(building_profile_id: int, req: Optional[BuildingGatesReq] = None,
+                          _auth: None = Depends(require_token)) -> dict:
+    """→ {"updated": <telpu skaits ar izmaiņām>, "republished": <wp rindu skaits>}."""
+    import building_gates_recalc
+    try:
+        out = building_gates_recalc.recalc_building(
+            building_profile_id, (req.requested_by if req else "") or "")
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Vārtu pārrēķins neizdevās: {type(e).__name__}: {str(e)[:300]}")
+    return {"updated": out["updated"], "republished": out["republished"],
+            "listings": out["listings"], "flags": out["flags"]}
+
+
+# ---------------------------------------------------------------------------
 # 7c) WP GALERIJAS SINHRONIZĀCIJA — mājaslapā-dzimušiem (source='wp') listingiem
 #     ievelk PILNO Houzez galeriju no WP (mūsu DB importējot glabāja tikai 1).
 # ---------------------------------------------------------------------------
