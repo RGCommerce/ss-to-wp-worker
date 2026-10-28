@@ -156,7 +156,64 @@ def upsert_source(data: dict) -> dict:
     else:
         sources[sources.index(cur)] = src
     save_sources(sources)
+    if kind == "sslv":
+        try:
+            src["trusted_synced"] = _sync_trusted_numbers(src)
+        except Exception as e:
+            logger.warning("partner_drive: trusted_numbers sync %s: %s", src.get("name"), e)
     return src
+
+
+def _sslv_street_variants(street: str) -> set[str]:
+    """«Skanstes iela 27» → {«Skanstes iela 27», «Skanstes 27»} — ss.lv/skrāpera inbox raksta bez «iela»
+    (gatve/bulvāris/dambis paliek)."""
+    st = re.sub(r"\s+", " ", (street or "").strip())
+    out = {st} if st else set()
+    short = re.sub(r"\s+iela", "", st, flags=re.I).strip()
+    if short:
+        out.add(short)
+    return out
+
+
+def _sync_trusted_numbers(src: dict) -> int:
+    """ss.lv rāda numuru maskētu («27-07-***», atver tikai ar JS); skrāperis (sslv-scraper railway_worker) numuru
+    atklāj ar Puppeteer TIKAI aģentu sludinājumiem uzticamās adresēs (properties.trusted_numbers: iela + numurs,
+    prefiksa sakritība). Bez tā inbox rindai phone_numbers=NULL un mūsu avots to neatrod (Skanstes 27 bghcj,
+    Raimonds 2026-10-28). Tāpēc katrs ss.lv avots pats reģistrē savas ēkas × numurus kā uzticamus un atstata
+    trusted_checked_at, lai skrāperis pārbauda arī JAU esošos sludinājumus."""
+    import partner_intake
+    import psycopg
+    from psycopg.rows import dict_row
+    phones = [p for p in (src.get("phones") or []) if p]
+    streets: set[str] = set()
+    for a in _src_addresses(src):
+        for cand in (a.get("bp_address"), a.get("street")):
+            if cand:
+                streets |= _sslv_street_variants(cand)
+    if not phones or not streets:
+        return 0
+    norm = lambda x: re.sub(r"\s+", " ", (x or "").strip().lower()).translate(str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr"))
+    added = 0
+    with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
+        have = {(norm(r["street"]), re.sub(r"\D", "", r["phone"] or "")[-8:])
+                for r in conn.execute("SELECT street, phone FROM properties.trusted_numbers").fetchall()}
+        for ph in phones:
+            for st in streets:
+                if (norm(st), ph[-8:]) in have:
+                    continue
+                conn.execute("""INSERT INTO properties.trusted_numbers (phone, street, note, created_by)
+                                VALUES (%s, %s, %s, %s)""",
+                             (ph, st, f"partneru avots {src.get('name')} ({src.get('id')})", "partner_intake"))
+                have.add((norm(st), ph[-8:]))
+                added += 1
+        # jau noskrāpētie šo ēku aģentu sludinājumi bez numura → skrāperis tos pārbauda vēlreiz
+        conn.execute("""UPDATE properties.scrape_inbox SET trusted_checked_at = NULL
+                         WHERE lower(btrim(coalesce(is_agent,''))) = 'true'
+                           AND coalesce(btrim(phone_numbers),'') = ''
+                           AND translate(lower(btrim(coalesce(street,''))), 'āēīōūčšžģķļņŗ', 'aeioucszgklnr') = ANY(%s)""",
+                     ([norm(x) for x in streets],))
+        conn.commit()
+    return added
 
 
 def delete_source(sid: str) -> bool:
