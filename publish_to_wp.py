@@ -591,7 +591,7 @@ def _meta(listing: dict, bp: dict) -> dict:
 
 
 def publish(listing_id: int, dry_run: bool = False, force: bool = False,
-            skip_ai: bool = False) -> None:
+            skip_ai: bool = False, requested_by: str | None = None) -> None:
     if not DATABASE_URL:
         raise SystemExit("DATABASE_URL nav .env failā.")
 
@@ -856,8 +856,37 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
             geocode_address=_expand_abbr(_geocode_address(listing, bp)),
         )
         if existing_wp_id:
-            resp = wp.update_property(int(existing_wp_id), **common)
-            wp_id = int(existing_wp_id)
+            try:
+                resp = wp.update_property(int(existing_wp_id), **common)
+                wp_id = int(existing_wp_id)
+            except WPPublisherError as e:
+                if not ("HTTP 404" in str(e) or "HTTP 410" in str(e)):
+                    raise
+                # #86 klase, bet pie ATJAUNINĀŠANAS: posts dzēsts tieši WP pusē (atkritne/dzēsts), DB par to nezina
+                # (2026-10-29: 7 sludinājumi kopš maija, katrs re-publish krita ar 404). Ja publicēšanu pieprasīja
+                # cilvēks (requested_by = e-pasts) → viņš grib to mājaslapā → veido JAUNU ierakstu. Ja automāts
+                # (prompta-reanalyze, price sync, auto_publish…) → tikai spoguļo DB: nav mājaslapā; rinda = kļūda ar
+                # skaidru tekstu (Raimonds: kļūdai jābūt redzamai), bez retry cilpas.
+                print(f"  ! WP posts #{existing_wp_id} vairs nav (404/410) — dzēsts mājaslapā tieši WP pusē")
+                human = bool(requested_by and "@" in str(requested_by))
+                if human:
+                    print(f"  → pieprasīja {requested_by} → veido JAUNU WP ierakstu")
+                    resp = wp.create_property(**common)
+                    wp_id = int(resp["id"])
+                    force = True
+                else:
+                    conn.execute(
+                        """UPDATE properties.listings
+                              SET wp_post_id = NULL, wp_attachment_ids = NULL, wp_floor_plan_attachment_ids = NULL,
+                                  on_website = false, wp_synced_at = now(), updated_at = now(),
+                                  "Debug_note" = left(coalesce("Debug_note", '') || ' | WP posts dzēsts mājaslapā (404) → nav mājaslapā', 500)
+                            WHERE id = %s""",
+                        (listing_id,),
+                    )
+                    conn.commit()
+                    raise SystemExit(
+                        f"WP posts #{existing_wp_id} bija dzēsts mājaslapā (404) — DB atzīmēts «nav mājaslapā». "
+                        f"Ja vajag mājaslapā, publicē no jauna (Eksportēt uz WP).")
         else:
             resp = wp.create_property(**common)
             wp_id = int(resp["id"])

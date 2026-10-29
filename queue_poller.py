@@ -101,7 +101,7 @@ def _claim_next() -> Optional[dict]:
             # karājās «mājaslapa atjaunojas», jo Debug_status nebija 'ok' un
             # rinda NEKAD netika paņemta).
             cur = conn.execute("""
-                SELECT q.id, q.listing_id, q.attempts, q.action, q.wp_post_id
+                SELECT q.id, q.listing_id, q.attempts, q.action, q.wp_post_id, q.requested_by
                 FROM properties.wp_export_queue q
                 LEFT JOIN properties.listings l ON l.id = q.listing_id
                 WHERE q.status = 'pending'
@@ -238,7 +238,7 @@ def _process(queue_row: dict) -> tuple[bool, str]:
             elif action == "delete":
                 _delete_full(listing_id, queue_row.get("wp_post_id"))
             else:
-                publish_to_wp.publish(listing_id)
+                publish_to_wp.publish(listing_id, requested_by=queue_row.get("requested_by"))
         return True, buf.getvalue()
     except SystemExit as e:
         return False, f"SystemExit: {e}\n{buf.getvalue()}"
