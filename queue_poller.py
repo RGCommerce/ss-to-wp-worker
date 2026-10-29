@@ -40,7 +40,7 @@ from psycopg.rows import dict_row
 
 sys.path.insert(0, str(Path(__file__).parent))
 import publish_to_wp  # noqa: E402
-from wp_publisher import WPPublisher, WPPublisherError  # noqa: E402
+from wp_publisher import WPPublisher, WPPublisherError, post_gone  # noqa: E402
 
 logger = logging.getLogger("queue_poller")
 
@@ -284,10 +284,10 @@ def _unpublish(listing_id: int) -> None:
                 # #86: posts WP pusē jau prom (dzēsts/atkritnē citu ceļu), bet DB
                 # wp_post_id palicis — uzskatām par noņemtu un tīram DB, nevis
                 # krītam (citādi rinda failed + retry cilpa uz mūžīgu 404/410).
-                if "HTTP 404" in str(e) or "HTTP 410" in str(e):
-                    print(f"  · WP posts #{wp_post_id} jau nav (404/410) — tīram tikai DB")
+                if post_gone(e):
+                    print(f"  · WP posts #{wp_post_id} jau nav (not_found) — tīram tikai DB")
                 else:
-                    raise
+                    raise   # vispārīgs 404 (spraudnis atslēgts) nav «dzēsts» (Zaļā 2026-10-29)
         else:
             print("  · nav wp_post_id — nekas nav jānoņem no WP")
 

@@ -64,6 +64,14 @@ def _auto_translate(post_id: int, content: str) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def post_gone(err: Exception) -> bool:
+    """TIKAI spraudņa atbilde «Property nav atrasta» (code not_found) = posts tiešām dzēsts.
+    Vispārīgs 404 (spraudnis atslēgts → rest_no_route / HTML 404) NAV «dzēsts» — citādi pie spraudņa pārtraukuma
+    visas rindā gaidošās rindas kļūdaini kļūtu «nav mājaslapā» (Zaļā 2026-10-29)."""
+    s = str(err)
+    return ("HTTP 404" in s or "HTTP 410" in s) and ('"code":"not_found"' in s or "Property nav atrasta" in s)
+
+
 class WPPublisherError(RuntimeError):
     """REST izsaukums neizdevas (ne-2xx vai tikla kluda)."""
 

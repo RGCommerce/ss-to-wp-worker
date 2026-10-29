@@ -33,7 +33,7 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
-from wp_publisher import WPPublisher, WPPublisherError
+from wp_publisher import WPPublisher, WPPublisherError, post_gone
 from wp_templates import (render_body, render_excerpt, SUPPORTED_GROUPS,
                           seo_focus_keyphrase, seo_title, image_alt,
                           meta_description)
@@ -860,8 +860,8 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
                 resp = wp.update_property(int(existing_wp_id), **common)
                 wp_id = int(existing_wp_id)
             except WPPublisherError as e:
-                if not ("HTTP 404" in str(e) or "HTTP 410" in str(e)):
-                    raise
+                if not post_gone(e):
+                    raise   # cits 404 (spraudnis atslēgts, tīkls) → parasta kļūda, DB neaiztiek
                 # #86 klase, bet pie ATJAUNINĀŠANAS: posts dzēsts tieši WP pusē (atkritne/dzēsts), DB par to nezina
                 # (2026-10-29: 7 sludinājumi kopš maija, katrs re-publish krita ar 404). Ja publicēšanu pieprasīja
                 # cilvēks (requested_by = e-pasts) → viņš grib to mājaslapā → veido JAUNU ierakstu. Ja automāts
