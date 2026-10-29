@@ -30,8 +30,12 @@ SCHEDULES = {"hourly": timedelta(hours=1), "daily": timedelta(hours=24), "weekly
 SSLV_DEFAULT_DAYS = 30        # ss.lv ievietošanas datums pēdējās N dienās (Barona aeonb/hpmnn bija 16/23 d. veci, 2026-10-28)
 SSLV_LIVE_DAYS = 7            # scrape_inbox rinda = «dzīva», ja skrāperis to redzējis pēdējās N dienās
 SSLV_URL_TYPES = (("/offices/", "Birojs"), ("/premises/shops/", "Tirdzniecība"), ("/premises/storehouses", "Noliktava"),
-                  ("/storehouses", "Noliktava"), ("/premises/production", "Ražošana"), ("/premises/catering", "Restorans/Cafe"),
-                  ("/premises/beauty", "Studija"), ("/premises/medical", "Medicīna"), ("/plots-and-lands/", "Zeme"))
+                  ("/storehouses", "Noliktava"), ("/premises/production", "Ražošana"), ("/premises/restaurants", "Restorans/Cafe"),
+                  ("/premises/catering", "Restorans/Cafe"), ("/premises/saloons", "Studija"), ("/premises/beauty", "Studija"),
+                  ("/premises/premises-for-service-centers", "Autoserviss"), ("/premises/hangars", "Noliktava"),
+                  ("/premises/garages", "Noliktava"), ("/premises/workshops", "Ražošana"), ("/premises/training-halls", "Sporta zāle"),
+                  ("/premises/medical", "Medicīna"), ("/plots-and-lands/", "Zeme"))
+# (buildings-and-complexes, basements → tips paliek tukšs → «pārbaudīt», aģents izvēlas)
 SSLV_MAX_UNITS = 30           # drošības griesti vienai ieplūdei
 MAX_FOLDER_DEPTH = 3
 
@@ -212,7 +216,9 @@ def _sync_trusted_numbers(src: dict) -> int:
     norm = lambda x: re.sub(r"\s+", " ", (x or "").strip().lower()).translate(str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr"))
     added = 0
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
-        have = {norm(r["street"]) for r in conn.execute("SELECT street FROM properties.trusted_numbers").fetchall()}
+        have = {(re.sub(r"\D", "", r["phone"] or "")[-8:], norm(r["street"]))
+                for r in conn.execute("SELECT phone, street FROM properties.trusted_numbers").fetchall()}
+        phone_by_tail = {re.sub(r"\D", "", p)[-8:]: p for p in phones if len(re.sub(r"\D", "", p)) >= 7}
         for a in _src_addresses(src):
             display = a.get("bp_address") or a.get("street") or ""
             sh = _stem_house(display)
@@ -228,13 +234,16 @@ def _sync_trusted_numbers(src: dict) -> int:
             store |= _sslv_street_variants(display)
             for st in sorted(store):
                 k = norm(st)
-                if not k or k in have:
+                if not k:
                     continue
-                conn.execute("""INSERT INTO properties.trusted_numbers (phone, street, note, created_by)
-                                VALUES (%s, %s, %s, %s)""",
-                             (phones[0], st, f"partneru avots {src.get('name')} ({src.get('id')})", "partner_intake"))
-                have.add(k)
-                added += 1
+                for tail, ph in phone_by_tail.items():
+                    if (tail, k) in have:
+                        continue
+                    conn.execute("""INSERT INTO properties.trusted_numbers (phone, street, note, created_by)
+                                    VALUES (%s, %s, %s, %s)""",
+                                 (ph, st, f"partneru avots {src.get('name')} ({src.get('id')})", "partner_intake"))
+                    have.add((tail, k))
+                    added += 1
             if tails:
                 conn.execute(
                     """UPDATE properties.scrape_inbox SET is_agent = 'false'
@@ -710,7 +719,7 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
     body = (f"PARTNERA SS.LV SLUDINĀJUMI — {src['name']} ({', '.join(src.get('phones') or [])}), ēkas: "
             f"{'; '.join(a.get('bp_address') or a.get('street') or '' for a in _src_addresses(src))}, "
             f"pēdējās {src.get('days') or SSLV_DEFAULT_DAYS} dienas ({scanned_at.strftime('%Y-%m-%d')}).\n"
-            f"Katrs sludinājums = viena telpa; apstiprinot tas tiek PĀRŅEMTS (nevis izveidots no jauna) un publicēts mājaslapā.\n\n{links}\n")
+            f"Katrs sludinājums = viena telpa; apstiprinot («Pievienot DB») tas nonāk mūsu DB ar partnera atzīmi un, ja izvēlies, mājaslapā.\n\n{links}\n")
     parsed = {
         "message_id": f"sslv:{src['id']}:{fp[:12]}",
         "forwarder_name": src.get("name"), "forwarder_email": src.get("agent_email") or "raimonds@rgcommerce.lv",
