@@ -146,6 +146,7 @@ def build_land_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> 
     # (bija "4000250002200002 m²") — ņem pirmo kā "no X m²" (Prompta aģents 2026-10-29)
     _nums = [re.sub(r"\s", "", n) for n in re.findall(r"\d[\d\s]*", area_raw)]
     _nums = [n for n in _nums if n]
+    area = _nums[0] if _nums else ""  # lieto arī extra_info dublikāta pārbaude zemāk
     if len(_nums) == 1:
         area_txt = f" {_nums[0]} m²"
     elif len(_nums) > 1:
