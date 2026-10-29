@@ -387,6 +387,19 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
                 result = helpers.analyze_with_openai(info["fetch_url"], text, gallery)
                 from agent_ai_poller import AI_OUTPUT_FIELDS
                 allowed = list(AI_OUTPUT_FIELDS)
+                _sg_ai = str(result.get("Space_group") or "").strip()
+                if _sg_ai == "Dzīvojamā":
+                    raise SslvImportError("AI: objekts izskatās DZĪVOJAMĀ māja / dzīvoklis — nav komercobjekts, imports atcelts.")
+                if _sg_ai == "Zeme":
+                    # NE-TELPA (Raimonds 2026-10-29): zemes prompts + zemes lauki
+                    import land_ai
+                    is_land = True
+                    result = land_ai.analyze_land(helpers.client, helpers.MODEL, info["fetch_url"], text, gallery)
+                    row_stub = {"price_type": fields.get("price_type"), "area_m2": fields.get("area_m2"),
+                                "Zemes_gabals_m2": fields.get("area_m2"), "land_use": fields.get("land_use")}
+                    result["land_description"] = land_ai.build_land_description(row_stub, result)
+                    allowed = list(land_ai.LAND_OUTPUT_FIELDS)
+                    warnings.append("AI noteica, ka objekts ir ZEME — importēts kā zemes gabals.")
             else:
                 result = None
                 allowed = []

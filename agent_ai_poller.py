@@ -141,6 +141,25 @@ def _mark_error(listing_id: int, error_msg: str) -> None:
 
 # ---------- Tekst- un bilžu sagatavošana ----------
 
+def _mark_not_commercial(listing_id: int, note: str) -> None:
+    """Dzīvojamā / nav komercobjekts (Raimonds 2026-10-29) → Debug_status 'not_commercial'
+    (Zaļās enum migrācija); kamēr vērtības nav — 'human_rejected'. Abos gadījumos panelis/match/WP neredz."""
+    if not DATABASE_URL:
+        return
+    for status in ("not_commercial", "human_rejected"):
+        try:
+            with psycopg.connect(DATABASE_URL) as conn:
+                conn.execute(
+                    """UPDATE properties.listings
+                       SET "Debug_status" = %s, "Debug_note" = left(%s, 500), updated_at = now()
+                       WHERE id = %s""",
+                    (status, note, listing_id),
+                )
+            return
+        except Exception as e:
+            logger.warning("not_commercial status '%s' neizdevās listing=%s: %s", status, listing_id, str(e)[:120])
+
+
 def _mark_import_skipped(listing_id: int, note: str) -> None:
     """Imports (PDF/manuālais), kam AI neizdevās vai nav bilžu: paliek 'ok' + piezīme — Melnā 2026-10-28:
     importētais sludinājums ir aģenta apzināti ielikts, to nedrīkst paslēpt ar low_evidence."""
@@ -383,6 +402,26 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             result["Debug_status"] = "ok"
         else:
             result = helpers.analyze_with_openai(listing_url_for_prompt, text, image_urls)
+            _sg_ai = str(result.get("Space_group") or "").strip()
+            if _sg_ai == "Zeme":
+                # NE-TELPA (Raimonds 2026-10-29): komerc-AI saka Zeme → zemes prompts + zemes lauki
+                logger.info("listing#%s: komerc-AI=Zeme → zemes analīze", listing_id)
+                land = True
+                result = land_ai.analyze_land(helpers.client, helpers.MODEL, listing_url_for_prompt, text, image_urls)
+                result["Debug_status"] = "ok"
+                result["Space_group"] = "Zeme"
+                _lrow = dict(row); _lrow["Space_group"] = "Zeme"
+                result["land_description"] = land_ai.build_land_description(_lrow, result)
+                result["Debug_note"] = ("komerc-AI noteica Zeme → zemes analīze. " + str(result.get("Debug_note") or ""))[:500]
+            elif _sg_ai == "Dzīvojamā":
+                if row.get("source") == "agent_partner":
+                    # partnera saraksts var saturēt dzīvojamo — nav komercobjekts → ārā no plūsmas
+                    _mark_not_commercial(listing_id, "AI: dzīvojamā māja / dzīvoklis — nav komercobjekts")
+                    return True, "Dzīvojamā (partneris) — atzīmēts not_commercial"
+                # anketa / imports = aģents pats ielika → atstāj aģentam, grupa unknown + piezīme
+                result["Space_group"] = "unknown"
+                result["Debug_note"] = ("AI: izskatās DZĪVOJAMĀ (nav komercobjekts) — aģents pārbauda. "
+                                        + str(result.get("Debug_note") or ""))[:500]
             if row.get("source") == "agent_partner" or is_import:
                 # Partnera piedāvājums / PDF-manuālais imports = aģenta apzināti ielikts. ss.lv filtra
                 # klasifikācija (agent_detected/low_evidence — bildes nāk no cita brokera
@@ -410,7 +449,7 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
 
     try:
         # Investīcijai: komerc-AI lauki (aizpilda visu) + investment_description.
-        _output_fields = (land_ai.LAND_OUTPUT_FIELDS if land
+        _output_fields = ((list(land_ai.LAND_OUTPUT_FIELDS) + ["Space_group"]) if land
                           else (AI_OUTPUT_FIELDS + ["investment_description"]) if inv
                           else None)
         _update_listing_with_ai(listing_id, locked, result, output_fields=_output_fields)

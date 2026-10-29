@@ -38,7 +38,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 MODEL = os.getenv("MODEL", "gpt-5.4")
-PROMPT_VERSION = "2026-10-25"  # sinhrons ar test_runner_db.PROMPT_VERSION
+PROMPT_VERSION = "2026-10-29"  # sinhrons ar test_runner_db.PROMPT_VERSION
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "5"))
 EMPTY_SLEEP_SECONDS = int(os.getenv("EMPTY_SLEEP_SECONDS", "30"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "30"))
@@ -442,6 +442,34 @@ Primary:
 - PHOTO (interior)
 Secondary:
 - TEXT
+
+NON-PREMISES OBJECTS (Raimonds 2026-10-29) — decide this FIRST, before any premises group:
+- "Zeme" = the object is a LAND PLOT / open territory / yard WITHOUT a building or premises
+  being offered: field, meadow, forest plot, fenced asphalt / gravel yard for rent, cadastre
+  maps with plot borders, drone photo with an outlined area, "zemes gabals", "teritorija",
+  "laukums". Interior photos absent. Even if a shed or small building stands on it, when the
+  offer is the land / yard -> Zeme. (Code then runs the dedicated land analysis.)
+- "Investīciju objekts" = a WHOLE building or building complex offered as ONE asset: an entire
+  hotel / guesthouse / sanatorium building, a station or manor complex, a whole office /
+  industrial / mixed building with several tenants or units, "ēka", "ēku komplekss", "viesnīcas
+  tipa ēka", "pārdod visu ēku". The listing is about the entire property, not one unit inside it.
+  Potential_space_group = what the building could host. Investiciju_strategija must NOT be
+  "Nav investīciju objekts" in this case.
+- "Dzīvojamā" = a private house, apartment, residential building, summer house or similar that
+  is offered as a RESIDENCE (or for hostel / apartment conversion) and has NO commercial
+  fit-out: living rooms with wallpaper, bedrooms, bathrooms with tubs, kitchen of a home,
+  "privātmāja", "dzīvoklis", "daudzdzīvokļu māja", "hostelim". NOT commercial premises at all.
+  (Code removes such rows from the commercial pipeline.)
+
+"unknown" is FORBIDDEN for commercial premises. If the object is premises inside a building,
+you MUST choose a premises group — also for an EMPTY shell after renovation / unfinished
+fit-out:
+- use the uses named in the text in the order written (shop -> Tirdzniecība, office -> Birojs,
+  cafe / restaurant -> Restorans/Cafe, warehouse -> Noliktava, production -> Ražošana);
+- if the text names nothing: ground floor with street windows / shop front -> Tirdzniecība;
+  upper-floor rooms / cabinets -> Birojs; gates, high ceilings, concrete floor -> Noliktava.
+"unknown" is allowed ONLY when neither photos nor text show what the object is at all
+(e.g. a single map image and no description).
 
 Rules:
 - If clear office interior -> Birojs
@@ -1749,6 +1777,9 @@ JSON_SCHEMA = {
                 "Restorans/Cafe",
                 "Sporta zāle",
                 "Autoserviss",
+                "Zeme",
+                "Investīciju objekts",
+                "Dzīvojamā",
                 "unknown"
             ]
         },
