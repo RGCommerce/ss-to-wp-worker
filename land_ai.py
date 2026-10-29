@@ -142,8 +142,16 @@ def build_land_description(row_data: Dict[str, Any], result: Dict[str, Any]) -> 
     deal = "iznomāts" if pt in ("monthly", "mēneša") else "pārdots"
 
     area_raw = _clean(row_data.get("Zemes_gabals_m2")) or _clean(row_data.get("area_m2"))
-    area = re.sub(r"[^0-9]", "", area_raw)
-    area_txt = f" {area} m²" if area else ""
+    # Vairākas platības ("4000m2, 5000m2, 20000m2 un vairāk") NEDRĪKST salīmēt vienā skaitlī
+    # (bija "4000250002200002 m²") — ņem pirmo kā "no X m²" (Prompta aģents 2026-10-29)
+    _nums = [re.sub(r"\s", "", n) for n in re.findall(r"\d[\d\s]*", area_raw)]
+    _nums = [n for n in _nums if n]
+    if len(_nums) == 1:
+        area_txt = f" {_nums[0]} m²"
+    elif len(_nums) > 1:
+        area_txt = f" (platības no {_nums[0]} m²)"
+    else:
+        area_txt = ""
 
     parts = [f"Tiek {deal} zemes gabals{area_txt}."]
 
