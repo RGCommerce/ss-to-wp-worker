@@ -2496,12 +2496,21 @@ def apply_pvd_gates(result, floor_raw=None, building_flags=None, listing_text=""
     walls = str(result.get("Mazgajamas_sienas_check") or "") == "checked"
     vent = str(result.get("Ventilacijas_sistema_check") or "") == "checked"
 
+    # Raimonds 2026-10-30: PVD potenciāls NEKAD birojam / biroju ēkā (gaļu biroju ēkā neražo) —
+    # neatkarīgi no stāva, grīdas un ēkas pogas. Ēkas poga «pielāgo» PVD dod tikai ražošanas tipa
+    # telpām (noliktava/ražošana/tirdzniecība/StockOfiss/restorāns/autoserviss) 1. stāvā vai
+    # industriālā ēkā. Medicīnai poga paliek kā bija (apply_medicine_gates).
+    _office = (sg == "Birojs" or btype == "Biroju ēka")
+    _prod_sg = sg in ("Noliktava", "Ražošana", "Tirdzniecība", "StockOfiss", "Restorans/Cafe", "Autoserviss")
+    _ground = (floor_n is None or floor_n <= 1) or btype in ("Industriāla ēka", "Autoserviss")
     if sg == PVD or (listing_text and _PVD_TEXT_RE.search(listing_text)):
         want, why = True, "aktīvs PVD / PVD kods tekstā"
+    elif _office:
+        want, why = False, "birojs / biroju ēka — PVD nekad"
     elif bf.get("owner_adapts_premises") is False:
         want, why = False, "īpašnieks NEpielāgo (ēkas profils)"
-    elif bf.get("owner_adapts_premises") is True:
-        want, why = True, "īpašnieks pielāgo (ēkas profils)"
+    elif bf.get("owner_adapts_premises") is True and _prod_sg and _ground:
+        want, why = True, "īpašnieks pielāgo (ēkas profils) + ražošanas tipa telpa 1. stāvā"
     elif (sg == "Birojs" or btype == "Biroju ēka") and floor_n is not None and floor_n > 1:
         want, why = False, f"birojs {floor_n}. stāvā"
     elif gfloor not in PVD_WASHABLE_FLOORS:
