@@ -1215,7 +1215,7 @@ def _our_listings(conn, bp_id: int) -> list[dict]:
                   cardinality(local_image_paths_raw) AS n_raw
              FROM properties.listings
             WHERE building_profile_id = %s
-              AND ("Debug_status" = 'ok' OR ("Debug_status" IS NULL AND source = ANY(%s)))
+              AND ("Debug_status" = 'ok' OR (source = ANY(%s) AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')))
               AND (source = ANY(%s) OR wp_post_id IS NOT NULL OR on_website = true)
             ORDER BY id DESC""",
         (bp_id, list(OUR_SOURCES), list(OUR_SOURCES)),
@@ -1235,7 +1235,7 @@ def _our_listings_safe(conn, bp_id: int) -> list[dict]:
                       cardinality(local_image_paths_raw) AS n_raw
                  FROM properties.listings
                 WHERE building_profile_id = %s
-                  AND ("Debug_status" = 'ok' OR ("Debug_status" IS NULL AND source = ANY(%s)))
+                  AND ("Debug_status" = 'ok' OR (source = ANY(%s) AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')))
                   AND (source = ANY(%s) OR wp_post_id IS NOT NULL OR on_website = true)
                 ORDER BY id DESC""",
             (bp_id, list(OUR_SOURCES), list(OUR_SOURCES)),
@@ -2306,7 +2306,29 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         image_jobs.append((lid, u, bool(web_dec.get(str(u["idx"]))) and u.get("offer_type") != "flex"))
                         result["created_units"].append([lid, u["idx"]])
                     except agent_publish.DuplicateListingError as e:
-                        result["errors"].append(f"telpa #{u['idx']}: {e}")
+                        # tā pati telpa (iela+platība+stāvs+darījums) jau ir DB, bet salīdzināšana to neredzēja →
+                        # sasaista ar esošo (kā «Sludinājums jau ir mūsu DB»), ne kļūda (Skanstes City #61541, 2026-10-30)
+                        ex = getattr(e, "existing", None) or {}
+                        try:
+                            lid = int(ex.get("id"))
+                            conn.execute("""UPDATE properties.listings
+                                               SET partner_id = COALESCE(%s, partner_id), partner_unit_ref = %s, partner_list_id = %s,
+                                                   occupancy_status = NULL, occupied_from = NULL, updated_at = now(),
+                                                   "Debug_note" = left(coalesce("Debug_note", '') || %s, 500)
+                                             WHERE id = %s""",
+                                         (partner_id, u.get("ref"), list_id,
+                                          f" | Partneris: {partner.get('company') or '?'} — tā pati telpa, sasaistīts automātiski {report.get('received_at', '')[:10]}",
+                                          lid))
+                            conn.commit()
+                            linked_ids.add(lid)
+                            result["updated"].append(lid)
+                            result.setdefault("linked", []).append([lid, u["idx"]])
+                            result.setdefault("notes", []).append(
+                                f"telpa #{u['idx']}: tāda jau ir DB — #{lid} {ex.get('street') or ''} · {ex.get('area_m2') or '?'} m² · "
+                                f"{ex.get('floor') or '—'} → sasaistīts ar partneri, jauns nav veidots")
+                        except Exception:
+                            conn.rollback()
+                            result["errors"].append(f"telpa #{u['idx']}: {e}")
                     except Exception as e:
                         result["errors"].append(f"telpa #{u['idx']}: {type(e).__name__}: {str(e)[:200]}")
                 elif dec == "update" and u.get("matched_listing"):
