@@ -3004,7 +3004,7 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     out["sslv_candidates"] = [{"link": c["link"], "url": c["link"] if c["link"].startswith("http") else f"https://www.{c['link']}",
                                "area_m2": c.get("area_m2"), "floor": c.get("floor"), "price": c.get("price"),
                                "is_agent": bool(c.get("is_agent")), "from_email": bool(c.get("from_email")),
-                               "score": c.get("same_room_score"), "n": len(cache.get(c["link"]) or []) if c["link"] in cache else None}
+                               "score": c.get("same_room_score"), "n": len(cache.get(c["link"]) or []) if c["link"] in cache and isinstance(cache.get(c["link"]), list) else None}
                               for c in cands[:5]]
     pick = _bare_sslv(pick)
     if pick:
@@ -3016,13 +3016,22 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     # galerijas, kas kešotas PIRMS dzīvās adreses pārbaudes (2026-10-26), jāpārbauda vēlreiz
     ver_p = d / "sslv_verified.json"
     verified: set[str] = set(json.loads(ver_p.read_text(encoding="utf-8"))) if ver_p.is_file() else set()
+    # tukšas galerijas kešā ar laiku: pēc 10 min pārbauda vēlreiz (ss.lv/i.ss.lv brīdi neatbildēja → agrāk palika
+    # «0 bildes» uz visiem laikiem; Brīvības 201 2026-10-31). Kļūdu NEkešo vispār.
+    empty_at: dict = cache.get("__empty_at__") or {}
+    now_ts = time.time()
+    fetched = 0
     for cand in cands[:5]:
         link = cand["link"]
-        if link not in cache or (cache.get(link) and link not in verified):
-            if link not in cache and not prepare and link != pick:
+        stale_empty = (link in cache and not cache.get(link) and link not in [r["link"] for r in rejected]
+                       and (now_ts - float(empty_at.get(link) or 0)) > 600)
+        if link not in cache or (cache.get(link) and link not in verified) or stale_empty:
+            if fetched >= 2 and not prepare and link != pick:
+                # vairāk par 2 dzīvām ielādēm vienā paneļa pieprasījumā neliek — pārējo nākamajā reizē
                 out["sslv_pending"] = True
                 out["sslv_link"] = link if link.startswith("http") else f"https://www.{link}"
                 break
+            fetched += 1
             try:
                 import ai_text_helpers as helpers
                 import sslv_import
@@ -3033,14 +3042,27 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
                 ver_p.write_text(json.dumps(sorted(verified)), encoding="utf-8")
                 if not ok:
                     cache[link] = []
+                    empty_at[link] = now_ts + 86400 * 30   # adrese nesakrīt — noteikti nē, nepārbauda
                     rejected.append({"link": link, "why": why})
                 else:
                     urls = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
-                    cache[link] = _alive_sslv_images(urls)
+                    alive = _alive_sslv_images(urls)
+                    if urls and not alive:
+                        # galerija ir, bet i.ss.lv neatdeva nevienu bildi (pārejoši) → nekešo, lai nākamreiz mēģina
+                        out["sslv_error"] = "ss.lv bildes šobrīd neatbild — mēģini pēc brīža"
+                        cache.pop(link, None)
+                        continue
+                    cache[link] = alive
+                    if not alive:
+                        empty_at[link] = now_ts
             except Exception as e:
-                cache[link] = []
-                out["sslv_error"] = f"{type(e).__name__}"
-            cache_p.write_text(json.dumps(cache), encoding="utf-8")
+                # pārejoša kļūda (tīkls, ss.lv 403/timeout) → NEkešo kā tukšu
+                cache.pop(link, None)
+                out["sslv_error"] = f"ss.lv neatbild ({type(e).__name__}) — mēģini pēc brīža"
+                continue
+            finally:
+                cache["__empty_at__"] = empty_at
+                cache_p.write_text(json.dumps(cache), encoding="utf-8")
         elif cache.get(link) and (prepare or link == pick) and not _alive_sslv_images(cache[link][:1]):
             # vecs kešs ar mirušām bildēm (pirms 2026-10-26 pārbaudes) → pārvērtē
             cache[link] = _alive_sslv_images(cache[link])
