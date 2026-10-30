@@ -105,6 +105,7 @@ def upsert_source(data: dict) -> dict:
             raw_addrs.insert(0, {"street": data.get("street"), "city": data.get("city") or "Rīga"})
         addresses: list[dict] = []
         seen_keys: set[str] = set()
+        unresolved: list[str] = []
         for ra in raw_addrs:
             if isinstance(ra, str):
                 parts = [x.strip() for x in ra.split(",")]
@@ -123,7 +124,13 @@ def upsert_source(data: dict) -> dict:
                 continue
             bps = _resolve_bps(street, city)
             if not bps:
-                raise ValueError(f"Ēka «{street}, {city}» DB nav atrasta — pārbaudi adresi")
+                # ēkas profila nav (lauku «Lielmaņi k-2», jauna adrese) — seko pēc ielas atslēgas, panelim piezīme
+                k = partner_intake._street_key(street)
+                if k and k not in seen_keys:
+                    seen_keys.add(k)
+                    addresses.append({"street": street, "city": city, "bp_ids": [], "bp_address": street, "no_bp": True})
+                    unresolved.append(f"{street}, {city}")
+                continue
             k = partner_intake._street_key(bps[0].get("full_address") or street)
             if k in seen_keys:
                 continue
@@ -175,6 +182,8 @@ def upsert_source(data: dict) -> dict:
     if kind == "sslv":
         if shared_with:
             src["shared_with"] = shared_with
+        if unresolved:
+            src["unresolved"] = unresolved   # panelim: «ēkas profila nav — seko pēc ielas nosaukuma»
         try:
             src["trusted_synced"] = _sync_trusted_numbers(src)
         except Exception as e:
