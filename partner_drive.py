@@ -111,12 +111,19 @@ def upsert_source(data: dict) -> dict:
                 street, city = parts[0], (parts[1] if len(parts) > 1 and parts[1] else "Rīga")
             else:
                 street, city = (ra.get("street") or "").strip(), (ra.get("city") or "Rīga").strip() or "Rīga"
-            if not street or not any(ch.isdigit() for ch in street):
-                raise ValueError(f"Adresei vajag mājas numuru: «{street}»")
+            if not street:
+                raise ValueError("Tukša adrese")
+            import partner_intake
+            if not any(ch.isdigit() for ch in street):
+                # ss.lv adrese bez mājas numura («Kalnciema», «Vismaņi») — ēkas profila nav, seko pēc ielas atslēgas
+                k = partner_intake._street_key(street)
+                if k and k not in seen_keys:
+                    seen_keys.add(k)
+                    addresses.append({"street": street, "city": city, "bp_ids": [], "bp_address": street})
+                continue
             bps = _resolve_bps(street, city)
             if not bps:
                 raise ValueError(f"Ēka «{street}, {city}» DB nav atrasta — pārbaudi adresi")
-            import partner_intake
             k = partner_intake._street_key(bps[0].get("full_address") or street)
             if k in seen_keys:
                 continue
@@ -479,11 +486,12 @@ def _sslv_rows(src: dict) -> list[dict]:
     tails = list(src.get("phones") or [])
     addrs = _src_addresses(src)
     bp_ids = sorted({int(b) for a in addrs for b in (a.get("bp_ids") or [])})
-    if not tails or not bp_ids:
+    keys = {partner_intake._street_key(x) for a in addrs for x in (a.get("street"), a.get("bp_address")) if x}
+    keys.discard("")
+    if not tails or not (bp_ids or keys):
         return []
     pats = [f"%{t}" for t in tails]
     days = int(src.get("days") or SSLV_DEFAULT_DAYS)
-    keys = {partner_intake._street_key(x) for a in addrs for x in (a.get("street"), a.get("bp_address")) if x}
     out: list[dict] = []
     seen_links: set[str] = set()
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
@@ -496,13 +504,15 @@ def _sslv_rows(src: dict) -> list[dict]:
                  FROM properties.listings
                 WHERE source = 'sslv'
                   AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')
-                  AND building_profile_id = ANY(%s)
                   AND coalesce(nullif(date_posted,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
                   AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
                                WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s""",
-            (bp_ids, days, pats, SSLV_MAX_UNITS)).fetchall()
+            (days, pats, SSLV_MAX_UNITS * 4)).fetchall()
+        # ēka: pēc profila id VAI ielas atslēgas (adresēm bez mājas nr ēkas profila nav)
+        rows = [r for r in rows if (r.get("building_profile_id") in bp_ids)
+                or (partner_intake._street_key(r.get("street") or "") in keys)][:SSLV_MAX_UNITS]
         for r in rows:
             d = dict(r)
             d["origin"] = "listing"
@@ -619,11 +629,12 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
         rows = conn.execute(q, (days, pats, days, pats)).fetchall()
         for r in rows:
             street = (r.get("street") or "").strip()
-            if not street or not any(ch.isdigit() for ch in street):
+            if not street or len(street) < 3:
                 continue
+            no_house = not any(ch.isdigit() for ch in street)
             k = partner_intake._street_key(street) + "|" + (r.get("city") or "").strip().lower()[:6]
             g = groups.setdefault(k, {"street": street, "city": (r.get("city") or "Rīga").strip(), "bp_id": None,
-                                      "bp_address": None, "n": 0, "last_posted": None, "live": False})
+                                      "bp_address": None, "n": 0, "last_posted": None, "live": False, "no_house": no_house})
             g["n"] += int(r["n"] or 0)
             g["live"] = g["live"] or bool(r.get("live"))
             if r.get("bp") and not g["bp_id"]:
@@ -635,6 +646,8 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
             if g["bp_id"]:
                 row = conn.execute("SELECT full_address FROM properties.building_profiles WHERE id=%s", (g["bp_id"],)).fetchone()
                 g["bp_address"] = (row or {}).get("full_address")
+            elif g.get("no_house"):
+                g["bp_address"] = g["street"]   # bez mājas nr ēkas profila nav — seko pēc ielas atslēgas
             else:
                 bps = partner_intake._find_bps(conn, g["street"], g["city"], None, None) or []
                 if bps:
