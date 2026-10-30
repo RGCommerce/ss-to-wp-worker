@@ -526,6 +526,25 @@ def _sslv_rows(src: dict) -> list[dict]:
             if d.get("building_profile_id") not in bp_ids and partner_intake._street_key(d.get("street") or "") not in keys:
                 continue   # cita ēka (bez ēkas profila → pēc ielas atslēgas)
             seen_links.add(_norm_link(d["link"]))
+            # DUBLIKĀTU SARGS (2026-10-30): ja šis ss.lv links JAU ir listings (cita ēkas profila id, vecs datums, cits
+            # AI statuss — Deglava 46 begogx = #153) → rāda kā esošu (pārņem), nevis «Pievienot DB»
+            ex = conn.execute(
+                """SELECT id, street, city, district, area_m2, floor, price, price_type, price_per_m2, "Space_group" AS space_group,
+                          "Agent_comment" AS agent_comment, link, phone_numbers, date_posted, created_at, on_website,
+                          coalesce(array_length(local_image_paths_raw,1),0) AS n_raw
+                     FROM properties.listings
+                    WHERE link = %s AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')
+                    ORDER BY ("Debug_status" = 'ok') DESC, id DESC LIMIT 1""", (_norm_link(d["link"]),)).fetchone()
+            if ex:
+                e = dict(ex)
+                e["origin"] = "listing"
+                e["sslv_listing_id"] = int(e["id"])
+                e["building_profile_id"] = d.get("building_profile_id")
+                for k in ("date_posted", "last_updated", "floor", "area_m2", "price", "price_per_m2", "price_type"):
+                    if d.get(k):
+                        e[k] = d[k]   # inbox = tas, kas ss.lv ir TAGAD (cena/stāvs svaigāki par veco listings rindu)
+                out.append(e)
+                continue
             d["origin"] = "inbox"
             d["id"] = int(d["inbox_id"])
             d["n_raw"] = 0
@@ -664,7 +683,8 @@ def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
         price = partner_intake._num(r.get("price"))
         area = partner_intake._num(r.get("area_m2"))
         u.update({
-            "ref": f"ss.lv #{r['id']}", "area_m2": area, "floor": str(r.get("floor") or ""),
+            "ref": " · ".join(x for x in (str(r.get("street") or "").strip(), (r.get("space_group") or next((t for seg, t in SSLV_URL_TYPES if seg in str(r.get("link") or "")), None) or "ss.lv")) if x),
+            "area_m2": area, "floor": str(r.get("floor") or ""),
             "deal": "sale" if sale else "rent",
             "rent_total": None if sale else price, "sale_price": price if sale else None,
             "rent_per_m2_min": (partner_intake._num(r.get("price_per_m2")) if not sale else None),
@@ -678,7 +698,6 @@ def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
             "sslv_link": r.get("link"),
         })
         if r.get("origin") == "inbox":
-            u["ref"] = f"ss.lv inbox #{r['id']}"
             u["evidence"] = f"ss.lv sludinājums (skrāpera inbox) {r.get('link') or ''}"
         if u.get("space_type") is None:
             u["space_type"] = None

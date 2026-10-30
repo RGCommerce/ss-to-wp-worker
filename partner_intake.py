@@ -2181,8 +2181,17 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             sets.append("area_m2 = %s"); vals.append(_numstr(u["area_m2"]))
                         if u.get("space_type") in SPACE_GROUPS:
                             sets.append('"Space_group" = %s'); vals.append(u["space_type"])
+                        new_price = _num(u.get("rent_total") if (u.get("deal") or "rent") == "rent" else u.get("sale_price"))
+                        cur_row = conn.execute("SELECT price, price_per_m2 FROM properties.listings WHERE id = %s", (lid,)).fetchone()
+                        cur_price = _num((cur_row or {}).get("price") if isinstance(cur_row, dict) else (cur_row[0] if cur_row else None))
+                        if new_price and (not cur_price or abs(new_price - cur_price) > max(5.0, cur_price * 0.02)):
+                            # ss.lv cena TAGAD (inbox) atšķiras no vecās listings rindas (Deglava 46: 6000 → 5700, 2026-10-30)
+                            sets.append("price = %s"); vals.append(_numstr(new_price))
+                            if u.get("rent_per_m2_min") and (u.get("deal") or "rent") == "rent":
+                                sets.append("price_per_m2 = %s"); vals.append(_numstr(u["rent_per_m2_min"]))
+                            vals[3] = vals[3] + f"; cena {_numstr(cur_price) if cur_price else '?'} → {_numstr(new_price)} (ss.lv)"
                         conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
-                        conn.execute("""UPDATE properties.listings SET "Debug_status" = 'ok'
+                        conn.execute("""UPDATE properties.listings SET "Debug_status" = 'ok''ok'
                                          WHERE id = %s AND "Debug_status" IS NOT NULL AND "Debug_status" <> 'ok'
                                            AND "Debug_status" NOT IN ('not_commercial', 'wanted_ad')""", (lid,))
                         if u.get("sslv_link"):
