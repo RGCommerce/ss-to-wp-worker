@@ -416,11 +416,18 @@ def scan_web_source(src: dict, force: bool = False) -> dict:
 
 
 def _phone_tails(s) -> set[str]:
-    """Telefona teksts (vairāki ar , ; / |) → pēdējo 8 ciparu kopa (kā auto_publish_poller._tails)."""
+    """Telefona teksts jebkurā pierakstā → pēdējo 8 ciparu kopa (kā auto_publish_poller._tails).
+    Der «+371)26-650-650», «26-650-650», «+371 26650650», «37126650650», «2650650» (7 cipari); vairākus numurus
+    atdala ar komatu, semikolu, slīpsvītru, jaunu rindu VAI tikai atstarpi («26650650 29145599») — Raimonds 2026-10-30:
+    «visi šie ir same thing, kā man ērtāk, tā ielieku»."""
     out: set[str] = set()
-    for part in re.split(r"[,;/|\n]", str(s or "")):
-        digits = re.sub(r"\D", "", part)
-        if len(digits) >= 7:
+    txt = re.sub(r"[()\[\]]", " ", str(s or ""))
+    # katrs numurs = (neobligāts +371) + 7–8 cipari, starp kuriem var būt atstarpes/defises/punkti
+    for m in re.finditer(r"(?:\+?\s*371[\s\-.]*)?\d(?:[\s\-.]?\d){6,7}(?!\d)", txt):
+        digits = re.sub(r"\D", "", m.group(0))
+        if len(digits) > 8 and digits.startswith("371"):
+            digits = digits[3:]
+        if 7 <= len(digits) <= 8:
             out.add(digits[-8:])
     return out
 
