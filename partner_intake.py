@@ -3292,6 +3292,12 @@ def list_intakes(limit: int = 50) -> list[dict]:
     if not INTAKE_DIR.is_dir():
         return []
     out = []
+    src_agent: dict[str, str] = {}
+    try:
+        import partner_drive
+        src_agent = {s.get("id"): (s.get("agent_email") or "").lower() for s in partner_drive.load_sources()}
+    except Exception:
+        pass
     for d in sorted(INTAKE_DIR.iterdir(), reverse=True):
         if not d.is_dir() or not (d / "meta.json").is_file():
             continue
@@ -3301,6 +3307,9 @@ def list_intakes(limit: int = 50) -> list[dict]:
             continue
         if meta.get("status") in ("superseded", "dismissed", "nochange"):
             continue   # aizstāts ar jaunāku nolasījumu / aģents noņēma / automātiskais skenējums bez izmaiņām
+        # kurš apstiprina: avota «Apstiprina» (dzīvā vērtība, Raimonds 2026-10-30: «uzspiedu Ieva — man jāpazūd uzreiz»),
+        # citādi pārsūtītājs / augšupielādētājs
+        assignee = src_agent.get(meta.get("drive_source_id") or "") or (meta.get("forwarder_email") or "").lower() or None
         rep = None
         if (d / "report.json").is_file():
             try:
@@ -3312,7 +3321,7 @@ def list_intakes(limit: int = 50) -> list[dict]:
                 pass
         out.append({"intake_id": meta["intake_id"], "status": meta.get("status"), "received_at": meta.get("received_at"),
                     "source": meta.get("source") or "imap",   # imap | panel | drive | web — paneļa cilnēm
-                    "forwarder": meta.get("forwarder_email"), "subject": meta.get("subject"),
+                    "forwarder": meta.get("forwarder_email"), "assignee": assignee, "subject": meta.get("subject"),
                     "attachments": [a["name"] for a in meta.get("attachments", [])], "report": rep,
                     "error": meta.get("error"),
                     # progresa josla panelī: apstiprināšana + bilžu fona darbs

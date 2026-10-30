@@ -94,11 +94,11 @@ def upsert_source(data: dict) -> dict:
         tails = _phone_tails(data.get("phones") or data.get("contact_phone") or "")
         if not tails:
             raise ValueError("Vajag partnera telefona numuru (vismaz 7 cipari)")
-        # DUBLIKĀTU SARGS: tas pats numurs divos avotos = divas ieplūdes par vienu sludinājumu → aizliegts
+        # tas pats numurs var būt vairākiem partneriem (brokeris liek vairākiem īpašniekiem; Raimonds 2026-10-30) —
+        # dublikātus novērš linku rezervācija pa VISIEM avotiem (_decided_sslv_ids); panelim tikai info «arī pie …»
         my_id = (data.get("id") or "").strip()
-        for s in load_sources():
-            if s.get("kind") == "sslv" and s.get("id") != my_id and set(s.get("phones") or []) & set(tails):
-                raise ValueError(f"Numurs jau ir partnerim «{s.get('name')}» — pievieno ēkas tur («Pievienot ēkas»), nevis veido otru")
+        shared_with = [s.get("name") for s in load_sources()
+                       if s.get("kind") == "sslv" and s.get("id") != my_id and set(s.get("phones") or []) & set(tails)]
         # adreses: `addresses` (saraksts «iela nr[, pilsēta]» vai {street, city}) un/vai vecais street+city
         raw_addrs: list = list(data.get("addresses") or [])
         if data.get("street"):
@@ -166,6 +166,8 @@ def upsert_source(data: dict) -> dict:
         sources[sources.index(cur)] = src
     save_sources(sources)
     if kind == "sslv":
+        if shared_with:
+            src["shared_with"] = shared_with
         try:
             src["trusted_synced"] = _sync_trusted_numbers(src)
         except Exception as e:
@@ -436,7 +438,9 @@ def _resolve_bps(street: str, city: str) -> list[dict]:
 
 
 def _decided_sslv_ids(source_id: str) -> set[str]:
-    """ss.lv sludinājumi, par kuriem Raimonds jau IR lēmis (bija apstiprinātā/daļējā šī avota ieplūdē) — nerāda otrreiz."""
+    """ss.lv sludinājumi, ko šim avotam vairs nerāda: 1) šī avota apstiprinātajās/daļējās ieplūdēs jau izlemtie;
+    2) CITA avota ieplūdēs (gaida vai apstiprināta) esošie — viens numurs var būt vairākiem partneriem (2026-10-30),
+    bet katrs sludinājums nāk apstiprināt tikai vienreiz."""
     import partner_intake
     done: set[int] = set()
     if not partner_intake.INTAKE_DIR.is_dir():
@@ -447,7 +451,10 @@ def _decided_sslv_ids(source_id: str) -> set[str]:
             continue
         try:
             meta = json.loads(mp.read_text(encoding="utf-8"))
-            if meta.get("drive_source_id") != source_id or meta.get("status") not in ("applied", "partial"):
+            if meta.get("source") != "sslv" or not meta.get("drive_source_id"):
+                continue
+            own = meta.get("drive_source_id") == source_id
+            if meta.get("status") not in (("applied", "partial") if own else ("new", "ready", "applied", "partial")):
                 continue
             rep = json.loads(rp.read_text(encoding="utf-8"))
             for a in rep.get("addresses") or []:
@@ -649,8 +656,7 @@ def _other_addresses(src: dict) -> list[dict]:
         for g in sslv_number_addresses(", ".join(src.get("phones") or []), days=90):
             if (g.get("bp_id") and g["bp_id"] in have_bps) or partner_intake._street_key(g["street"]) in have_keys:
                 continue
-            if g.get("live"):
-                out.append(g)
+            out.append(g)   # arī neaktīvās (panelī «· neaktīvs»; dzīvās pirmās)
     except Exception as e:
         logger.warning("partner_drive: other_addresses %s: %s", src.get("name"), e)
     return out[:10]
@@ -729,6 +735,10 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
     (mīnus jau izlemtie) → mainās tikai, kad parādās jauns. Vecā neapstiprinātā ieplūde tiek aizstāta."""
     import partner_intake
     scanned_at = _now()
+    try:
+        _sync_trusted_numbers(src)
+    except Exception as e:
+        logger.warning("partner_drive: trusted sync %s: %s", src.get("name"), e)
     rows = _sslv_rows(src)
     decided = _decided_sslv_ids(src["id"])
     rows = [r for r in rows if _norm_link(r.get("link")) not in decided]
@@ -928,6 +938,7 @@ def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
     sources = load_sources()
     for s in sources:
         if s.get("id") == src["id"]:
+            prev_other = len(((s.get("last_result") or {}).get("other_addresses") or []))
             s["last_scan_at"] = result.get("scanned_at") or _now().isoformat()
             s["last_result"] = {k: result.get(k) for k in ("changed", "intake_id", "skipped", "unit_folders", "price_files", "summary", "other_addresses")}
             s["last_error"] = error
@@ -938,8 +949,14 @@ def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
                 s["last_fingerprint"] = result.get("fingerprint") or s.get("last_fingerprint")
             if result.get("intake_id"):
                 s["last_intake_id"] = result["intake_id"]
+            age_ok = True
+            try:
+                age_ok = (_now() - datetime.fromisoformat(s.get("created_at"))) >= timedelta(minutes=30)
+            except Exception:
+                pass
+            stable = len(result.get("other_addresses") or []) == prev_other
             if (s.get("kind") == "sslv" and not _src_addresses(s) and result.get("other_addresses")
-                    and not s.get("addresses_notified_at")):
+                    and not s.get("addresses_notified_at") and age_ok and stable):
                 s["addresses_notified_at"] = _now().isoformat()
                 try:
                     _notify_addresses_found(s, result["other_addresses"])
