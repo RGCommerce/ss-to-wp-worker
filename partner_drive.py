@@ -911,7 +911,34 @@ def _apply_result(src: dict, result: dict, error: Optional[str] = None) -> None:
                 s["last_fingerprint"] = result.get("fingerprint") or s.get("last_fingerprint")
             if result.get("intake_id"):
                 s["last_intake_id"] = result["intake_id"]
+            if (s.get("kind") == "sslv" and not _src_addresses(s) and result.get("other_addresses")
+                    and not s.get("addresses_notified_at")):
+                s["addresses_notified_at"] = _now().isoformat()
+                try:
+                    _notify_addresses_found(s, result["other_addresses"])
+                except Exception as e:
+                    logger.warning("partner_drive: ēku paziņojums %s: %s", s.get("name"), e)
     save_sources(sources)
+
+
+def _notify_addresses_found(src: dict, addrs: list[dict]) -> int:
+    """Telegram aģentam («Apstiprina»): numurs atrasts N ēkās — apstiprini panelī (Raimonds 2026-10-30: «viņš atnāk
+    un pastāsta, kādas adreses ir; es apstiprinu, kuras gribu»)."""
+    import html as html_mod
+    import psycopg
+    from psycopg.rows import dict_row
+    import partner_intake
+    if not os.getenv("TELEGRAM_BOT_TOKEN") or not partner_intake.DATABASE_URL:
+        return 0
+    names = ", ".join(html_mod.escape(str(a.get("bp_address") or a.get("street") or "?")) for a in addrs[:6])
+    more = f" (+{len(addrs) - 6})" if len(addrs) > 6 else ""
+    msg = (f"🏢 <b>{html_mod.escape(str(src.get('name') or 'Partneris'))}</b>: numurs liek sludinājumus {len(addrs)} ēkās — "
+           f"{names}{more}\nApstiprini, kurām sekot: {partner_intake.PANEL_URL}/partner-intake (cilne «ss.lv numuri»)")
+    with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
+        subs = conn.execute("SELECT agent_email, chat_id FROM properties.telegram_subscribers WHERE active IS TRUE AND chat_id IS NOT NULL").fetchall()
+    want = (src.get("agent_email") or "").lower()
+    targets = [r for r in subs if (r["agent_email"] or "").lower() == want] or subs
+    return sum(1 for r in targets if partner_intake._telegram_send(str(r["chat_id"]), msg))
 
 
 def _set_scanning(sid: str, on: bool) -> None:
@@ -979,7 +1006,10 @@ def maybe_scan_all() -> list[dict]:
         due = True
         if last:
             try:
-                due = _now() - datetime.fromisoformat(last) >= SCHEDULES.get(src.get("schedule") or "daily", SCHEDULES["daily"])
+                every = SCHEDULES.get(src.get("schedule") or "daily", SCHEDULES["daily"])
+                if src.get("kind") == "sslv" and not _src_addresses(src):
+                    every = timedelta(minutes=15)   # 2. solis: ēku atklāšana (Raimonds 2026-10-30) — ātrāk nekā stundas skenējums
+                due = _now() - datetime.fromisoformat(last) >= every
             except Exception:
                 due = True
         if not due:
