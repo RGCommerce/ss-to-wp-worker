@@ -148,6 +148,41 @@ def _floor_digits(v: Any) -> str:
     return re.sub(r"[^0-9\-+/]", "", ("" if v is None else str(v)).lower())
 
 
+def _addr_stem(street: Optional[str]) -> Optional[tuple[str, str]]:
+    """(ielas pēdējā vārda 4 burti bez diakritikas, mājas nr) — «Krišjāņa Barona iela 108» → («baro», «108»),
+    «Barona 108» → («baro», «108»); tips un garumzīmes neko nemaina. None, ja nav ielas vai numura."""
+    s = (street or "").split(",")[0].lower().translate(str.maketrans("āēīōūčšžģķļņŗ", "aeioucszgklnr"))
+    s = re.sub(r"\b(iela|gatve|bulvaris|prospekts|laukums|dambis|soseja|linija|krastmala|aleja|cels|skersiela|street|pr\.|bulv\.|gat\.|d\.)\b", " ", s)
+    toks = [t for t in re.split(r"\s+", s) if t]
+    # mājas nr = pēdējais tokens, kas SĀKAS ar ciparu («34 k-4» → «34», ne «k-4»)
+    house_tok = next((t for t in reversed(toks) if re.match(r"\d", t)), "")
+    m = re.match(r"\d+[a-z]?", house_tok)
+    house = m.group(0) if m else ""
+    words = [t for t in toks if not re.search(r"\d", t) and len(re.sub(r"[^a-z]", "", t)) >= 3]
+    stem = re.sub(r"[^a-z]", "", words[-1])[:4] if words else ""
+    return (stem, house) if stem and house else None
+
+
+def _same_place(street: Optional[str], bp_id, addr: dict) -> bool:
+    """Vai DB rinda (iela, ēkas profils) ir TĀ PATI ēka, kas ieplūdes adrese `addr` ({street, bp:{id, full_address}})."""
+    want_bp = (addr.get("bp") or {}).get("id")
+    try:
+        if bp_id and want_bp and int(bp_id) == int(want_bp):
+            return True
+    except (TypeError, ValueError):
+        pass
+    a = _addr_stem(street)
+    cands = [s for s in (addr.get("street"), (addr.get("bp") or {}).get("full_address"), addr.get("bp_address")) if s]
+    if a:
+        return any(_addr_stem(s) == a for s in cands)
+    # bez mājas numura (lauku mājas «Rusuļi», kadastra nr) → pilna normalizēta sakritība
+    k = _street_key(street or "")
+    if k:
+        return any(_street_key(s) == k for s in cands)
+    raw = (street or "").strip().lower()
+    return bool(raw) and any(s.strip().lower() == raw for s in cands)   # «B/n», «N/a» — vismaz burtiski vienādi
+
+
 def _street_key(street: str) -> str:
     """Tipa-neatkarīga ielas atslēga salīdzināšanai (kā paneļa street_search / dedup_street)."""
     s = (street or "").lower()
@@ -2159,11 +2194,20 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                     # inbox_to_listings to jau ievilka listings (Baltic Horizon bghcj → #111960, kamēr ieplūde gaidīja) →
                     # meklē pēc linka (jebkurš Debug_status) un PĀRŅEM esošo, nevis veido otru rindu
                     try:
-                        ex = conn.execute("""SELECT id FROM properties.listings WHERE link = %s
-                                              ORDER BY ("Debug_status" = 'ok') DESC, id DESC LIMIT 1""",
+                        ex = conn.execute("""SELECT id, street, building_profile_id FROM properties.listings WHERE link = %s
+                                              ORDER BY (coalesce("Debug_status"::text, '') = 'ok') DESC, id DESC LIMIT 1""",
                                           (_bare_sslv(u["sslv_link"]),)).fetchone()
                         if ex:
-                            u["sslv_listing_id"] = int(ex["id"] if isinstance(ex, dict) else ex[0])
+                            exd = dict(ex) if isinstance(ex, dict) else {"id": ex[0], "street": ex[1], "building_profile_id": ex[2]}
+                            if _same_place(exd.get("street"), exd.get("building_profile_id"), addr):
+                                u["sslv_listing_id"] = int(exd["id"])
+                            else:
+                                # ss.lv saite pārizmantota citam īpašumam (Zaļā 2026-10-30: Barona 30 ↔ #18011 Ēveles 14) →
+                                # NEpārņem svešo; veido jaunu, vecajai rindai novecojušo saiti noņem, aģentam piezīme
+                                u["_stale_link_of"] = (int(exd["id"]), exd.get("street") or "?")
+                                result.setdefault("notes", []).append(
+                                    f"telpa #{u['idx']}: ss.lv saite DB bija pie #{exd['id']} ({exd.get('street') or '?'}) — cita adrese, "
+                                    f"tāpēc veidots jauns sludinājums; vecajai rindai novecojusī saite noņemta")
                     except Exception:
                         conn.rollback()
                 if dec == "create" and u.get("sslv_listing_id"):
@@ -2226,6 +2270,12 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             # vēlreiz kā source=sslv (composite atslēga nesakrīt — cita ielas rakstība/stāvs) → link + inbox atzīme
                             try:
                                 bl = _bare_sslv(u["sslv_link"])
+                                if u.get("_stale_link_of"):
+                                    old_id, old_street = u["_stale_link_of"]
+                                    conn.execute("""UPDATE properties.listings SET link = NULL, updated_at = now(),
+                                                       "Debug_note" = left(coalesce("Debug_note", '') || %s, 500)
+                                                     WHERE id = %s AND link = %s""",
+                                                 (f" | ss.lv saite pārizmantota ({addr.get('street') or '?'} → #{lid}), noņemta {datetime.now().date()}", old_id, bl))
                                 conn.execute("""UPDATE properties.listings SET link = %s WHERE id = %s AND coalesce(link, '') = ''""", (bl, lid))
                                 conn.execute("""UPDATE properties.scrape_inbox SET skip_reason = coalesce(skip_reason, %s) WHERE link = %s""",
                                              (f"transferred: partner_intake #{lid}", bl))

@@ -531,15 +531,17 @@ def _sslv_rows(src: dict) -> list[dict]:
             ex = conn.execute(
                 """SELECT id, street, city, district, area_m2, floor, price, price_type, price_per_m2, "Space_group" AS space_group,
                           "Agent_comment" AS agent_comment, link, phone_numbers, date_posted, created_at, on_website,
-                          coalesce(array_length(local_image_paths_raw,1),0) AS n_raw
+                          building_profile_id, coalesce(array_length(local_image_paths_raw,1),0) AS n_raw
                      FROM properties.listings
                     WHERE link = %s AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')
-                    ORDER BY ("Debug_status" = 'ok') DESC, id DESC LIMIT 1""", (_norm_link(d["link"]),)).fetchone()
-            if ex:
+                    ORDER BY (coalesce("Debug_status"::text, '') = 'ok') DESC, id DESC LIMIT 1""", (_norm_link(d["link"]),)).fetchone()
+            if ex and not (int(ex["building_profile_id"] or 0) in bp_ids
+                           or partner_intake._same_place(ex.get("street"), None, {"street": d.get("street")})):
+                ex = None   # tā pati saite, cita adrese = ss.lv pārizmantota saite → paliek «inbox» (jauns), apply sargs izlems
                 e = dict(ex)
                 e["origin"] = "listing"
                 e["sslv_listing_id"] = int(e["id"])
-                e["building_profile_id"] = d.get("building_profile_id")
+                e["building_profile_id"] = e.get("building_profile_id") or d.get("building_profile_id")
                 for k in ("date_posted", "last_updated", "floor", "area_m2", "price", "price_per_m2", "price_type"):
                     if d.get(k):
                         e[k] = d[k]   # inbox = tas, kas ss.lv ir TAGAD (cena/stāvs svaigāki par veco listings rindu)
