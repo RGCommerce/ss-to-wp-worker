@@ -2154,6 +2154,18 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                     continue
                 if dec == "create" and str(u["idx"]) in prev_created_idx:
                     continue  # jau izveidots iepriekšējā apstiprināšanā
+                if dec == "create" and not u.get("sslv_listing_id") and u.get("sslv_link"):
+                    # DUBLIKĀTU SARGS (2026-10-30): ieplūdes brīdī sludinājums bija tikai skrāpera inbox, bet pa šo laiku
+                    # inbox_to_listings to jau ievilka listings (Baltic Horizon bghcj → #111960, kamēr ieplūde gaidīja) →
+                    # meklē pēc linka (jebkurš Debug_status) un PĀRŅEM esošo, nevis veido otru rindu
+                    try:
+                        ex = conn.execute("""SELECT id FROM properties.listings WHERE link = %s
+                                              ORDER BY ("Debug_status" = 'ok') DESC, id DESC LIMIT 1""",
+                                          (_bare_sslv(u["sslv_link"]),)).fetchone()
+                        if ex:
+                            u["sslv_listing_id"] = int(ex["id"] if isinstance(ex, dict) else ex[0])
+                    except Exception:
+                        conn.rollback()
                 if dec == "create" and u.get("sslv_listing_id"):
                     # ss.lv numura avots (Raimonds 2026-10-28): sludinājums jau ir DB (source sslv) → PĀRŅEM: partnera
                     # piesaiste + atzīme, bildes no raw caur Seedream, tad mājaslapa. Nav rollback-dzēšams (nav mūsu izveidots).
@@ -2170,6 +2182,12 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         if u.get("space_type") in SPACE_GROUPS:
                             sets.append('"Space_group" = %s'); vals.append(u["space_type"])
                         conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
+                        conn.execute("""UPDATE properties.listings SET "Debug_status" = 'ok'
+                                         WHERE id = %s AND "Debug_status" IS NOT NULL AND "Debug_status" <> 'ok'
+                                           AND "Debug_status" NOT IN ('not_commercial', 'wanted_ad')""", (lid,))
+                        if u.get("sslv_link"):
+                            conn.execute("""UPDATE properties.scrape_inbox SET skip_reason = coalesce(skip_reason, %s) WHERE link = %s""",
+                                         (f"transferred: partner_intake #{lid}", _bare_sslv(u["sslv_link"])))
                         conn.commit()
                         result.setdefault("adopted", []).append(lid)
                         if isinstance(img_dec.get(str(u["idx"])), dict):
@@ -2194,6 +2212,17 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         })
                         lid = int(res["queued"][0]["listing_id"])
                         result["created"].append(lid)
+                        if u.get("sslv_link"):
+                            # DUBLIKĀTU SARGS (2026-10-30): bez linka skrāpera inbox_to_listings to pašu ss.lv sludinājumu ievilktu
+                            # vēlreiz kā source=sslv (composite atslēga nesakrīt — cita ielas rakstība/stāvs) → link + inbox atzīme
+                            try:
+                                bl = _bare_sslv(u["sslv_link"])
+                                conn.execute("""UPDATE properties.listings SET link = %s WHERE id = %s AND coalesce(link, '') = ''""", (bl, lid))
+                                conn.execute("""UPDATE properties.scrape_inbox SET skip_reason = coalesce(skip_reason, %s) WHERE link = %s""",
+                                             (f"transferred: partner_intake #{lid}", bl))
+                                conn.commit()
+                            except Exception:
+                                conn.rollback()
                         try:
                             conn.execute("""UPDATE properties.listings SET partner_id=%s, partner_unit_ref=%s, partner_list_id=%s,
                                             "Debug_note" = %s,

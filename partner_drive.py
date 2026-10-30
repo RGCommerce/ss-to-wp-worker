@@ -94,6 +94,11 @@ def upsert_source(data: dict) -> dict:
         tails = _phone_tails(data.get("phones") or data.get("contact_phone") or "")
         if not tails:
             raise ValueError("Vajag partnera telefona numuru (vismaz 7 cipari)")
+        # DUBLIKĀTU SARGS: tas pats numurs divos avotos = divas ieplūdes par vienu sludinājumu → aizliegts
+        my_id = (data.get("id") or "").strip()
+        for s in load_sources():
+            if s.get("kind") == "sslv" and s.get("id") != my_id and set(s.get("phones") or []) & set(tails):
+                raise ValueError(f"Numurs jau ir partnerim «{s.get('name')}» — pievieno ēkas tur («Pievienot ēkas»), nevis veido otru")
         # adreses: `addresses` (saraksts «iela nr[, pilsēta]» vai {street, city}) un/vai vecais street+city
         raw_addrs: list = list(data.get("addresses") or [])
         if data.get("street"):
@@ -482,7 +487,8 @@ def _sslv_rows(src: dict) -> list[dict]:
                       "Agent_comment" AS agent_comment, link, phone_numbers, date_posted, created_at, on_website,
                       coalesce(array_length(local_image_paths_raw,1),0) AS n_raw
                  FROM properties.listings
-                WHERE source = 'sslv' AND "Debug_status" = 'ok'
+                WHERE source = 'sslv'
+                  AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')
                   AND building_profile_id = ANY(%s)
                   AND coalesce(nullif(date_posted,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
                   AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
