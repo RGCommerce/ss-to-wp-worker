@@ -597,7 +597,8 @@ def _row_address(src: dict, r: dict) -> dict:
 
 def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
     """Kur ŠIS numurs liek ss.lv sludinājumus (skrāpera inbox + listings, pēdējās N d.): adrese, ēkas profils, skaits,
-    pēdējais datums. Raimonds 2026-10-28: «rīks, kas parāda, kādas adreses šis nr vēl liek — ja interesē, pievienoju»."""
+    pēdējais datums UN paši sludinājumi (`ads`: links, platība, cena, tips, datums), lai aģents var apskatīt telpas,
+    pirms ķeksē ēku (Raimonds 2026-10-30: «man vajag linku, kur redzu, kas tā par ēku»)."""
     import partner_intake
     import psycopg
     from psycopg.rows import dict_row
@@ -608,24 +609,24 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
     groups: dict[str, dict] = {}
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
-        q = """SELECT street, city, building_profile_id AS bp, count(*) AS n,
-                      max(coalesce(nullif(date_posted,'')::timestamptz, created_at)) AS last_posted,
-                      bool_or(coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - interval '7 days') AS live
+        q = """SELECT street::text, city::text, building_profile_id::bigint AS bp, link::text, area_m2::text, price::text, floor::text,
+                      listing_type::text, "group"::text AS grp,
+                      coalesce(nullif(date_posted,'')::timestamptz, created_at) AS posted,
+                      (coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - interval '7 days') AS live
                  FROM properties.scrape_inbox
                 WHERE coalesce(skip_reason,'') <> 'blacklisted_phone'
                   AND coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
                   AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
                                WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
-                GROUP BY 1, 2, 3
                UNION ALL
-               SELECT street, city, building_profile_id, count(*),
-                      max(coalesce(nullif(date_posted,'')::timestamptz, created_at)), true
+               SELECT street::text, city::text, building_profile_id::bigint, link::text, area_m2::text, price::text, floor::text,
+                      NULL::text, "Space_group"::text,
+                      coalesce(nullif(date_posted,'')::timestamptz, created_at), true
                  FROM properties.listings
                 WHERE source = 'sslv' AND "Debug_status" = 'ok'
                   AND created_at >= now() - make_interval(days => %s)
                   AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
-                               WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
-                GROUP BY 1, 2, 3"""
+                               WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))"""
         rows = conn.execute(q, (days, pats, days, pats)).fetchall()
         for r in rows:
             street = (r.get("street") or "").strip()
@@ -634,14 +635,24 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
             no_house = not any(ch.isdigit() for ch in street)
             k = partner_intake._street_key(street) + "|" + (r.get("city") or "").strip().lower()[:6]
             g = groups.setdefault(k, {"street": street, "city": (r.get("city") or "Rīga").strip(), "bp_id": None,
-                                      "bp_address": None, "n": 0, "last_posted": None, "live": False, "no_house": no_house})
-            g["n"] += int(r["n"] or 0)
+                                      "bp_address": None, "n": 0, "last_posted": None, "live": False, "no_house": no_house,
+                                      "ads": [], "_links": set()})
+            link = _norm_link(r.get("link"))
+            if link and link in g["_links"]:
+                continue   # tas pats sludinājums inbox + listings
+            if link:
+                g["_links"].add(link)
+            g["n"] += 1
             g["live"] = g["live"] or bool(r.get("live"))
             if r.get("bp") and not g["bp_id"]:
                 g["bp_id"] = int(r["bp"])
-            lp = r.get("last_posted")
+            lp = r.get("posted")
             if lp and (g["last_posted"] is None or lp > g["last_posted"]):
                 g["last_posted"] = lp
+            typ = r.get("grp") or next((t for seg, t in SSLV_URL_TYPES if seg in (link or "")), None)
+            g["ads"].append({"link": (f"https://www.{link}" if link else None), "area_m2": r.get("area_m2"),
+                             "price": r.get("price"), "floor": r.get("floor"), "type": typ,
+                             "date": str(lp)[:10] if lp else None, "live": bool(r.get("live")), "_lp": lp})
         for g in groups.values():
             if g["bp_id"]:
                 row = conn.execute("SELECT full_address FROM properties.building_profiles WHERE id=%s", (g["bp_id"],)).fetchone()
@@ -656,6 +667,9 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
     out = sorted(groups.values(), key=lambda g: (not g["live"], -(g["n"])))
     for g in out:
         g["last_posted"] = str(g["last_posted"])[:10] if g["last_posted"] else None
+        g["ads"] = [{k: v for k, v in ad.items() if k != "_lp"}
+                    for ad in sorted(g["ads"], key=lambda x: (x.get("_lp") is None, x.get("_lp")), reverse=True)[:8]]
+        g.pop("_links", None)
     return out
 
 
