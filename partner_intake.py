@@ -2226,9 +2226,15 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         if u.get("space_type") in SPACE_GROUPS:
                             sets.append('"Space_group" = %s'); vals.append(u["space_type"])
                         new_price = _num(u.get("rent_total") if (u.get("deal") or "rent") == "rent" else u.get("sale_price"))
-                        cur_row = conn.execute("SELECT price, price_per_m2 FROM properties.listings WHERE id = %s", (lid,)).fetchone()
-                        cur_price = _num((cur_row or {}).get("price") if isinstance(cur_row, dict) else (cur_row[0] if cur_row else None))
-                        if new_price and (not cur_price or abs(new_price - cur_price) > max(5.0, cur_price * 0.02)):
+                        cur_row = conn.execute("SELECT price, price_per_m2, coalesce(agent_locked_fields, '{}'::text[]) AS locked FROM properties.listings WHERE id = %s", (lid,)).fetchone()
+                        cur_d = dict(cur_row) if isinstance(cur_row, dict) else ({"price": cur_row[0], "locked": cur_row[2]} if cur_row else {})
+                        cur_price = _num(cur_d.get("price"))
+                        price_locked = "price" in (cur_d.get("locked") or [])
+                        if price_locked and new_price and cur_price and abs(new_price - cur_price) > max(5.0, cur_price * 0.02):
+                            # ar roku fiksēta cena ir autoritatīva (Zaļā 2026-10-30) — NEpārraksta, tikai piezīme
+                            result.setdefault("notes", []).append(
+                                f"telpa #{u['idx']}: #{lid} cena ar roku fiksēta ({_numstr(cur_price)} €), ss.lv rāda {_numstr(new_price)} € — atstāta fiksētā")
+                        if new_price and not price_locked and (not cur_price or abs(new_price - cur_price) > max(5.0, cur_price * 0.02)):
                             # ss.lv cena TAGAD (inbox) atšķiras no vecās listings rindas (Deglava 46: 6000 → 5700, 2026-10-30)
                             sets.append("price = %s"); vals.append(_numstr(new_price))
                             if u.get("rent_per_m2_min") and (u.get("deal") or "rent") == "rent":
