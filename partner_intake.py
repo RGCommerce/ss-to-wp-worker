@@ -2191,7 +2191,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                                 sets.append("price_per_m2 = %s"); vals.append(_numstr(u["rent_per_m2_min"]))
                             vals[3] = vals[3] + f"; cena {_numstr(cur_price) if cur_price else '?'} → {_numstr(new_price)} (ss.lv)"
                         conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
-                        conn.execute("""UPDATE properties.listings SET "Debug_status" = 'ok''ok'
+                        conn.execute("""UPDATE properties.listings SET "Debug_status" = 'ok'
                                          WHERE id = %s AND "Debug_status" IS NOT NULL AND "Debug_status" <> 'ok'
                                            AND "Debug_status" NOT IN ('not_commercial', 'wanted_ad')""", (lid,))
                         if u.get("sslv_link"):
