@@ -212,7 +212,9 @@ SPACE_GROUP_TO_LABELS: dict[str, list[str]] = {
 _POTENTIAL_LABEL: dict[str, str] = {
     "Medicīna": "Medicīnai",
     "Restorans/Cafe": "Ēdināšanai",
-    "PVD": "Ēdināšanai",
+    # 2026-10-30: PVD NEDRĪKST būt «Ēdināšanai» — wordpress-sync-worker to lasa atpakaļ kā Restorans/Cafe+PVD
+    # un ieliek PVD ikvienam ar kafejnīcas potenciālu. «Pārtikas razošanai» = WP labels, ko sync kartē uz PVD.
+    "PVD": "Pārtikas razošanai",
 }
 
 
