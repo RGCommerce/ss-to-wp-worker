@@ -118,13 +118,13 @@ def upsert_source(data: dict) -> dict:
             seen_keys.add(k)
             addresses.append({"street": street, "city": city, "bp_ids": [int(b["id"]) for b in bps],
                               "bp_address": bps[0].get("full_address") or street})
-        if not addresses:
-            raise ValueError("Vajag vismaz vienu ēkas adresi")
+        # ēkas var nebūt (Raimonds 2026-10-30: «ievadu partneri + numuru; skrāperis atklāj, kur liek; tad «Pievienot ēkas»»)
+        # — numurs tāpat kļūst VIP/uzticams, skenējums bez ēkām tikai saka «ēkas vēl nav»
         try:
             days = int(data.get("days") or SSLV_DEFAULT_DAYS)
         except Exception:
             days = SSLV_DEFAULT_DAYS
-        first = addresses[0]
+        first = addresses[0] if addresses else {"street": None, "city": None, "bp_ids": [], "bp_address": None}
         sslv = {"phones": sorted(tails), "addresses": addresses, "days": max(1, min(days, 120)),
                 "street": first["street"], "city": first["city"], "bp_ids": first["bp_ids"], "bp_address": first["bp_address"]}
     else:
@@ -269,6 +269,12 @@ def _sync_trusted_numbers(src: dict) -> int:
                 conn.execute("""INSERT INTO properties.vip_owner_numbers (phone, note, auto_publish) VALUES (%s, %s, false)
                                 ON CONFLICT (phone) DO NOTHING""",
                              (f"+371{t}", f"partneru avots {src.get('name')} ({src.get('id')}) — bez auto-publish"))
+            # VIP = numurs nav aģents JEBKURĀ adresē → arī jau esošās inbox rindas ar šo numuru (ne tikai avota ēkās);
+            # tā «Kur liek?» / «Pievienot ēkas» rāda visas partnera ēkas arī bez ievadītas adreses (PICHE 2026-10-30)
+            conn.execute(
+                """UPDATE properties.scrape_inbox SET is_agent = 'false'
+                    WHERE right(regexp_replace(coalesce(phone_numbers,''), '[^0-9]', '', 'g'), 8) = ANY(%s)
+                      AND lower(btrim(coalesce(is_agent,''))) = 'true'""", (tails,))
         conn.commit()
     return added
 
@@ -706,7 +712,8 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
                     "intake_id": None, "skipped": None, "web_recipe": None, "list_only": False,
                     "other_addresses": _other_addresses(src)}
     if not rows:
-        result["skipped"] = "nav jaunu ss.lv sludinājumu ar šo numuru šajā ēkā"
+        result["skipped"] = ("ēkas vēl nav pievienotas — «Pievienot ēkas»" if not _src_addresses(src)
+                             else "nav jaunu ss.lv sludinājumu ar šo numuru šajā ēkā")
         result["changed"] = False
         return result
     if not result["changed"] and not force:
