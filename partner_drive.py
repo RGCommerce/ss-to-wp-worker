@@ -573,6 +573,7 @@ def _sslv_rows(src: dict) -> list[dict]:
             if ex and not (int(ex["building_profile_id"] or 0) in bp_ids
                            or partner_intake._same_place(ex.get("street"), None, {"street": d.get("street")})):
                 ex = None   # tā pati saite, cita adrese = ss.lv pārizmantota saite → paliek «inbox» (jauns), apply sargs izlems
+            if ex:
                 e = dict(ex)
                 e["origin"] = "listing"
                 e["sslv_listing_id"] = int(e["id"])
