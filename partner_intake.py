@@ -2383,10 +2383,10 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         snap = conn.execute("""SELECT id, occupancy_status, occupied_from, occupied_until, occupied_note, occupancy_set_by, occupancy_set_at, wp_post_id, on_website
                                                FROM properties.listings WHERE id=%s""", (lid,)).fetchone()
                         result["undo"]["occupied"].append({k: (str(v) if isinstance(v, (datetime,)) else v) for k, v in dict(snap).items()} if snap else {"id": lid})
-                        # tāpat kā paneļa poga «Aizņemts»: noklusēti 12 mēn. (occupied_until) → #41 atgādinājums ~1,5 mēn. pirms
-                        # termiņa; partnera skenējums atbrīvo agrāk, ja telpa atkal parādās sarakstā (Raimonds 2026-10-31)
+                        # BEZ termiņa (Raimonds 2026-10-31: «no partnera piedāvājuma iznomāts = beztermiņa; kad parādīsies —
+                        # ieliks»): partnera skenējums atbrīvo, kad telpa atkal ir sarakstā; termiņu var likt sludinājuma lapā
                         conn.execute("""UPDATE properties.listings SET occupancy_status='occupied', occupied_from=CURRENT_DATE,
-                                        occupied_until=CURRENT_DATE + interval '12 months',
+                                        occupied_until=NULL,
                                         occupied_note=%s, occupancy_set_by=%s, occupancy_set_at=now(), updated_at=now() WHERE id=%s""",
                                      (f"Nav partnera ({partner.get('company') or '?'}) vakanču sarakstā {report.get('list_date') or report.get('received_at','')[:10]}",
                                       requested_by, lid))
