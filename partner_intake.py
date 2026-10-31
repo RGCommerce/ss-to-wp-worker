@@ -2175,7 +2175,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         linked_ids.add(lid)
                         conn.execute("""UPDATE properties.listings
                                            SET partner_id = COALESCE(%s, partner_id), partner_unit_ref = %s, partner_list_id = %s,
-                                               occupancy_status = NULL, occupied_from = NULL,
+                                               occupancy_status = NULL, occupied_from = NULL, occupied_until = NULL,
                                                "Debug_note" = %s, updated_at = now()
                                          WHERE id = %s""",
                                      (partner_id, u.get("ref"), list_id,
@@ -2313,7 +2313,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             lid = int(ex.get("id"))
                             conn.execute("""UPDATE properties.listings
                                                SET partner_id = COALESCE(%s, partner_id), partner_unit_ref = %s, partner_list_id = %s,
-                                                   occupancy_status = NULL, occupied_from = NULL, updated_at = now(),
+                                                   occupancy_status = NULL, occupied_from = NULL, occupied_until = NULL, updated_at = now(),
                                                    "Debug_note" = left(coalesce("Debug_note", '') || %s, 500)
                                              WHERE id = %s""",
                                          (partner_id, u.get("ref"), list_id,
@@ -2345,7 +2345,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         sets.append("area_m2 = %s"); vals.append(_numstr(u["area_m2"]))
                     reactivate = bool(u.get("reactivate")) or (u["matched_listing"].get("occupancy_status") == "occupied")
                     if reactivate:
-                        sets.append("occupancy_status = NULL"); sets.append("occupied_from = NULL")
+                        sets.append("occupancy_status = NULL"); sets.append("occupied_from = NULL"); sets.append("occupied_until = NULL")
                         sets.append("occupied_note = %s"); vals.append(
                             f"Atkal brīvs — partnera ({partner.get('company') or '?'}) sarakstā {report.get('list_date') or report.get('received_at','')[:10]}")
                         sets.append("occupancy_set_by = %s"); vals.append(requested_by)
@@ -2380,10 +2380,13 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                 if miss_dec.get(str(m["id"])) == "occupied" and int(m["id"]) not in prev_occupied and int(m["id"]) not in result["occupied"]:
                     lid = int(m["id"])
                     try:
-                        snap = conn.execute("""SELECT id, occupancy_status, occupied_from, occupied_note, occupancy_set_by, occupancy_set_at, wp_post_id, on_website
+                        snap = conn.execute("""SELECT id, occupancy_status, occupied_from, occupied_until, occupied_note, occupancy_set_by, occupancy_set_at, wp_post_id, on_website
                                                FROM properties.listings WHERE id=%s""", (lid,)).fetchone()
                         result["undo"]["occupied"].append({k: (str(v) if isinstance(v, (datetime,)) else v) for k, v in dict(snap).items()} if snap else {"id": lid})
+                        # tāpat kā paneļa poga «Aizņemts»: noklusēti 12 mēn. (occupied_until) → #41 atgādinājums ~1,5 mēn. pirms
+                        # termiņa; partnera skenējums atbrīvo agrāk, ja telpa atkal parādās sarakstā (Raimonds 2026-10-31)
                         conn.execute("""UPDATE properties.listings SET occupancy_status='occupied', occupied_from=CURRENT_DATE,
+                                        occupied_until=CURRENT_DATE + interval '12 months',
                                         occupied_note=%s, occupancy_set_by=%s, occupancy_set_at=now(), updated_at=now() WHERE id=%s""",
                                      (f"Nav partnera ({partner.get('company') or '?'}) vakanču sarakstā {report.get('list_date') or report.get('received_at','')[:10]}",
                                       requested_by, lid))
@@ -3281,9 +3284,9 @@ def rollback(intake_id: str, requested_by: Optional[str]) -> dict:
         for sn in undo.get("occupied") or []:
             if not sn.get("id"):
                 continue
-            conn.execute("""UPDATE properties.listings SET occupancy_status=%s, occupied_from=%s, occupied_note=%s, occupancy_set_by=%s,
+            conn.execute("""UPDATE properties.listings SET occupancy_status=%s, occupied_from=%s, occupied_until=%s, occupied_note=%s, occupancy_set_by=%s,
                             partner_id=NULL, partner_unit_ref=NULL, partner_list_id=NULL, updated_at=now() WHERE id=%s""",
-                         (sn.get("occupancy_status"), sn.get("occupied_from"), sn.get("occupied_note"), sn.get("occupancy_set_by"), sn["id"]))
+                         (sn.get("occupancy_status"), sn.get("occupied_from"), sn.get("occupied_until"), sn.get("occupied_note"), sn.get("occupancy_set_by"), sn["id"]))
             out["reverted_occupied"] += 1
             if sn.get("wp_post_id") or sn.get("on_website"):
                 conn.execute("UPDATE properties.wp_export_queue SET status='cancelled' WHERE listing_id=%s AND status IN ('pending','processing')", (sn["id"],))
