@@ -3034,7 +3034,9 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
         prev_why = why_map.get(link) or {}
         stale_empty = (link in cache and not cache.get(link) and link not in [r["link"] for r in rejected]
                        and ((now_ts - float(empty_at.get(link) or 0)) > 600
-                            or (prev_why and prev_why.get("street") != street_for)))
+                            or (prev_why and prev_why.get("street") != street_for)
+                            # vecs noraidījums bez iemesla (starpversija 2026-10-31: 30 d. marķieris, bet nav __why__) → pārvērtē
+                            or (float(empty_at.get(link) or 0) > now_ts and not prev_why)))
         if link not in cache or (cache.get(link) and link not in verified) or stale_empty:
             if fetched >= 2 and not prepare and link != pick:
                 # vairāk par 2 dzīvām ielādēm vienā paneļa pieprasījumā neliek — pārējo nākamajā reizē
