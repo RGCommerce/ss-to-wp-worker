@@ -180,6 +180,8 @@ def upsert_source(data: dict) -> dict:
         sources[sources.index(cur)] = src
     save_sources(sources)
     if kind == "sslv":
+        if set(src.get("phones") or []) != set((cur or {}).get("phones") or []):
+            src["phones_updated_at"] = _now().isoformat()   # jauns numurs → 90 min ēku atklāšana ik 15 min
         if shared_with:
             src["shared_with"] = shared_with
         if unresolved:
@@ -1094,8 +1096,14 @@ def maybe_scan_all() -> list[dict]:
         if last:
             try:
                 every = SCHEDULES.get(src.get("schedule") or "daily", SCHEDULES["daily"])
-                if src.get("kind") == "sslv" and not _src_addresses(src):
-                    every = timedelta(minutes=15)   # 2. solis: ēku atklāšana (Raimonds 2026-10-30) — ātrāk nekā stundas skenējums
+                recent_phone = False
+                try:
+                    recent_phone = bool(src.get("phones_updated_at")) and (_now() - datetime.fromisoformat(src["phones_updated_at"])) < timedelta(minutes=90)
+                except Exception:
+                    pass
+                if src.get("kind") == "sslv" and (not _src_addresses(src) or recent_phone):
+                    every = timedelta(minutes=15)   # 2. solis: ēku atklāšana (Raimonds 2026-10-30) — ātrāk nekā stundas skenējums;
+                    # arī 90 min pēc jauna numura pievienošanas (Raimonds 2026-10-31: «pievienoju nr — vai uzreiz meklēs ēkas?»)
                 due = _now() - datetime.fromisoformat(last) >= every
             except Exception:
                 due = True
