@@ -3022,12 +3022,19 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     # tukšas galerijas kešā ar laiku: pēc 10 min pārbauda vēlreiz (ss.lv/i.ss.lv brīdi neatbildēja → agrāk palika
     # «0 bildes» uz visiem laikiem; Brīvības 201 2026-10-31). Kļūdu NEkešo vispār.
     empty_at: dict = cache.get("__empty_at__") or {}
+    why_map: dict = cache.get("__why__") or {}   # {link: {"why", "street"}} — noraidījuma iemesls + pret kādu adresi
     now_ts = time.time()
     fetched = 0
     for cand in cands[:5]:
         link = cand["link"]
+        # dzīvo lapu salīdzina ar ss.lv rindas PAŠAS adresi (ko skrāperis redzēja), ne ar aģenta izvēlēto ēku:
+        # Raimonds 2026-10-31 — ss.lv «Brīvības gatve» (bez nr) pārlika uz Gustava Zemgala gatve 77 → bildes «dzēstas?».
+        # Saites pārizmantošanu (cits īpašums) tas joprojām ķer: dzīvā iela ≠ skrāpētā iela.
+        street_for = cand.get("street") or (addr.get("bp") or {}).get("full_address") or addr.get("street")
+        prev_why = why_map.get(link) or {}
         stale_empty = (link in cache and not cache.get(link) and link not in [r["link"] for r in rejected]
-                       and (now_ts - float(empty_at.get(link) or 0)) > 600)
+                       and ((now_ts - float(empty_at.get(link) or 0)) > 600
+                            or (prev_why and prev_why.get("street") != street_for)))
         if link not in cache or (cache.get(link) and link not in verified) or stale_empty:
             if fetched >= 2 and not prepare and link != pick:
                 # vairāk par 2 dzīvām ielādēm vienā paneļa pieprasījumā neliek — pārējo nākamajā reizē
@@ -3040,12 +3047,13 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
                 import sslv_import
                 info = sslv_import.parse_sslv_url(link)
                 html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
-                ok, why = _sslv_live_matches(html_doc, (addr.get("bp") or {}).get("full_address") or addr.get("street"), unit)
+                ok, why = _sslv_live_matches(html_doc, street_for, unit)
                 verified.add(link)
                 ver_p.write_text(json.dumps(sorted(verified)), encoding="utf-8")
                 if not ok:
                     cache[link] = []
-                    empty_at[link] = now_ts + 86400 * 30   # adrese nesakrīt — noteikti nē, nepārbauda
+                    empty_at[link] = now_ts + 86400 * 30   # adrese nesakrīt — noteikti nē, nepārbauda (ja vien adrese nemainās)
+                    why_map[link] = {"why": why, "street": street_for}
                     rejected.append({"link": link, "why": why})
                 else:
                     urls = (helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS]
@@ -3056,6 +3064,7 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
                         cache.pop(link, None)
                         continue
                     cache[link] = alive
+                    why_map.pop(link, None)
                     if not alive:
                         empty_at[link] = now_ts
             except Exception as e:
@@ -3065,6 +3074,7 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
                 continue
             finally:
                 cache["__empty_at__"] = empty_at
+                cache["__why__"] = why_map
                 cache_p.write_text(json.dumps(cache), encoding="utf-8")
         elif cache.get(link) and (prepare or link == pick) and not _alive_sslv_images(cache[link][:1]):
             # vecs kešs ar mirušām bildēm (pirms 2026-10-26 pārbaudes) → pārvērtē
@@ -3078,8 +3088,13 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     if rejected:
         out["sslv_rejected"] = rejected
     if cands and not out["sslv"] and not out["sslv_pending"]:
-        out["sslv_error"] = ("ss.lv: neviens sludinājums vairs neatbilst šai telpai (" + rejected[0]["why"] + ")") if rejected \
-            else "ss.lv sludinājuma bildes vairs nav pieejamas (dzēsts?)"
+        cached_why = next(((why_map.get(c["link"]) or {}).get("why") for c in cands[:5] if why_map.get(c["link"])), None)
+        if rejected:
+            out["sslv_error"] = "ss.lv: neviens sludinājums vairs neatbilst šai telpai (" + rejected[0]["why"] + ")"
+        elif cached_why:
+            out["sslv_error"] = "ss.lv: sludinājums neatbilst šai telpai (" + cached_why + ")"
+        elif not out.get("sslv_error"):
+            out["sslv_error"] = "ss.lv sludinājuma bildes vairs nav pieejamas (dzēsts?)"
     L = imgs.get("links") or {"photos": [], "plans": [], "errors": []}
     # dublikāti arī rādot (vecie reporti pirms Drive-ID dedupe)
     out["links"] = {"photos": _dedupe_files(L.get("photos") or []), "plans": _dedupe_files(L.get("plans") or []), "errors": L.get("errors") or []}
