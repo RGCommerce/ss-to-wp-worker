@@ -132,15 +132,15 @@ def _ensure_street_suffix(street: str | None) -> str | None:
         if f" {sfx} " in f" {lower} " or lower.endswith(f" {sfx}"):
             return s  # jau ir suffix
 
-    # Pieņem, ka pēdējais tokens ir māju numurs. Pievieno 'iela' tieši pirms tā.
+    # Pieņem, ka pēdējais tokens ir māju numurs (SĀKAS ar ciparu: 1, 1a, 12/3). Pievieno 'iela' tieši pirms tā.
+    # «k-1»/«k-2» (korpuss) nav māju numurs; bez numura = vietas nosaukums (lauku «Vismaņi», «Lielmaņi k-1») →
+    # NEKO nepieliek (Raimonds 2026-10-31: «Vismaņi iela» bija nepareizi — tas ir vietas nosaukums).
     parts = s.rsplit(None, 1)
     if len(parts) == 2:
         name, number = parts
-        # Number var saturēt skaitļus, burtus (1, 1a, 12/3, 17b, ...) — pieņemam
-        if any(ch.isdigit() for ch in number):
+        if number[:1].isdigit():
             return f"{name} iela {number}"
-    # Bez numurs — vienkārši pievieno suffix beigās
-    return f"{s} iela"
+    return s
 
 
 # Building_profile lauki, ko aģents var ievadīt/papildināt caur anketu vai

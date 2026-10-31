@@ -1860,8 +1860,8 @@ def _unit_to_anketa(u: dict, addr: dict, partner: dict, list_date: Optional[str]
         extra_bits.append("Projekts / būvniecībā — nosacījumi pēc pieprasījuma")
     if u.get("building_part"):
         extra_bits.append(str(u["building_part"]))
-    if u.get("ref"):
-        extra_bits.append(f"telpa {u['ref']}")
+    if u.get("ref") and not u.get("sslv_link"):
+        extra_bits.append(f"telpa {u['ref']}")   # partnera telpas kods (GD25D.E3); ss.lv telpai ref = adrese · tips → nē
     if u.get("area_note"):
         extra_bits.append(str(u["area_note"]))
     if u.get("rent_per_m2_max") and u.get("rent_per_m2_min") and u["rent_per_m2_max"] != u["rent_per_m2_min"]:
@@ -2104,6 +2104,23 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
             addr["street"] = ov["street"]
         if ov.get("city"):
             addr["city"] = ov["city"]
+        bp_id_ = (addr.get("bp") or {}).get("id")
+        if bp_id_ and not ov.get("street"):
+            try:
+                with psycopg.connect(DATABASE_URL, row_factory=dict_row) as c_bp:
+                    bp_row = c_bp.execute("SELECT full_address, street, city, district FROM properties.building_profiles WHERE id=%s",
+                                          (int(bp_id_),)).fetchone()
+                if bp_row:
+                    bp_row = dict(bp_row) if isinstance(bp_row, dict) else {"full_address": bp_row[0], "street": bp_row[1], "city": bp_row[2], "district": bp_row[3]}
+                    st = (bp_row.get("full_address") or bp_row.get("street") or "").split(",")[0].strip()
+                    if st:
+                        addr["street"] = st
+                    if (bp_row.get("city") or "").strip() and not ov.get("city"):
+                        addr["city"] = bp_row["city"].strip()
+                    if (bp_row.get("district") or "").strip():
+                        addr["district"] = bp_row["district"].strip()
+            except Exception:
+                pass
     if dry_run:
         payloads = []
         for addr in report["addresses"]:

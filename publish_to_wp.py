@@ -124,7 +124,7 @@ def _ensure_street_suffix(s: str) -> str:
     parts = s.rsplit(None, 1)
     if len(parts) == 2:
         name, number = parts
-        if any(ch.isdigit() for ch in number):
+        if number[:1].isdigit():   # «k-1» nav māju nr → bez «iela» (2026-10-31)
             return f"{name} iela {number}"
     return s  # bez numura — neminam (var nebūt iela, piem. tirgus/centrs)
 
