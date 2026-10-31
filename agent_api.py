@@ -1944,6 +1944,7 @@ class DriveSourceReq(BaseModel):
     city: Optional[str] = None       # kind=sslv
     addresses: Optional[list[str]] = None   # kind=sslv: vairākas adreses «iela nr[, pilsēta]»
     days: Optional[int] = None       # kind=sslv: pēdējo dienu logs (15)
+    other_seen_n: Optional[int] = None   # kind=sslv: cik «numurs liek vēl» ēku aģents jau apskatījis (panelī «N jaunas ēkas»)
     price_files: list[str] = Field(default_factory=list)   # cenu failu saites/ID
     agent_email: Optional[str] = None
     contact_name: Optional[str] = None
