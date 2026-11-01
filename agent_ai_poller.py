@@ -444,6 +444,14 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             helpers.apply_office_from_industrial_gates(result, row.get("floor"))
             helpers.apply_building_class_gate(result, row.get("building_profile_id"))
             helpers.apply_fence_gate(result, row.get("building_profile_id"), _bf)
+            # ēkas poga «pielāgo» → PVD/Medicīna pieliek ARĪ aizslēgtam potenciālam (Raimonds 2026-11-01)
+            if "Potential_space_group" in locked:
+                _adds = helpers.forced_potential_adds(result, _bf)
+                _new = helpers.union_potential(row.get("Potential_space_group"), _adds) if _adds else None
+                if _new:
+                    with psycopg.connect(DATABASE_URL) as _c:
+                        _c.execute('UPDATE properties.listings SET "Potential_space_group"=%s WHERE id=%s', (_new, listing_id))
+                    logger.info("listing#%s: ēkas poga pielāgo → potenciālam pielikts %s (lock paliek)", listing_id, _adds)
         except Exception as _ge:
             logger.warning("med vārti listing=%s: %s", row.get("id"), str(_ge)[:120])
 

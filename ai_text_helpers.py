@@ -2741,6 +2741,25 @@ def apply_fence_gate(result, building_profile_id=None, building_flags=None):
     return f"{new} ({src})"
 
 
+def union_potential(current, adds):
+    """Aizslēgtam potenciālam PIELIEK (nekad nenoņem) grupas no ēkas pogas «pielāgo» (Raimonds 2026-11-01:
+    «ja saka pielāgot, var — bez izņēmumiem»). Saglabā aģenta secību, atgriež jauno virkni vai None, ja nav izmaiņu."""
+    cur = [p.strip() for p in str(current or "").split(",") if p.strip() and p.strip().lower() != "unknown"]
+    out = list(cur)
+    for a in adds:
+        if a and a not in out:
+            out.append(a)
+    return ", ".join(out) if out != cur else None
+
+
+def forced_potential_adds(result, building_flags):
+    """Grupas, ko ēkas poga «pielāgo» uzspiež arī pāri aģenta lock: PVD (un Medicīna, ja vārti to grib)."""
+    if not (building_flags or {}).get("owner_adapts_premises"):
+        return []
+    pot = {p.strip() for p in str(result.get("Potential_space_group") or "").split(",") if p.strip()}
+    return [g for g in ("PVD", "Medicīna") if g in pot]
+
+
 
 # ---------------------------------------------------------------------------
 # IEVAS ZINĀŠANAS ĒKAS LĪMENĪ (2026-10-28, ievas_ekas.json). Cilvēks > ēkas poga > AI.

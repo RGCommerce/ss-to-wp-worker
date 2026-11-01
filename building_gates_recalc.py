@@ -122,6 +122,11 @@ def recalc_building(building_profile_id: int, requested_by: str = "", dry_run: b
             diffs: List[Tuple[str, str, str]] = []
             for f in GATE_FIELDS:
                 if f in locked:
+                    if f == "Potential_space_group":
+                        _new = helpers.union_potential(row.get(f), helpers.forced_potential_adds(result, bf))
+                        if _new:
+                            upd[f] = _new
+                            diffs.append((f, _norm(row.get(f)), _new + " (lock, poga pielāgo)"))
                     continue
                 new = result.get(f)
                 if f == "Potential_space_group" and _norm(new).lower() in ("", "unknown"):
