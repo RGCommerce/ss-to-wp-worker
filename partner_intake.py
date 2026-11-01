@@ -1918,7 +1918,10 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
                     continue   # jauna telpa — fakti jau INSERT laikā
                 _apply_unit_facts(conn, lid, facts)
             except Exception as e:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 result["errors"].append(f"fakti telpai #{u.get('idx')}{f' (#{lid})' if lid else ''}: {type(e).__name__}: {str(e)[:120]}")
     for i, addr in enumerate(report.get("addresses") or []):
         bfacts = _clean_bp_facts((addr_dec.get(str(i)) or {}).get("facts"))
@@ -1940,7 +1943,10 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
                 continue
             _apply_bp_facts(conn, int(bp_id_f), bfacts, requested_by)
         except Exception as e:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             result["errors"].append(f"ēkas fakti ({addr.get('street') or bp_id_f}): {type(e).__name__}: {str(e)[:120]}")
 
 
