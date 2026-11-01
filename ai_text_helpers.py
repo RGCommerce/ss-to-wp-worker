@@ -614,18 +614,18 @@ Marketing text ("piemērots medicīnai") does NOT open any gate by itself.
 CONSISTENCY: if Medicīna is in Potential_space_group, then Vides_pieejamiba_check must
 be checked (or the existing-code exception applies). Otherwise remove Medicīna.
 
-### PVD potential — decided by CODE GATES after the model (Raimonds 2026-10-27)
-Your job: fill Gridas_materials, Mazgajamas_sienas_check and Ventilacijas_sistema_check
-honestly — the code then decides PVD. For your own Potential_space_group, follow the
-same logic:
-- a WASHABLE FLOOR is mandatory (tiles, porcelain, epoxy, PU-cement, polished /
-  hardened concrete, microcement, concrete with visible drains, rubber, linoleum,
-  quartz vinyl). Raw / dusty / sandy concrete, carpet, laminate, wood, parquet -> no PVD.
-- PLUS washable walls OR a ventilation system (the missing one can be added).
-- a SHOP / unit inside a shopping centre needs washable floor AND washable walls — a
-  tiled shop floor with mall ventilation is just a shop, not PVD.
-- an office (Birojs / office building) above the 1st floor is never PVD; a warehouse or
-  production space on an upper floor can be.
+### PVD potential — decided by CODE GATES after the model (Raimonds 2026-11-01)
+PVD = a space where food can be PRODUCED / handled (not a cafe with guests — that is
+Restorans/Cafe). Your job: fill Mazgajamas_sienas_check, Ventilacijas_sistema_check,
+Ir_izlietne_telpa_check and Gridas_materials ("Betona grīda ar trapiem" when floor drains
+are visible) honestly — the code then decides. For your own Potential_space_group use the
+same simple rule:
+- PVD when the space has ALL THREE: washable walls (tiles are one option) + a water
+  connection (floor drains or a sink IN the room) + a ventilation system.
+- Floor level does not matter (a 5th-floor production space with a lift is fine), the
+  building type does not matter (a canteen kitchen inside an office building qualifies).
+- NEVER for an office, studio, medical or gym space — those are not turned into food
+  production.
 - text with PVD registration / food production / production kitchen -> PVD.
 Marketing words ("piemērots pārtikai") alone do not qualify.
 
@@ -2480,6 +2480,17 @@ def _floor_number(floor_raw):
 
 
 def apply_pvd_gates(result, floor_raw=None, building_flags=None, listing_text=""):
+    """PVD potenciāls — Raimonda definīcija 2026-11-01 (VIENKĀRŠA, bez stāva, bez grīdu tabulas):
+      PVD telpa = telpa, kurā var ražot / strādāt ar ēdienu. Potenciāls PVD ir, ja
+        (a) telpai ir MAZGĀJAMAS SIENAS (flīzes = viens variants) UN ŪDENS pieslēgums (trapi grīdā vai
+            izlietne telpā) UN VENTILĀCIJA — visi trīs; VAI
+        (b) ēkas profilā «īpašnieks pielāgo telpas» = jā (tad pieņem, ka PVD var uzbūvēt — jebkurā stāvā,
+            arī 5. stāvā ražošanas ēkā ar liftu).
+      Izņēmums tikai pēc TELPAS tipa: Birojs / Studija / Medicīna / Sporta zāle par pārtikas ražotni nepārtaisa.
+      Ēdnīca biroju ēkā ar flīzēm, ūdeni un ventilāciju → PVD JĀ (ēkas tips nav šķērslis).
+      Aktīva PVD telpa vai PVD kods tekstā → vienmēr. Poga «nepielāgo» (a) neatceļ — telpa, kas JAU atbilst,
+      der bez būvēšanas; poga tikai nedod (b).
+    Maina result["Potential_space_group"], papildina Debug_note. Atgriež īsu iemeslu."""
     import re as _re
     global _PVD_TEXT_RE
     if _PVD_TEXT_RE is None:
@@ -2490,49 +2501,22 @@ def apply_pvd_gates(result, floor_raw=None, building_flags=None, listing_text=""
            if p.strip() and p.strip().lower() != "unknown"]
     had = PVD in pot
     sg = str(result.get("Space_group") or "")
-    btype = str(result.get("building_type") or "")
-    floor_n = _floor_number(floor_raw)
     gfloor = str(result.get("Gridas_materials") or "")
     walls = str(result.get("Mazgajamas_sienas_check") or "") == "checked"
     vent = str(result.get("Ventilacijas_sistema_check") or "") == "checked"
+    water = ("trap" in gfloor.lower()) or str(result.get("Ir_izlietne_telpa_check") or "") == "checked"
 
-    # Raimonds 2026-10-30: PVD potenciāls NEKAD birojam / biroju ēkā (gaļu biroju ēkā neražo) —
-    # neatkarīgi no stāva, grīdas un ēkas pogas. Ēkas poga «pielāgo» PVD dod tikai ražošanas tipa
-    # telpām (noliktava/ražošana/tirdzniecība/StockOfiss/restorāns/autoserviss) 1. stāvā vai
-    # industriālā ēkā. Medicīnai poga paliek kā bija (apply_medicine_gates).
-    # Raimonds 2026-10-30 (2): «pārtiku var ražot KONKRĒTOS gadījumos, nevis kur pagadās» —
-    # PVD potenciāls TIKAI ražošanas tipa telpām (noliktava / ražošana / StockOfiss / autoserviss /
-    # restorāns-virtuve) vai veikalam ar mazgājamām sienām; NEKAD birojam, studijai, medicīnas telpai,
-    # sporta zālei un NEKAD biroju ēkā / medicīnas centrā (slimnīcas tipa ēka) / tirdzniecības centrā.
-    _office = (sg == "Birojs" or btype == "Biroju ēka")
-    _never_sg = sg in ("Birojs", "Studija", "Medicīna", "Sporta zāle")
-    _never_bt = btype in ("Biroju ēka", "Medicīnas centrs", "Tirdzniecības centrs")
-    _prod_sg = sg in ("Noliktava", "Ražošana", "StockOfiss", "Restorans/Cafe", "Autoserviss")
-    _ground = (floor_n is None or floor_n <= 1) or btype in ("Industriāla ēka", "Autoserviss")
     if sg == PVD or (listing_text and _PVD_TEXT_RE.search(listing_text)):
         want, why = True, "aktīvs PVD / PVD kods tekstā"
-    elif _never_sg or _never_bt:
-        want, why = False, f"{sg} / {btype or 'ēka'} — PVD nekad"
-    elif not (_prod_sg or sg == "Tirdzniecība"):
-        want, why = False, f"{sg or 'unknown'} — nav ražošanas tipa telpa"
-    elif _office:
-        want, why = False, "birojs / biroju ēka — PVD nekad"
-    elif bf.get("owner_adapts_premises") is False:
-        want, why = False, "īpašnieks NEpielāgo (ēkas profils)"
-    elif bf.get("owner_adapts_premises") is True and _prod_sg and _ground:
-        want, why = True, "īpašnieks pielāgo (ēkas profils) + ražošanas tipa telpa 1. stāvā"
-    elif (sg == "Birojs" or btype == "Biroju ēka") and floor_n is not None and floor_n > 1:
-        want, why = False, f"birojs {floor_n}. stāvā"
-    elif gfloor not in PVD_WASHABLE_FLOORS:
-        want, why = False, f"grīda nav mazgājama ({gfloor or 'unknown'})"
-    elif (sg == "Tirdzniecība" or btype == "Tirdzniecības centrs") and not walls:
-        # Raimonds 2026-10-27 (Dzelzavas 74 «Mego»): veikala flīžu grīda + centra
-        # ventilācija ≠ PVD — veikalam vajag arī mazgājamas sienas
-        want, why = False, "veikals / tirdzn. centrs bez mazgājamām sienām"
-    elif not (walls or vent):
-        want, why = False, "nav ne mazgājamu sienu, ne ventilācijas"
+    elif sg in ("Birojs", "Studija", "Medicīna", "Sporta zāle"):
+        want, why = False, f"{sg} — par pārtikas ražotni nepārtaisa"
+    elif walls and water and vent:
+        want, why = True, "mazgājamas sienas + ūdens + ventilācija"
+    elif bf.get("owner_adapts_premises") is True:
+        want, why = True, "īpašnieks pielāgo (ēkas profils)"
     else:
-        want, why = True, f"mazgājama grīda ({gfloor}) + {'sienas' if walls else 'ventilācija'}"
+        missing = [n for ok, n in ((walls, "sienas"), (water, "ūdens"), (vent, "ventilācija")) if not ok]
+        want, why = False, "trūkst: " + ", ".join(missing)
 
     if want and not had:
         pot.append(PVD)
