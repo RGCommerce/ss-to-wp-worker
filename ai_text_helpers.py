@@ -2431,10 +2431,12 @@ def apply_medicine_gates(result, area_m2=None, building_flags=None):
         want, why = False, f"{result.get('Space_group')} — med nekad"
     elif bf.get("owner_adapts_premises") is False:
         want, why = False, "īpašnieks NEpielāgo (ēkas profils)"
-    elif bf.get("owner_adapts_premises") is True:
-        want, why = True, "īpašnieks pielāgo (ēkas profils)"
     elif access != "checked":
-        want, why = False, f"pieejamība={access}"
+        # Raimonds 2026-11-01: «pielāgo» = nauda izbūvei, ne lifts — nepieejamā telpā (2. stāvs bez lifta)
+        # Medicīnas nav arī ar pogu «pielāgo». Pieejamību dod ēkas poga / Ievas saraksts / AI ieejas maršruts.
+        want, why = False, f"pieejamība={access}" + (" (poga pielāgo nelīdz — nav pieejama)" if bf.get("owner_adapts_premises") else "")
+    elif bf.get("owner_adapts_premises") is True:
+        want, why = True, "īpašnieks pielāgo (ēkas profils) + pieejama"
     elif not _wc_in_unit(result.get("cik_WC")):
         want, why = False, "nav WC telpā"
     elif area is None or area < 50:
