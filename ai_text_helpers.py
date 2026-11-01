@@ -2504,7 +2504,12 @@ def apply_pvd_gates(result, floor_raw=None, building_flags=None, listing_text=""
     gfloor = str(result.get("Gridas_materials") or "")
     walls = str(result.get("Mazgajamas_sienas_check") or "") == "checked"
     vent = str(result.get("Ventilacijas_sistema_check") or "") == "checked"
-    water = ("trap" in gfloor.lower()) or str(result.get("Ir_izlietne_telpa_check") or "") == "checked"
+    # ūdens = trapi grīdā VAI izlietne darba telpā VAI virtuve telpā VAI tā ir restorāna/kafejnīcas telpa
+    # (virtuvē ūdens ir pēc definīcijas) — Raimonds: «trapi vai citi»
+    water = (("trap" in gfloor.lower())
+             or str(result.get("Ir_izlietne_telpa_check") or "") == "checked"
+             or str(result.get("Virtuve_check") or "") == "checked"
+             or sg == "Restorans/Cafe")
 
     if sg == PVD or (listing_text and _PVD_TEXT_RE.search(listing_text)):
         want, why = True, "aktīvs PVD / PVD kods tekstā"
