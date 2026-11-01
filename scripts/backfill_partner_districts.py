@@ -28,7 +28,7 @@ for r in rows:
     if r["wp"]:
         conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by)
                         VALUES (%s,'pending','backfill_districts')
-                        ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING""", (r["id"],))
+                        ON CONFLICT (listing_id) WHERE status = 'pending' DO NOTHING""", (r["id"],))
 if apply:
     conn.commit()
     print("ierakstīts + pārpublicēšana ierindota")

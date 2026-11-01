@@ -1082,7 +1082,7 @@ def publish_anketa(payload: dict) -> dict:
                 """INSERT INTO properties.wp_export_queue
                        (listing_id, status, requested_by)
                    VALUES (%s, 'pending', %s)
-                   ON CONFLICT (listing_id) WHERE status IN ('pending','processing')
+                   ON CONFLICT (listing_id) WHERE status = 'pending'
                    DO NOTHING
                    RETURNING id""",
                 (lid, requested_by_email),

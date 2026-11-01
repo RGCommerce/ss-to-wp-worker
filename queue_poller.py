@@ -118,6 +118,10 @@ def _claim_next() -> Optional[dict]:
                 WHERE q.status = 'pending'
                   -- Rediģēšanas klusuma logs (panelis, 2026-11-01): neņem pirms not_before
                   AND (q.not_before IS NULL OR q.not_before <= now())
+                  -- Follow-up rinda (labojums, kamēr iepriekšējā 'processing') gaida, līdz tā beidzas —
+                  -- viens listings nekad neiet divreiz vienlaikus (arī ja worker būtu >1 instance)
+                  AND NOT EXISTS (SELECT 1 FROM properties.wp_export_queue p
+                                  WHERE p.listing_id = q.listing_id AND p.status = 'processing')
                   AND (q.action IN ('unpublish', 'delete')
                        OR l.wp_post_id IS NOT NULL
                        OR l."Debug_status" = 'ok')
