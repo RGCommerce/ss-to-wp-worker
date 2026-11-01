@@ -69,6 +69,17 @@ def _recover_stale() -> int:
     if not DATABASE_URL:
         return 0
     with psycopg.connect(DATABASE_URL) as conn:
+        # 2026-11-01: unikālais indekss ir tikai uz 'pending' → ja listingam JAU gaida
+        # follow-up pending rinda (labojums pēc processing sākuma), iesprūdušo nevar
+        # atgriezt uz pending (dublikāts). Tā arī nav vajadzīga — pending to pārpublicēs.
+        conn.execute("""
+            UPDATE properties.wp_export_queue q
+            SET status = 'cancelled', finished_at = now(),
+                error = 'restart: aizstāj gaidošā follow-up rinda'
+            WHERE q.status = 'processing'
+              AND EXISTS (SELECT 1 FROM properties.wp_export_queue p
+                          WHERE p.listing_id = q.listing_id AND p.status = 'pending')
+        """)
         r = conn.execute("""
             UPDATE properties.wp_export_queue
             SET status = 'pending', started_at = NULL
@@ -105,6 +116,8 @@ def _claim_next() -> Optional[dict]:
                 FROM properties.wp_export_queue q
                 LEFT JOIN properties.listings l ON l.id = q.listing_id
                 WHERE q.status = 'pending'
+                  -- Rediģēšanas klusuma logs (panelis, 2026-11-01): neņem pirms not_before
+                  AND (q.not_before IS NULL OR q.not_before <= now())
                   AND (q.action IN ('unpublish', 'delete')
                        OR l.wp_post_id IS NOT NULL
                        OR l."Debug_status" = 'ok')
