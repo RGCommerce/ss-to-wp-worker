@@ -2567,13 +2567,12 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         result["errors"].append(f"iznomāts #{lid}: {type(e).__name__}: {str(e)[:150]}")
     # ── fakti (Raimonds 2026-11-01) — NEKAD neizmet kļūdu ārā (Zaļā 2026-11-01): meta.json jāpieraksta vienmēr,
     #    citādi izveidotie sludinājumi paliktu pusratā. Kļūda = rinda rezultātā, ne krišana.
+    # Savienojums `conn` te jau ir AIZVĒRTS (with-bloks beidzies) — tāpēc Zaļās pārbaudē fakti nesaglabājās
+    # («connection is closed» → kļūda rezultātā). Faktiem savs savienojums.
     try:
-        _apply_facts_after(conn, report, result, prev, prev_created_idx, unit_dec, unit_fields, addr_dec, requested_by)
+        with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn_f:
+            _apply_facts_after(conn_f, report, result, prev, prev_created_idx, unit_dec, unit_fields, addr_dec, requested_by)
     except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
         result["errors"].append(f"fakti: {type(e).__name__}: {str(e)[:150]}")
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
