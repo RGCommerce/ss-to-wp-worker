@@ -525,6 +525,13 @@ def _numeric(v):
     s = str(v).strip()
     if s.lower() in ("", "unknown", "nezināms", "nav", "-"):
         return None
+    # Tūkstošu atdalītāji: atstarpe / NBSP / šaurā atstarpe ("3 800 000") un
+    # komats starp tūkstošu grupām ("1,696"). Agrāk "1,696" → 1.696 (Audēju 8
+    # mājaslapā 1,70 €) un "3 800 000" → 3. Komats = decimāldaļa tikai, ja NAV
+    # tūkstošu raksts (piem. "7,5").
+    s = s.replace(" ", "").replace(" ", "").replace(" ", "")
+    if _re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d+)?", s):
+        s = s.replace(",", "")
     m = _re.search(r"\d+[.,]?\d*", s)
     return m.group(0).replace(",", ".") if m else None
 
