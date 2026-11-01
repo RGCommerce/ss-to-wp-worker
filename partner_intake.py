@@ -1802,6 +1802,96 @@ class ApplyError(ValueError):
     pass
 
 
+# ── Fakti (Raimonds 2026-11-01): cilvēks ieplūdē atzīmē, ko bildēs neredz — rampa, vārti, grīda, griesti (telpai)
+#    un žogs/apsardze/lifts/parkings (ēkai). Cilvēka ievadītais ir LOCK — AI (agent_ai_poller) to nepārraksta,
+#    teksts (wp_templates) to lieto kā faktu. Ēkas pazīmes = building_profiles → visiem ēkas sludinājumiem.
+UNIT_FACT_CHECKS = ("Rampa_logistikai_check", "Pacelamie_varti_check", "Sava_ieeja_check", "Auto_pacelajs_check", "Treifelis_Pacelajs")
+UNIT_FACT_TEXTS = ("Gridas_izturiba_kg_m2", "Griestu_augstums")
+BP_FACT_BOOLS = ("has_fenced", "has_security_24_7", "has_cctv", "has_access_control", "has_lift", "has_freight_lift",
+                 "has_underground_parking", "has_managed", "has_accessibility")
+BP_FACT_INTS = ("floors_count", "bdg_year")
+
+
+def _clean_unit_facts(raw) -> dict:
+    """{col: vērtība} no paneļa → DB vērtības. Ķekši: true/"checked" → checked, false/"not checked" → not checked;
+    skaitļi: «500 kg/m²» → «500», «4,5 m» → «4.5». Tukšs/nezināms → izlaiž (neaiztiek)."""
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for k in UNIT_FACT_CHECKS:
+        v = raw.get(k)
+        if v is True or (isinstance(v, str) and v.strip().lower() in ("checked", "true", "jā", "ir")):
+            out[k] = "checked"
+        elif v is False or (isinstance(v, str) and v.strip().lower() in ("not checked", "false", "nē", "nav")):
+            out[k] = "not checked"
+    for k in UNIT_FACT_TEXTS:
+        v = raw.get(k)
+        if v is None:
+            continue
+        s = str(v).strip().replace(",", ".")
+        m = re.search(r"\d+(?:\.\d+)?", s)
+        if m:
+            out[k] = m.group(0)
+    return out
+
+
+def _apply_unit_facts(conn, lid: int, facts: dict) -> None:
+    """Fakti → listings + lock (AI nepārraksta)."""
+    if not facts:
+        return
+    sets, vals = [], []
+    for k, v in facts.items():
+        if k in UNIT_FACT_CHECKS:
+            sets.append(f'"{k}" = %s::properties.check_status_enum')
+        else:
+            sets.append(f'"{k}" = %s')
+        vals.append(v)
+    sets.append("agent_locked_fields = (SELECT ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(agent_locked_fields,'{}'::text[]) || %s::text[]) x))")
+    vals.append(list(facts.keys()))
+    sets.append("updated_at = now()")
+    conn.execute(f"UPDATE properties.listings SET {', '.join(sets)} WHERE id = %s", (*vals, lid))
+    conn.commit()
+
+
+def _clean_bp_facts(raw) -> dict:
+    out: dict = {}
+    if not isinstance(raw, dict):
+        return out
+    for k in BP_FACT_BOOLS:
+        if k in raw and raw[k] is not None and raw[k] != "":
+            v = raw[k]
+            out[k] = bool(v) if isinstance(v, bool) else str(v).strip().lower() in ("true", "checked", "jā", "ir", "1")
+    for k in BP_FACT_INTS:
+        v = raw.get(k)
+        if v in (None, ""):
+            continue
+        try:
+            out[k] = int(float(str(v).strip()))
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def _apply_bp_facts(conn, bp_id: int, facts: dict, requested_by: Optional[str]) -> int:
+    """Ēkas pazīmes → building_profiles (tikai dotie lauki) + mājaslapā esošie ēkas sludinājumi uz pārpublicēšanu
+    (teksts tos lieto). Atgriež rindā ielikto skaitu."""
+    if not facts:
+        return 0
+    sets = [f"{k} = %s" for k in facts]
+    conn.execute(f"UPDATE properties.building_profiles SET {', '.join(sets)}, updated_at = now() WHERE id = %s",
+                 (*facts.values(), bp_id))
+    n = 0
+    for r in conn.execute("SELECT id FROM properties.listings WHERE building_profile_id = %s AND wp_post_id IS NOT NULL", (bp_id,)).fetchall():
+        lid = int(r["id"] if isinstance(r, dict) else r[0])
+        cur = conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by) VALUES (%s, 'pending', %s)
+                              ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING RETURNING id""",
+                           (lid, requested_by))
+        if cur.fetchone():
+            n += 1
+    conn.commit()
+    return n
+
+
 def _partner_locked(unit: dict) -> list[str]:
     """Lock TIKAI to, ko partneris tiešām iedeva (cena/platība/stāvs/tips/apraksts + skaidri
     minētās pazīmes). Pārējo (ēkas tips/klase, stāvoklis, logi, apkure, Potential_space_group…)
@@ -1812,6 +1902,9 @@ def _partner_locked(unit: dict) -> list[str]:
     for k in ("Balkons_check", "Treifelis_Pacelajs", "Space_condition", "Mebeleta_telpa", "Griestu_augstums", "Investiciju_strategija"):
         if unit.get(k):
             locked.append(k)
+    for k in UNIT_FACT_CHECKS + UNIT_FACT_TEXTS:
+        if unit.get(k) and k not in locked:
+            locked.append(k)   # cilvēka atzīmēts fakts (arī «nav rampa») — AI nepārraksta
     return locked
 
 
@@ -2280,6 +2373,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             addr["district"] = _guess_district(conn, addr.get("street"), addr.get("city"),
                                                                (addr.get("bp") or {}).get("id"))
                         payload = _unit_to_anketa(u, addr, partner, report.get("list_date"))
+                        payload["unit"].update(_clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts")))
                         res = agent_publish.publish_anketa({
                             "mode": "full", "wp_user_id": wp_user_id, "requested_by_email": requested_by,
                             "building": payload["building"], "units": [payload["unit"]],
@@ -2419,6 +2513,52 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                     except Exception as e:
                         conn.rollback()
                         result["errors"].append(f"iznomāts #{lid}: {type(e).__name__}: {str(e)[:150]}")
+    # ── fakti (Raimonds 2026-11-01) ──
+    # telpas fakti: jaunajām jau ielikti INSERT laikā; «Atjaunot»/«jau DB»/sasaistītajām/agrāk izveidotajām → UPDATE + lock
+    created_map = {str(p[1]): int(p[0]) for p in (prev.get("created_units") or [])}
+    created_map.update({str(p[1]): int(p[0]) for p in result.get("created_units") or []})
+    linked_map = {str(p[1]): int(p[0]) for p in result.get("linked") or []}
+    this_run_created = {int(p[0]) for p in result.get("created_units") or [] if str(p[1]) not in prev_created_idx}
+    for addr in report["addresses"]:
+        for u in addr["units"]:
+            facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
+            if not facts:
+                continue
+            dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
+            lid = created_map.get(str(u["idx"])) or linked_map.get(str(u["idx"]))
+            if lid is None and dec.startswith("link:") and dec[5:].isdigit():
+                lid = int(dec[5:])
+            if lid is None and dec in ("update", "keep") and (u.get("matched_listing") or {}).get("id"):
+                lid = int(u["matched_listing"]["id"])
+            if lid is None or (lid in this_run_created and not u.get("sslv_listing_id")):
+                continue   # jauna telpa — fakti jau INSERT laikā
+            try:
+                _apply_unit_facts(conn, lid, facts)
+            except Exception as e:
+                conn.rollback()
+                result["errors"].append(f"fakti #{lid}: {type(e).__name__}: {str(e)[:120]}")
+    for i, addr in enumerate(report["addresses"]):
+        bfacts = _clean_bp_facts((addr_dec.get(str(i)) or {}).get("facts"))
+        if not bfacts:
+            continue
+        bp_id_f = (addr.get("bp") or {}).get("id")
+        if not bp_id_f:
+            # jauna ēka — profils radās ar pirmo izveidoto telpu
+            for u in addr["units"]:
+                lid = created_map.get(str(u["idx"]))
+                if lid:
+                    r = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (lid,)).fetchone()
+                    bp_id_f = (r["building_profile_id"] if isinstance(r, dict) else (r[0] if r else None)) if r else None
+                    if bp_id_f:
+                        break
+        if not bp_id_f:
+            result.setdefault("notes", []).append(f"{addr.get('street') or 'ēka'}: ēkas fakti nesaglabāti — ēkai nav profila (pievieno telpu vai sasaisti ar ēku)")
+            continue
+        try:
+            _apply_bp_facts(conn, int(bp_id_f), bfacts, requested_by)
+        except Exception as e:
+            conn.rollback()
+            result["errors"].append(f"ēkas fakti #{bp_id_f}: {type(e).__name__}: {str(e)[:120]}")
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
     if prev:
