@@ -145,7 +145,6 @@ def upsert_source(data: dict) -> dict:
             days = SSLV_DEFAULT_DAYS
         first = addresses[0] if addresses else {"street": None, "city": None, "bp_ids": [], "bp_address": None}
         sslv = {"phones": sorted(tails), "addresses": addresses, "days": max(1, min(days, 120)),
-                "other_seen_n": (int(data["other_seen_n"]) if data.get("other_seen_n") is not None else (cur or {}).get("other_seen_n")),
                 "street": first["street"], "city": first["city"], "bp_ids": first["bp_ids"], "bp_address": first["bp_address"]}
     else:
         folder_id = _drive_id(data.get("folder") or data.get("folder_id") or "", "folder")
@@ -175,6 +174,9 @@ def upsert_source(data: dict) -> dict:
         "enabled": bool(data.get("enabled", (cur or {}).get("enabled", True))),
         "created_at": (cur or {}).get("created_at") or _now().isoformat(),
     }
+    if kind == "sslv":
+        # cik atrasto ēku aģents jau apskatījis (panelī «N jaunas ēkas» tikai jaunajām); `cur` zināms tikai šeit
+        src["other_seen_n"] = int(data["other_seen_n"]) if data.get("other_seen_n") is not None else (cur or {}).get("other_seen_n")
     if cur is None:
         sources.append(src)
     else:
