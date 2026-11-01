@@ -309,7 +309,7 @@ def apply_to_building(conn, bp_id: int, by: Optional[str] = None, classified_onl
                 try:
                     conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by)
                                     VALUES (%s,'pending',%s)
-                                    ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING""",
+                                    ON CONFLICT (listing_id) WHERE status = 'pending' DO NOTHING""",
                                  (r["id"], by or "building_photos"))
                     conn.commit()
                     res["republish"] += 1

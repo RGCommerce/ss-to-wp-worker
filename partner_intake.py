@@ -1884,7 +1884,7 @@ def _apply_bp_facts(conn, bp_id: int, facts: dict, requested_by: Optional[str]) 
     for r in conn.execute("SELECT id FROM properties.listings WHERE building_profile_id = %s AND wp_post_id IS NOT NULL", (bp_id,)).fetchall():
         lid = int(r["id"] if isinstance(r, dict) else r[0])
         cur = conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by) VALUES (%s, 'pending', %s)
-                              ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING RETURNING id""",
+                              ON CONFLICT (listing_id) WHERE status = 'pending' DO NOTHING RETURNING id""",
                            (lid, requested_by))
         if cur.fetchone():
             n += 1
@@ -2536,7 +2536,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                                 pass
                             if u["matched_listing"].get("wp_post_id"):
                                 conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by)
-                                                VALUES (%s,'pending',%s) ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING""",
+                                                VALUES (%s,'pending',%s) ON CONFLICT (listing_id) WHERE status = 'pending' DO NOTHING""",
                                              (lid, requested_by))
                             conn.commit()
                             result["updated"].append(lid)
@@ -2564,7 +2564,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             # UniqueViolation (idx_wp_export_queue_active_listing; Eften #110054, 2026-10-27)
                             conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, action, status, requested_by)
                                             VALUES (%s,'unpublish','pending',%s)
-                                            ON CONFLICT (listing_id) WHERE status IN ('pending','processing')
+                                            ON CONFLICT (listing_id) WHERE status = 'pending'
                                             DO UPDATE SET action='unpublish', requested_by=EXCLUDED.requested_by""", (lid, requested_by))
                         conn.commit()
                         result["occupied"].append(lid)
@@ -2998,7 +2998,7 @@ def _queue_web(listing_id: int, intake_id: str) -> str:
             return "nav bilžu — mājaslapā nelikts (pievieno bildes un «Eksportēt uz WP»)"
         cur = conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by)
                               VALUES (%s, 'pending', %s)
-                              ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING
+                              ON CONFLICT (listing_id) WHERE status = 'pending' DO NOTHING
                               RETURNING id""", (listing_id, f"partner_intake:{intake_id}"))
         got = cur.fetchone()
         conn.commit()
@@ -3475,7 +3475,7 @@ def rollback(intake_id: str, requested_by: Optional[str]) -> dict:
                           sn.get("occupied_note"), sn.get("occupancy_set_by"), sn["id"]))
             if sn.get("wp_post_id"):
                 conn.execute("""INSERT INTO properties.wp_export_queue (listing_id, status, requested_by) VALUES (%s,'pending',%s)
-                                ON CONFLICT (listing_id) WHERE status IN ('pending','processing') DO NOTHING""", (sn["id"], requested_by or "rollback"))
+                                ON CONFLICT (listing_id) WHERE status = 'pending' DO NOTHING""", (sn["id"], requested_by or "rollback"))
             out["reverted_updated"] += 1
         # iznomātie → atpakaļ brīvi (+ atpakaļ mājaslapā, ja tur bija)
         for sn in undo.get("occupied") or []:
