@@ -2430,12 +2430,14 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
     meta["status"] = "partial" if result["errors"] else "applied"
     meta["applied_at"] = _now().isoformat()
     meta["apply_result"] = result
-    meta["images_status"] = "processing" if image_jobs else None
+    # atkārtota apstiprināšana bez jaunām telpām: iepriekšējais bilžu statuss paliek (bija «done» → paliek «done»);
+    # citādi panelis karājās «bildes 5/5» (Skanstes City 2026-11-01)
+    meta["images_status"] = "processing" if image_jobs else (meta.get("images_status") or ("done" if result.get("created_units") else None))
     meta["image_jobs"] = [[j[0], j[1].get("idx"), bool(j[2]), j[1].get("_img_sel")] for j in image_jobs]
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     # bildes (ss.lv lejupielāde + Seedream) aizņem minūtes → fonā, lai apstiprināšana atbild uzreiz
     start_images_job(intake_id, image_jobs)
-    result["images_status"] = "processing" if image_jobs else None
+    result["images_status"] = meta["images_status"]
     return result
 
 
