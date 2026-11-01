@@ -549,12 +549,13 @@ def _sslv_rows(src: dict) -> list[dict]:
                 WHERE coalesce(skip_reason,'') NOT IN ('blacklisted_phone')
                   AND (building_profile_id = ANY(%s) OR building_profile_id IS NULL)
                   AND coalesce(nullif(last_updated,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
-                  AND coalesce(nullif(date_posted,'')::timestamptz, created_at) >= now() - make_interval(days => %s)
                   AND EXISTS (SELECT 1 FROM unnest(string_to_array(coalesce(phone_numbers,''), ',')) p
                                WHERE regexp_replace(p, '[^0-9]', '', 'g') LIKE ANY(%s))
                 ORDER BY last_updated DESC NULLS LAST, id DESC
                 LIMIT %s""",
-            (bp_ids, SSLV_LIVE_DAYS, days, pats, SSLV_MAX_UNITS * 4)).fetchall()
+            (bp_ids, SSLV_LIVE_DAYS, pats, SSLV_MAX_UNITS * 4)).fetchall()
+        # (bez ievietošanas datuma loga: dzīvs ss.lv sludinājums ir aktuāls arī pēc 60 d. — Ieva 2026-11-01: Rankas 4a
+        #  rādīja tikai 1 noliktavu, jo pārējie bija ievietoti pirms >30 d.)
         for r in inbox:
             d = dict(r)
             if not d.get("link") or _norm_link(d["link"]) in seen_links:
