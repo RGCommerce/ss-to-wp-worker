@@ -1892,6 +1892,58 @@ def _apply_bp_facts(conn, bp_id: int, facts: dict, requested_by: Optional[str]) 
     return n
 
 
+def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_created_idx: set, unit_dec: dict,
+                       unit_fields: dict, addr_dec: dict, requested_by: Optional[str]) -> None:
+    """Pēc telpu cikla: telpas fakti esošajām/pārņemtajām/sasaistītajām (jaunām — jau INSERT laikā) un ēkas fakti.
+    Katra darbība savā try — viena kļūda neaptur pārējās; izsaucējs ietin visu vēl vienā try."""
+    prev = prev or {}
+    created_map = {str(p[1]): int(p[0]) for p in (prev.get("created_units") or [])}
+    created_map.update({str(p[1]): int(p[0]) for p in result.get("created_units") or []})
+    linked_map = {str(p[1]): int(p[0]) for p in result.get("linked") or []}
+    this_run_created = {int(p[0]) for p in result.get("created_units") or [] if str(p[1]) not in prev_created_idx}
+    for addr in report.get("addresses") or []:
+        for u in addr.get("units") or []:
+            facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
+            if not facts:
+                continue
+            lid = None
+            try:
+                dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
+                lid = created_map.get(str(u["idx"])) or linked_map.get(str(u["idx"]))
+                if lid is None and dec.startswith("link:") and dec[5:].isdigit():
+                    lid = int(dec[5:])
+                if lid is None and dec in ("update", "keep") and (u.get("matched_listing") or {}).get("id"):
+                    lid = int(u["matched_listing"]["id"])
+                if lid is None or (lid in this_run_created and not u.get("sslv_listing_id")):
+                    continue   # jauna telpa — fakti jau INSERT laikā
+                _apply_unit_facts(conn, lid, facts)
+            except Exception as e:
+                conn.rollback()
+                result["errors"].append(f"fakti telpai #{u.get('idx')}{f' (#{lid})' if lid else ''}: {type(e).__name__}: {str(e)[:120]}")
+    for i, addr in enumerate(report.get("addresses") or []):
+        bfacts = _clean_bp_facts((addr_dec.get(str(i)) or {}).get("facts"))
+        if not bfacts:
+            continue
+        bp_id_f = (addr.get("bp") or {}).get("id")
+        try:
+            if not bp_id_f:
+                # jauna ēka — profils radās ar pirmo izveidoto telpu
+                for u in addr.get("units") or []:
+                    lid = created_map.get(str(u["idx"]))
+                    if lid:
+                        r = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (lid,)).fetchone()
+                        bp_id_f = (r["building_profile_id"] if isinstance(r, dict) else r[0]) if r else None
+                        if bp_id_f:
+                            break
+            if not bp_id_f:
+                result.setdefault("notes", []).append(f"{addr.get('street') or 'ēka'}: ēkas fakti nesaglabāti — ēkai nav profila (pievieno telpu vai sasaisti ar ēku)")
+                continue
+            _apply_bp_facts(conn, int(bp_id_f), bfacts, requested_by)
+        except Exception as e:
+            conn.rollback()
+            result["errors"].append(f"ēkas fakti ({addr.get('street') or bp_id_f}): {type(e).__name__}: {str(e)[:120]}")
+
+
 def _partner_locked(unit: dict) -> list[str]:
     """Lock TIKAI to, ko partneris tiešām iedeva (cena/platība/stāvs/tips/apraksts + skaidri
     minētās pazīmes). Pārējo (ēkas tips/klase, stāvoklis, logi, apkure, Potential_space_group…)
@@ -2513,52 +2565,16 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                     except Exception as e:
                         conn.rollback()
                         result["errors"].append(f"iznomāts #{lid}: {type(e).__name__}: {str(e)[:150]}")
-    # ── fakti (Raimonds 2026-11-01) ──
-    # telpas fakti: jaunajām jau ielikti INSERT laikā; «Atjaunot»/«jau DB»/sasaistītajām/agrāk izveidotajām → UPDATE + lock
-    created_map = {str(p[1]): int(p[0]) for p in (prev.get("created_units") or [])}
-    created_map.update({str(p[1]): int(p[0]) for p in result.get("created_units") or []})
-    linked_map = {str(p[1]): int(p[0]) for p in result.get("linked") or []}
-    this_run_created = {int(p[0]) for p in result.get("created_units") or [] if str(p[1]) not in prev_created_idx}
-    for addr in report["addresses"]:
-        for u in addr["units"]:
-            facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
-            if not facts:
-                continue
-            dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
-            lid = created_map.get(str(u["idx"])) or linked_map.get(str(u["idx"]))
-            if lid is None and dec.startswith("link:") and dec[5:].isdigit():
-                lid = int(dec[5:])
-            if lid is None and dec in ("update", "keep") and (u.get("matched_listing") or {}).get("id"):
-                lid = int(u["matched_listing"]["id"])
-            if lid is None or (lid in this_run_created and not u.get("sslv_listing_id")):
-                continue   # jauna telpa — fakti jau INSERT laikā
-            try:
-                _apply_unit_facts(conn, lid, facts)
-            except Exception as e:
-                conn.rollback()
-                result["errors"].append(f"fakti #{lid}: {type(e).__name__}: {str(e)[:120]}")
-    for i, addr in enumerate(report["addresses"]):
-        bfacts = _clean_bp_facts((addr_dec.get(str(i)) or {}).get("facts"))
-        if not bfacts:
-            continue
-        bp_id_f = (addr.get("bp") or {}).get("id")
-        if not bp_id_f:
-            # jauna ēka — profils radās ar pirmo izveidoto telpu
-            for u in addr["units"]:
-                lid = created_map.get(str(u["idx"]))
-                if lid:
-                    r = conn.execute("SELECT building_profile_id FROM properties.listings WHERE id=%s", (lid,)).fetchone()
-                    bp_id_f = (r["building_profile_id"] if isinstance(r, dict) else (r[0] if r else None)) if r else None
-                    if bp_id_f:
-                        break
-        if not bp_id_f:
-            result.setdefault("notes", []).append(f"{addr.get('street') or 'ēka'}: ēkas fakti nesaglabāti — ēkai nav profila (pievieno telpu vai sasaisti ar ēku)")
-            continue
+    # ── fakti (Raimonds 2026-11-01) — NEKAD neizmet kļūdu ārā (Zaļā 2026-11-01): meta.json jāpieraksta vienmēr,
+    #    citādi izveidotie sludinājumi paliktu pusratā. Kļūda = rinda rezultātā, ne krišana.
+    try:
+        _apply_facts_after(conn, report, result, prev, prev_created_idx, unit_dec, unit_fields, addr_dec, requested_by)
+    except Exception as e:
         try:
-            _apply_bp_facts(conn, int(bp_id_f), bfacts, requested_by)
-        except Exception as e:
             conn.rollback()
-            result["errors"].append(f"ēkas fakti #{bp_id_f}: {type(e).__name__}: {str(e)[:120]}")
+        except Exception:
+            pass
+        result["errors"].append(f"fakti: {type(e).__name__}: {str(e)[:150]}")
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
     if prev:
