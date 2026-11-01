@@ -399,6 +399,32 @@ def process_listing(conn, listing_id: int, force: bool = False, dry_run: bool = 
             print(f"      ! ERROR: {str(e)[:200]}")
             failed.append(filename)
 
+    # 3b. Neveiksmīgās — vēl viens piegājiens (Replicate/pārbaudes kļūdas bieži ir pārejošas: Baltā 3b 2026-07-31
+    #     3/4 bildes «failed», pēc 3 mēn. tās pašas bildes iziet bez problēmām → mājaslapā 3 mēn. bija tikai plāns)
+    if failed and not force:
+        still: list[str] = []
+        for filename in failed:
+            raw_path = next((p for p in raw_files if p.name == filename), None)
+            if raw_path is None:
+                still.append(filename)
+                continue
+            print(f"  [retry] {filename}...")
+            try:
+                out_bytes = process_bytes_checked(raw_path.read_bytes(), filename)
+                if out_bytes is None:
+                    still.append(filename)
+                    continue
+                (out_dir / filename).write_bytes(out_bytes)
+                processed_paths.append(relative_ai_path(listing_id, filename))
+                print("      OK (retry)")
+            except Exception as e:
+                print(f"      ! ERROR (retry): {str(e)[:200]}")
+                still.append(filename)
+        failed = still
+        # saglabā raw secību (fasāde pirmā), ne «izdevušās vispirms»
+        order = {p.name: i for i, p in enumerate(raw_files)}
+        processed_paths.sort(key=lambda r: order.get(r.rsplit("/", 1)[-1], 999))
+
     elapsed = time.time() - grand_start
     cost = len(processed_paths) * COST_PER_IMAGE_USD
 
@@ -431,6 +457,53 @@ def process_listing(conn, listing_id: int, force: bool = False, dry_run: bool = 
         "elapsed_seconds": round(elapsed, 1),
         "cost_usd": round(cost, 3),
     }
+
+
+def retry_missing(conn, listing_id: int) -> dict:
+    """Pirms (pār)publicēšanas: ja apstrādāto bilžu ir mazāk nekā raw — apstrādā TIKAI trūkstošās
+    (jau esošās nemaina, nauda netiek tērēta otrreiz). Atgriež {"added": n, "still_missing": [...]}."""
+    listing = fetch_listing(conn, listing_id)
+    if not listing:
+        return {"added": 0, "still_missing": [], "status": "not_found"}
+    raw_files = _raw_files_local(raw_dir(listing_id))
+    processed = list(listing.get("local_image_paths_processed") or [])
+    done = {r.rsplit("/", 1)[-1] for r in processed}
+    # aģenta pievienotās (img_user_*) ai_ready bildes nav raw sarakstā — tās paliek kā ir
+    missing = [p for p in raw_files if p.name not in done]
+    if not missing:
+        return {"added": 0, "still_missing": []}
+    out_dir = ai_dir(listing_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    added: list[str] = []
+    still: list[str] = []
+    for raw_path in missing:
+        try:
+            out_bytes = process_bytes_checked(raw_path.read_bytes(), raw_path.name)
+        except Exception as e:
+            print(f"  ! retry_missing {raw_path.name}: {str(e)[:160]}")
+            out_bytes = None
+        if out_bytes is None:
+            still.append(raw_path.name)
+            continue
+        (out_dir / raw_path.name).write_bytes(out_bytes)
+        added.append(relative_ai_path(listing_id, raw_path.name))
+    if added:
+        order = {p.name: i for i, p in enumerate(raw_files)}
+        merged = processed + added
+        # raw secība; aģenta img_user_* paliek savā vietā (pēc raw)
+        merged.sort(key=lambda r: order.get(r.rsplit("/", 1)[-1], 10_000 + merged.index(r)))
+        update_processed_paths(conn, listing_id, merged)
+        try:
+            meta_p = out_dir / "_meta.json"
+            meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.is_file() else {}
+            meta["failed"] = still
+            meta["processed_count"] = len(merged)
+            meta["retried_at"] = datetime.now(timezone.utc).isoformat()
+            meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    print(f"  retry_missing #{listing_id}: +{len(added)}, joprojām trūkst {len(still)}")
+    return {"added": len(added), "still_missing": still}
 
 
 def main():

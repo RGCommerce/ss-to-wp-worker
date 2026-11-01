@@ -653,6 +653,28 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
                       f"({res.get('processed_count', res.get('image_count','?'))} bildes)")
                 listing, bp = _fetch(conn, listing_id)  # re-fetch ar jaunajiem
 
+        # Daļēji apstrādāts (Baltā 3b 2026-07-31: 1/4, Tallinas 73: 1/8 — pārējās «failed» pārejošu kļūdu dēļ,
+        # un katra pārpublicēšana to atkārtoja) → pirms publicēšanas pabeidz trūkstošās (tikai tās).
+        if not dry_run and not skip_ai and listing.get("local_image_paths_processed"):
+            _raw_n = len(listing.get("local_image_paths_raw") or [])
+            _proc_n = len(listing.get("local_image_paths_processed") or [])
+            if _raw_n and _proc_n < _raw_n:
+                print(f"  → apstrādātas tikai {_proc_n}/{_raw_n} bildes — mēģinu trūkstošās (Seedream)...")
+                try:
+                    from psycopg.rows import dict_row
+                    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as ipconn:
+                        _rm = image_pipeline.retry_missing(ipconn, listing_id)
+                        ipconn.commit()
+                    if _rm.get("added"):
+                        listing, bp = _fetch(conn, listing_id)
+                    if _rm.get("still_missing"):
+                        print(f"  ! joprojām bez {len(_rm['still_missing'])} bildēm: {', '.join(_rm['still_missing'][:6])}")
+                except Exception as e:
+                    print(f"  ! retry_missing neizdevās: {type(e).__name__}: {str(e)[:160]}")
+            _proc_n = len(listing.get("local_image_paths_processed") or [])
+            if _raw_n >= 3 and _proc_n * 2 < _raw_n:
+                print(f"  !! BRĪDINĀJUMS: mājaslapā ies tikai {_proc_n} no {_raw_n} bildēm")
+
         # STINGRS DROŠĪBAS VĀRTS: NEKAD nepublicē bez AI-apstrādātām bildēm.
         # Raw ss.lv bildes uz mājaslapas = AIZLIEGTS. Ja nav processed
         # (skip_ai bez esošām, vai image_pipeline neizdevās) → ATSAKĀS.
