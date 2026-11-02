@@ -594,25 +594,20 @@ may still physically qualify. Conversely, marketing keywords alone (e.g.
 "medicīnai", "kafenīcai piemērots") without matching infrastructure do NOT
 qualify.
 
-### Medicīna potential — GATES (Raimonds 2026-10-25; all must pass, mechanical)
-Medicīna in Potential_space_group means "a medical code (MK 60) could realistically be
-obtained here". Include it ONLY if ALL gates pass:
-GATE 1 — Vides_pieejamiba_check = checked (positive step-free evidence; see that field).
-   unknown or not checked -> NO Medicīna. Never infer accessibility from "1. stāvs".
-GATE 2 — the unit: cik_WC shows ≥ 1 WC inside the unit (not shared), AND area_m2 ≥ 50,
-   AND Space_condition is not "Kapitālais remonts".
-GATE 3 — no hard physical veto: not a basement / half-basement, no internal stairs,
-   doors not clearly narrow.
-Water / sink: Ir_izlietne_telpa_check = checked OR plumbing extension plausible (WC in
-   unit implies extendable plumbing) — supportive, not a gate.
-Ventilation: checked OR feasible (modern / A-B class) — supportive, not a gate.
-EXCEPTION — existing medical code: if TEXT or PHOTOS show an ACTIVE medical practice
-   (dental chair, "stomatoloģija" / "klīnika" / "ārstu prakse" signage, med code 1264
-   mentioned) -> include Medicīna even if accessibility fails, and mention in
-   Debug_note: "esošs med kods — pārņemams tikai ar to pašu SIA / krēsla nomu".
-Marketing text ("piemērots medicīnai") does NOT open any gate by itself.
-CONSISTENCY: if Medicīna is in Potential_space_group, then Vides_pieejamiba_check must
-be checked (or the existing-code exception applies). Otherwise remove Medicīna.
+### Medicīna potential — ONLY former / existing medical premises (Raimonds 2026-11-02)
+Medicīna in Potential_space_group means: this unit WAS or IS a medical practice and could
+get a medical code again. Include it ONLY with EVIDENCE of previous or existing medical use:
+- photos: medical cabinets / examination rooms, dental chair or its mounting, medical sinks in
+  every room, registration desk + waiting room layout, medical signage ("Zobārstniecība",
+  "Klīnika", "Ārsta prakse", "Doktorāts", "Laboratorija", "Aptieka");
+- text: "bijusī zobārstniecība / klīnika / ārstu prakse", "med. kods", "medicīnas telpas",
+  "ārstniecības iestāde", "1264", "ambulance".
+A plain office, shop or studio that merely COULD be converted (accessible, has WC, big
+enough) is NOT Medicīna — do not add it for renovation potential; the code will not add it
+either. Marketing text ("piemērots medicīnai") alone is not evidence.
+Consistency: when you include Medicīna, also fill Vides_pieejamiba_check honestly — the code
+removes Medicīna if the unit is not step-free accessible (unless an ACTIVE practice is
+visible: then keep and note "esošs med kods — pārņemams tikai ar to pašu SIA / krēsla nomu").
 
 ### PVD potential — decided by CODE GATES after the model (Raimonds 2026-11-01)
 PVD = a space where food can be PRODUCED / handled (not a cafe with guests — that is
@@ -2424,19 +2419,19 @@ def apply_medicine_gates(result, area_m2=None, building_flags=None):
     area = _to_float(area_m2) or _to_float(result.get("area_m2"))
     cond = str(result.get("Space_condition") or "")
 
+    # Raimonds 2026-11-02: kods Medicīnu NEKAD NEPIELIEK pats (ne ēkas poga «pielāgo», ne «pieejams + WC + 50 m²»
+    # — citādi katrs mazs birojs kļūst par privātpraksi). Medicīnas potenciāls nāk TIKAI no: (a) AI, kas redz
+    # bijušu / esošu medicīnas telpu (prompts), (b) cilvēka — aģents panelī (lock) vai Ievas saraksts.
+    # Kods tikai PĀRBAUDA AI likto: aktīva prakse → paliek; noliktava/ražošana → nekad; nepieejama → noņem;
+    # bez WC telpā / <50 m² / kapitālais remonts → noņem.
     if str(result.get("Space_group") or "") == MED:
         want, why = True, "esošs med kods — pārņemams tikai ar to pašu SIA / krēsla nomu"
     elif str(result.get("Space_group") or "") in ("Noliktava", "Ražošana", "Autoserviss", "StockOfiss"):
-        # Raimonds 2026-10-27: noliktavā/ražošanā med kods nevar būt vispār (arī ar ēkas pogu)
         want, why = False, f"{result.get('Space_group')} — med nekad"
-    elif bf.get("owner_adapts_premises") is False:
-        want, why = False, "īpašnieks NEpielāgo (ēkas profils)"
+    elif not had:
+        want, why = False, "AI nelika — kods nepieliek"
     elif access != "checked":
-        # Raimonds 2026-11-01: «pielāgo» = nauda izbūvei, ne lifts — nepieejamā telpā (2. stāvs bez lifta)
-        # Medicīnas nav arī ar pogu «pielāgo». Pieejamību dod ēkas poga / Ievas saraksts / AI ieejas maršruts.
-        want, why = False, f"pieejamība={access}" + (" (poga pielāgo nelīdz — nav pieejama)" if bf.get("owner_adapts_premises") else "")
-    elif bf.get("owner_adapts_premises") is True:
-        want, why = True, "īpašnieks pielāgo (ēkas profils) + pieejama"
+        want, why = False, f"pieejamība={access}"
     elif not _wc_in_unit(result.get("cik_WC")):
         want, why = False, "nav WC telpā"
     elif area is None or area < 50:
@@ -2444,7 +2439,7 @@ def apply_medicine_gates(result, area_m2=None, building_flags=None):
     elif cond == "Kapitālais remonts":
         want, why = False, "kapitālais remonts"
     else:
-        want, why = True, "pieejams + WC telpā + ≥50 m²"
+        want, why = True, "AI: bijusi/esoša med telpa + pieejama + WC telpā + ≥50 m²"
 
     if want and not had:
         pot.append(MED)
@@ -2759,7 +2754,7 @@ def forced_potential_adds(result, building_flags):
     if not (building_flags or {}).get("owner_adapts_premises"):
         return []
     pot = {p.strip() for p in str(result.get("Potential_space_group") or "").split(",") if p.strip()}
-    return [g for g in ("PVD", "Medicīna") if g in pot]
+    return [g for g in ("PVD",) if g in pot]  # 2026-11-02: tikai PVD (Medicīnu poga «pielāgo» vairs nedod)
 
 
 
@@ -2811,8 +2806,8 @@ def apply_ieva_gates(result, building_profile_id=None, phase="facts"):
     elif phase == "med" and "med" in rec:
         pot = [p.strip() for p in str(result.get("Potential_space_group") or "").split(",")
                if p.strip() and p.strip().lower() != "unknown"]
-        if rec["med"] and "Medicīna" not in pot and str(result.get("Space_group") or "") != "Medicīna":
-            pot.append("Medicīna"); done.append("med+")
+        # Raimonds 2026-11-02: ēkas līmeņa «med var» Medicīnu NEPIELIEK (tikai konkrētas telpas, ko atzīmē cilvēks
+        # panelī); Ievas «med nevar» joprojām NOŅEM.
         if not rec["med"] and "Medicīna" in pot:
             pot = [p for p in pot if p != "Medicīna"]; done.append("med-")
         result["Potential_space_group"] = ", ".join(pot) if pot else "unknown"
