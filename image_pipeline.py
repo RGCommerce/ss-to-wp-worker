@@ -491,7 +491,9 @@ def retry_missing(conn, listing_id: int) -> dict:
         order = {p.name: i for i, p in enumerate(raw_files)}
         merged = processed + added
         # raw secība; aģenta img_user_* paliek savā vietā (pēc raw)
-        merged.sort(key=lambda r: order.get(r.rsplit("/", 1)[-1], 10_000 + merged.index(r)))
+        # sorted, ne .sort: kārtošanas laikā saraksts ir tukšs, tāpēc merged.index krita ar ValueError (Zaļā 2026-11-02)
+        pos = {r: i for i, r in enumerate(merged)}
+        merged = sorted(merged, key=lambda r: order.get(r.rsplit("/", 1)[-1], 10_000 + pos[r]))
         update_processed_paths(conn, listing_id, merged)
         try:
             meta_p = out_dir / "_meta.json"
