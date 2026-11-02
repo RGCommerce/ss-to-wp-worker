@@ -1835,6 +1835,27 @@ def _clean_unit_facts(raw) -> dict:
     return out
 
 
+def _apply_potential(conn, lid: int, extra: list) -> None:
+    """«Der arī kā» esošai telpai: Potential_space_group = DB Space_group + izvēlētie (tikai atļautie), lock."""
+    import agent_publish
+    if not extra:
+        return
+    r = conn.execute('SELECT "Space_group", "Potential_space_group" FROM properties.listings WHERE id=%s', (lid,)).fetchone()
+    if not r:
+        return
+    sg = (r["Space_group"] if isinstance(r, dict) else r[0]) or ""
+    pot: list[str] = []
+    for t in [sg] + list(extra):
+        if t and t in agent_publish._POTENTIAL_ALLOWED and t not in pot:
+            pot.append(t)
+    if not pot:
+        return
+    conn.execute("""UPDATE properties.listings SET "Potential_space_group" = %s,
+                      agent_locked_fields = (SELECT ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(agent_locked_fields,'{}'::text[]) || ARRAY['Potential_space_group']) x)),
+                      updated_at = now() WHERE id = %s""", (", ".join(pot), lid))
+    conn.commit()
+
+
 def _apply_unit_facts(conn, lid: int, facts: dict) -> None:
     """Fakti → listings + lock (AI nepārraksta)."""
     if not facts:
@@ -1904,7 +1925,8 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
     for addr in report.get("addresses") or []:
         for u in addr.get("units") or []:
             facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
-            if not facts:
+            potential = list(u.get("_potential") or [])
+            if not facts and not potential:
                 continue
             lid = None
             try:
@@ -1917,6 +1939,7 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
                 if lid is None or (lid in this_run_created and not u.get("sslv_listing_id")):
                     continue   # jauna telpa — fakti jau INSERT laikā
                 _apply_unit_facts(conn, lid, facts)
+                _apply_potential(conn, lid, potential)
             except Exception as e:
                 try:
                     conn.rollback()
@@ -1963,6 +1986,8 @@ def _partner_locked(unit: dict) -> list[str]:
     for k in UNIT_FACT_CHECKS + UNIT_FACT_TEXTS:
         if unit.get(k) and k not in locked:
             locked.append(k)   # cilvēka atzīmēts fakts (arī «nav rampa») — AI nepārraksta
+    if unit.get("potential_space_groups"):
+        locked.append("Potential_space_group")   # «der arī kā» (Medicīna u.c.) — cilvēka izvēle
     return locked
 
 
@@ -2236,6 +2261,9 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
             ov = unit_fields.get(str(u["idx"])) or {}
             if ov.get("space_type") in SPACE_GROUPS:
                 u["space_type"] = ov["space_type"]
+            # Raimonds 2026-11-02: «der arī kā» (piem. Medicīna) pirms «Pievienot DB» → Potential_space_group + lock
+            if isinstance(ov.get("potential"), list):
+                u["_potential"] = [p for p in ov["potential"] if isinstance(p, str) and p in SPACE_GROUPS]
             # Raimonds 2026-10-27: stāvu/platību var labot ar roku (zināms cits stāvs, PDF kļūda)
             if ov.get("floor") and _floor_norm(ov["floor"]):
                 u["floor"] = _floor_norm(ov["floor"])
@@ -2432,6 +2460,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                                                                (addr.get("bp") or {}).get("id"))
                         payload = _unit_to_anketa(u, addr, partner, report.get("list_date"))
                         payload["unit"].update(_clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts")))
+                        if u.get("_potential"):
+                            payload["unit"]["potential_space_groups"] = list(u["_potential"])
                         res = agent_publish.publish_anketa({
                             "mode": "full", "wp_user_id": wp_user_id, "requested_by_email": requested_by,
                             "building": payload["building"], "units": [payload["unit"]],
