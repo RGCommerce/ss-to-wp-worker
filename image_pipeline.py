@@ -459,6 +459,9 @@ def process_listing(conn, listing_id: int, force: bool = False, dry_run: bool = 
     }
 
 
+RETRY_MISSING_MAX = 3   # pēc tik neveiksmēm to pašu bildi vairs nesūta (katrs mēģinājums maksā)
+
+
 def retry_missing(conn, listing_id: int) -> dict:
     """Pirms (pār)publicēšanas: ja apstrādāto bilžu ir mazāk nekā raw — apstrādā TIKAI trūkstošās
     (jau esošās nemaina, nauda netiek tērēta otrreiz). Atgriež {"added": n, "still_missing": [...]}."""
@@ -476,7 +479,16 @@ def retry_missing(conn, listing_id: int) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     added: list[str] = []
     still: list[str] = []
+    meta_p = out_dir / "_meta.json"
+    try:
+        meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.is_file() else {}
+    except Exception:
+        meta = {}
+    fails: dict = meta.get("retry_fails") or {}
     for raw_path in missing:
+        if int(fails.get(raw_path.name) or 0) >= RETRY_MISSING_MAX:
+            still.append(raw_path.name)   # jau vairākkārt neizdevās — bez jauna maksas mēģinājuma
+            continue
         try:
             out_bytes = process_bytes_checked(raw_path.read_bytes(), raw_path.name)
         except Exception as e:
@@ -484,9 +496,12 @@ def retry_missing(conn, listing_id: int) -> dict:
             out_bytes = None
         if out_bytes is None:
             still.append(raw_path.name)
+            fails[raw_path.name] = int(fails.get(raw_path.name) or 0) + 1
             continue
         (out_dir / raw_path.name).write_bytes(out_bytes)
         added.append(relative_ai_path(listing_id, raw_path.name))
+        fails.pop(raw_path.name, None)
+    merged = processed
     if added:
         order = {p.name: i for i, p in enumerate(raw_files)}
         merged = processed + added
@@ -495,15 +510,14 @@ def retry_missing(conn, listing_id: int) -> dict:
         pos = {r: i for i, r in enumerate(merged)}
         merged = sorted(merged, key=lambda r: order.get(r.rsplit("/", 1)[-1], 10_000 + pos[r]))
         update_processed_paths(conn, listing_id, merged)
-        try:
-            meta_p = out_dir / "_meta.json"
-            meta = json.loads(meta_p.read_text(encoding="utf-8")) if meta_p.is_file() else {}
-            meta["failed"] = still
-            meta["processed_count"] = len(merged)
-            meta["retried_at"] = datetime.now(timezone.utc).isoformat()
-            meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+    try:
+        meta["retry_fails"] = fails
+        meta["failed"] = still
+        meta["processed_count"] = len(merged)
+        meta["retried_at"] = datetime.now(timezone.utc).isoformat()
+        meta_p.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except Exception:
+        pass
     print(f"  retry_missing #{listing_id}: +{len(added)}, joprojām trūkst {len(still)}")
     return {"added": len(added), "still_missing": still}
 
