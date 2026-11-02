@@ -2741,9 +2741,12 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             import sslv_import
             info = sslv_import.parse_sslv_url(cand["link"])
             html_doc = sslv_import._fetch_html(info["fetch_url"], helpers.HEADERS, helpers.REQUEST_TIMEOUT)
-            ok, why = _sslv_live_matches(html_doc, _unit_street(intake_id, u.get("idx")), u)
+            # tas pats princips kā priekšskatā: pret ss.lv rindas PAŠAS adresi, ne aģenta izvēlēto ēku. Agrāk izvēlētās bildes
+            # klusi pazuda, ja ēka mainīta (#112037 Gustava Zemgala 77, PICHE #112043/45/51, 2026-11-02)
+            ok, why = _sslv_live_matches(html_doc, cand.get("street") or _unit_street(intake_id, u.get("idx")), u)
             if not ok:
                 logger.info("partner_intake %s: ss.lv %s neatbilst telpai (%s) — izlaiž", intake_id, cand["link"], why)
+                out["sslv_error"] = f"neatbilst: {why}"
                 continue
             gallery = _alive_sslv_images((helpers.extract_gallery_urls(html_doc) or [])[:SSLV_MAX_PHOTOS])
             if sel_sslv is not None:
@@ -2761,6 +2764,10 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
             for gi, gurl in enumerate(gallery):
                 keymap[gurl] = f"img_{gi + 1:03d}.jpg"
             conn.execute('UPDATE properties.listings SET "JPG bildes" = %s WHERE id = %s', (jpg_field, listing_id))
+            # Raimonds 2026-11-02: izmanto šī ss.lv sludinājuma bildes → AI lasa arī ŠĪ sludinājuma aprakstu. Citas bildes → nelasa.
+            sslv_text = (sslv_import._extract_listing_text(html_doc) or "").strip()
+            if sslv_text:
+                conn.execute("UPDATE properties.listings SET original_text = %s WHERE id = %s", (sslv_text, listing_id))
             conn.commit()
             out["sslv"] = len(got)
             out["sslv_link"] = cand["link"]
