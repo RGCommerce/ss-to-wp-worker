@@ -1586,6 +1586,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                       for x in meta.get("attachments") or [])
         total_units = sum(len(a.get("units") or []) for a in analysis.get("addresses") or [])
         missing_seen: set[int] = set()   # «nav sarakstā» ids pāri adresēm (viena ēka var būt 2 adresēs)
+        all_matched: set[int] = set()   # sakritušie pāri VISĀM adresēm: divas adreses var būt viena ēka (Skanstes 50 + FLEX Biroji)
         gone_ids = {int(x) for x in meta.get("sslv_gone_ids") or []}   # apstiprināti partnera sludinājumi, kas pazuduši no ss.lv
         email_sslv = _email_sslv_candidates(d)   # partnera e-pastā ieliktie ss.lv sludinājumi (galerija bildēm)
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
@@ -1750,7 +1751,13 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         "gone_from_sslv": int(l["id"]) in gone_ids,
                     })
                 report["summary"]["missing"] += len(a_out["missing_in_list"])
+            all_matched |= matched_ids
             report["addresses"].append(a_out)
+    # telpa, kas sakrita citā adresē, ir sarakstā → nav «iznomāta» (FLEX 112003–7 bija ieķeksētas zem Skanstes 50, 2026-11-02)
+    for a_out in report["addresses"]:
+        before = len(a_out["missing_in_list"])
+        a_out["missing_in_list"] = [m for m in a_out["missing_in_list"] if int(m["id"]) not in all_matched]
+        report["summary"]["missing"] -= before - len(a_out["missing_in_list"])
     (d / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     meta["status"] = "ready"
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -3184,6 +3191,23 @@ def _alive_sslv_images(urls: list[str]) -> list[str]:
     return [u for u in urls if alive(u)]
 
 
+def _remember_building_name(d: Path, addr_idx: int, bp_id: int) -> None:
+    """Adrese bez ielas (tikai nosaukums, «FLEX Biroji»): cilvēka izvēlētā ēka ir vienīgā ar šo nosaukumu → nākamie skenējumi
+    atrod to pašu. Agrāk izvēle dzīvoja tikai vienā ieplūdē, un nosaukums bija 2 ēkām (katru reizi cita)."""
+    try:
+        rep = json.loads((d / "report.json").read_text(encoding="utf-8"))
+        addr = (rep.get("addresses") or [])[addr_idx]
+        name = (addr.get("building_name") or "").strip()
+        if not name or (addr.get("address_known") and (addr.get("bp") or {}).get("how") not in ("name", "agent")):
+            return
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("UPDATE properties.building_profiles SET building_name = NULL WHERE lower(building_name) = lower(%s) AND id <> %s", (name, bp_id))
+            conn.execute("UPDATE properties.building_profiles SET building_name = %s WHERE id = %s", (name, bp_id))
+            conn.commit()
+    except Exception as e:
+        logger.warning("partner_intake: ēkas nosaukums %s: %s", d.name, e)
+
+
 def address_override(intake_id: str, addr_idx: int, bp_id: Optional[int]) -> dict:
     """Panelis: aģents sasaista piedāvājuma adresi ar DB ēku (vai noņem sasaisti) → salīdzināšana no jauna
     (mūsējie šajā ēkā, «nav sarakstā», ss.lv kandidāti pēc DB adreses) + bilžu sagatavošana."""
@@ -3199,6 +3223,8 @@ def address_override(intake_id: str, addr_idx: int, bp_id: Optional[int]) -> dic
         ov.pop(str(addr_idx), None)
     meta["address_overrides"] = ov
     meta_p.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    if bp_id:
+        _remember_building_name(d, addr_idx, int(bp_id))
     rep = reconcile(intake_id)
     start_prepare_unit_images(intake_id)
     return {"summary": rep["summary"], "address": rep["addresses"][addr_idx] if addr_idx < len(rep["addresses"]) else None}
