@@ -1807,6 +1807,30 @@ class ApplyError(ValueError):
 #    teksts (wp_templates) to lieto kā faktu. Ēkas pazīmes = building_profiles → visiem ēkas sludinājumiem.
 UNIT_FACT_CHECKS = ("Rampa_logistikai_check", "Pacelamie_varti_check", "Sava_ieeja_check", "Auto_pacelajs_check", "Treifelis_Pacelajs")
 UNIT_FACT_TEXTS = ("Gridas_izturiba_kg_m2", "Griestu_augstums")
+# «Par telpu» logs (Raimonds 2026-11-02): tie paši lauki kā sludinājuma lapā. Raksta tikai UPDATE pēc izveides (_apply_facts_after).
+UNIT_ABOUT_CHECKS = ("Virtuve_check", "Ir_izlietne_telpa_check", "street_entrance", "Balkons_check", "Ventilacijas_sistema_check")
+UNIT_ABOUT_TEXT_CHECKS = ("Has_conference_room",)   # DB VARCHAR, vērtības kā ķeksim
+UNIT_ABOUT_NUMS = ("Cik_telpas", "Lielaka_zale_m2", "electric_power_kw", "Komunalie_ziema", "Komunalie_vasara",
+                   "Apsaimniekosanas_maksa", "NIN", "fit_out_budget")
+UNIT_ABOUT_ENUMS = {
+    "Mebeleta_telpa": ("mebeleta_telpa_enum", ("Jā", "Nē", "Daļēji")),
+    "Dalama_telpa": ("dalama_telpa_enum", ("Jā", "Nē")),
+    "Parkings": ("parkings_enum", ("Ir vietas", "Ir vietas par maksu", "Ir vietas bezmaksas", "Tikai ielas parking", "Nav")),
+    "Space_condition": ("space_condition_enum", ("Jauns", "Labs", "Lietots", "Nepabeigts", "Nepieciešams remonts", "Kapitālais remonts")),
+    "Gridas_materials": ("gridas_materials_enum", ("Betona grīda", "Betona grīda ar trapiem", "Slīpēts betons", "Betons ar hardeneri",
+                                                   "Epoksīda grīda", "Poliuretāna-cementa grīda", "Cementa klons", "Mikrocements",
+                                                   "Keramikas flīzes", "Porcelāna flīzes", "Dabīgais akmens", "PVC / vinils", "Kvarca vinils",
+                                                   "Linolejs", "Gumijas grīda", "Paklājflīzes", "Koka grīda", "Parkets", "Lamināts",
+                                                   "Asfalta grīda", "Mūra grīda")),
+    "Logu_type": ("logu_type_enum", ("Lielie Logi", "Standarta logi", "Maz logu", "Nav logi")),
+    "Apkure": ("apkure_enum", ("Centrālā", "Gāzes", "Elektriskā", "Nav")),
+}
+UNIT_ABOUT_PICKS = {
+    "Planojums": ("Atvērts", "Zāle + palīgtelpas", "Kabinetu", "Sekciju"),
+    "cik_WC": ("1 WC telpā", "2 WC telpā", "3 WC telpā", "4 WC telpā", "1 WC koplietošanā", "2 WC koplietošanā", "Nav"),
+    "Komunalie": ("Pēc skaitītājiem", "Pēc skaitītājiem + PVN", "Iekļauti cenā", "Komunālie maksājumi atsevišķi"),
+    "Papildu_maksas": ("PVN", "Bez PVN", "Nav", "Depozīts: 1 mēnesis", "Depozīts: 2 mēneši", "Depozīts: 3 mēneši"),
+}
 BP_FACT_BOOLS = ("has_fenced", "has_security_24_7", "has_cctv", "has_access_control", "has_lift", "has_freight_lift",
                  "has_underground_parking", "has_managed", "has_accessibility")
 BP_FACT_INTS = ("floors_count", "bdg_year")
@@ -1818,13 +1842,13 @@ def _clean_unit_facts(raw) -> dict:
     out: dict = {}
     if not isinstance(raw, dict):
         return out
-    for k in UNIT_FACT_CHECKS:
+    for k in UNIT_FACT_CHECKS + UNIT_ABOUT_CHECKS + UNIT_ABOUT_TEXT_CHECKS:
         v = raw.get(k)
         if v is True or (isinstance(v, str) and v.strip().lower() in ("checked", "true", "jā", "ir")):
             out[k] = "checked"
         elif v is False or (isinstance(v, str) and v.strip().lower() in ("not checked", "false", "nē", "nav")):
             out[k] = "not checked"
-    for k in UNIT_FACT_TEXTS:
+    for k in UNIT_FACT_TEXTS + UNIT_ABOUT_NUMS:
         v = raw.get(k)
         if v is None:
             continue
@@ -1832,7 +1856,20 @@ def _clean_unit_facts(raw) -> dict:
         m = re.search(r"\d+(?:\.\d+)?", s)
         if m:
             out[k] = m.group(0)
+    for k, (_t, allowed) in UNIT_ABOUT_ENUMS.items():
+        if raw.get(k) in allowed:
+            out[k] = raw[k]
+    for k, allowed in UNIT_ABOUT_PICKS.items():
+        if raw.get(k) in allowed:
+            out[k] = raw[k]
+    if isinstance(raw.get("available_from"), str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw["available_from"]):
+        out["available_from"] = raw["available_from"]
     return out
+
+
+def _unit_facts_for_insert(facts: dict) -> dict:
+    """INSERT laikā tikai sākotnējie fakti; pārējos ieraksta _apply_facts_after (visus ar lock)."""
+    return {k: v for k, v in facts.items() if k in UNIT_FACT_CHECKS or k in UNIT_FACT_TEXTS}
 
 
 def _apply_potential(conn, lid: int, extra: list) -> None:
@@ -1862,8 +1899,10 @@ def _apply_unit_facts(conn, lid: int, facts: dict) -> None:
         return
     sets, vals = [], []
     for k, v in facts.items():
-        if k in UNIT_FACT_CHECKS:
+        if k in UNIT_FACT_CHECKS or k in UNIT_ABOUT_CHECKS:
             sets.append(f'"{k}" = %s::properties.check_status_enum')
+        elif k in UNIT_ABOUT_ENUMS:
+            sets.append(f'"{k}" = %s::properties.{UNIT_ABOUT_ENUMS[k][0]}')
         else:
             sets.append(f'"{k}" = %s')
         vals.append(v)
@@ -1921,7 +1960,6 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
     created_map = {str(p[1]): int(p[0]) for p in (prev.get("created_units") or [])}
     created_map.update({str(p[1]): int(p[0]) for p in result.get("created_units") or []})
     linked_map = {str(p[1]): int(p[0]) for p in result.get("linked") or []}
-    this_run_created = {int(p[0]) for p in result.get("created_units") or [] if str(p[1]) not in prev_created_idx}
     for addr in report.get("addresses") or []:
         for u in addr.get("units") or []:
             facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
@@ -1936,8 +1974,8 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
                     lid = int(dec[5:])
                 if lid is None and dec in ("update", "keep") and (u.get("matched_listing") or {}).get("id"):
                     lid = int(u["matched_listing"]["id"])
-                if lid is None or (lid in this_run_created and not u.get("sslv_listing_id")):
-                    continue   # jauna telpa — fakti jau INSERT laikā
+                if lid is None:
+                    continue
                 _apply_unit_facts(conn, lid, facts)
                 _apply_potential(conn, lid, potential)
             except Exception as e:
@@ -2459,7 +2497,7 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             addr["district"] = _guess_district(conn, addr.get("street"), addr.get("city"),
                                                                (addr.get("bp") or {}).get("id"))
                         payload = _unit_to_anketa(u, addr, partner, report.get("list_date"))
-                        payload["unit"].update(_clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts")))
+                        payload["unit"].update(_unit_facts_for_insert(_clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))))
                         if u.get("_potential"):
                             payload["unit"]["potential_space_groups"] = list(u["_potential"])
                         res = agent_publish.publish_anketa({
