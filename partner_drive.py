@@ -494,6 +494,81 @@ def _decided_sslv_ids(source_id: str) -> set[str]:
     return done
 
 
+def _own_applied_sslv(source_id: str) -> tuple[set[str], set[int]]:
+    """Šī avota apstiprināto ieplūžu ss.lv saites + listingi, par kuriem «pazudis no ss.lv» jau vienreiz jautāts."""
+    import partner_intake
+    links: set[str] = set()
+    asked: set[int] = set()
+    if not partner_intake.INTAKE_DIR.is_dir():
+        return links, asked
+    for d in partner_intake.INTAKE_DIR.iterdir():
+        mp, rp = d / "meta.json", d / "report.json"
+        if not mp.is_file() or not rp.is_file():
+            continue
+        try:
+            meta = json.loads(mp.read_text(encoding="utf-8"))
+            if meta.get("source") != "sslv" or meta.get("drive_source_id") != source_id or meta.get("status") not in ("applied", "partial"):
+                continue
+            asked.update(int(x) for x in meta.get("sslv_gone_ids") or [])
+            for a in json.loads(rp.read_text(encoding="utf-8")).get("addresses") or []:
+                for u in a.get("units") or []:
+                    if u.get("sslv_link"):
+                        links.add(_norm_link(u["sslv_link"]))
+        except Exception:
+            continue
+    return links, asked
+
+
+def _scraper_fresh(conn) -> bool:
+    """Skrāperis strādā? Citādi neviens sludinājums nav «pazudis» — vienkārši nav skrāpēts."""
+    r = conn.execute("SELECT max(nullif(last_updated,'')::timestamptz) > now() - interval '2 days' AS ok FROM properties.scrape_inbox").fetchone()
+    return bool(r and r["ok"])
+
+
+def _sslv_page_gone(link: str, street: Optional[str], area) -> bool:
+    """Dzīvā lapa: ss.lv noņemta sludinājuma lapu patur (HTTP 200, teksts paliek), bet bez tālruņa/kontaktu bloka.
+    404, nav tālruņa bloka vai cita adrese (saite pārizmantota) = pazudis. Tīkla kļūda = nezināms → nav pazudis."""
+    import ai_text_helpers as helpers
+    import partner_intake
+    import sslv_import
+    try:
+        html_doc = sslv_import._fetch_html(f"https://www.{_norm_link(link)}", helpers.HEADERS, helpers.REQUEST_TIMEOUT)
+    except Exception as e:
+        return getattr(getattr(e, "response", None), "status_code", None) in (404, 410)
+    if "phone_td" not in html_doc:
+        return True
+    return not partner_intake._sslv_live_matches(html_doc, street, {"area_m2": area})[0]
+
+
+def _sslv_is_gone(conn, link: str, street: Optional[str], area) -> bool:
+    """Pazudis = skrāperis to nav redzējis SSLV_LIVE_DAYS UN dzīvā lapa to apstiprina."""
+    r = conn.execute("""SELECT 1 FROM properties.scrape_inbox WHERE link = %s
+                         AND nullif(last_updated,'')::timestamptz >= now() - make_interval(days => %s) LIMIT 1""",
+                     (_norm_link(link), SSLV_LIVE_DAYS)).fetchone()
+    return False if r else _sslv_page_gone(link, street, area)
+
+
+def _sslv_gone_listings(src: dict) -> list[dict]:
+    """Mūsu telpas no šī partnera ss.lv (jau apstiprinātas, nav iznomātas), kas no ss.lv pazudušas → piedāvā iznomāt, vienreiz."""
+    import partner_intake
+    import psycopg
+    from psycopg.rows import dict_row
+    links, asked = _own_applied_sslv(src["id"])
+    if not links:
+        return []
+    out: list[dict] = []
+    with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
+        conn.read_only = True
+        if not _scraper_fresh(conn):
+            return []
+        rows = conn.execute("""SELECT id, street, city, area_m2, link, building_profile_id FROM properties.listings
+                                WHERE link = ANY(%s) AND occupancy_status IS DISTINCT FROM 'occupied'""", (list(links),)).fetchall()
+        for r in rows:
+            if int(r["id"]) not in asked and _sslv_is_gone(conn, r["link"], r.get("street"), r.get("area_m2")):
+                out.append(dict(r))
+    return out
+
+
 def _norm_link(link) -> str:
     l = re.sub(r"^https?://", "", str(link or "").strip()).replace("www.", "", 1)
     return re.sub(r"^ss\.com/", "ss.lv/", l).split("#")[0].split("?")[0]
@@ -540,6 +615,8 @@ def _sslv_rows(src: dict) -> list[dict]:
             d["sslv_listing_id"] = int(d["id"])
             if d.get("link"):
                 seen_links.add(_norm_link(d["link"]))
+                # vēl neapstiprināts, bet ss.lv vairs nav → paliek redzams ar atzīmi, noklusēti «izlaist» (Raimonds 2026-11-02)
+                d["sslv_gone"] = _scraper_fresh(conn) and _sslv_is_gone(conn, d["link"], d.get("street"), d.get("area_m2"))
             out.append(d)
         # 2) skrāpera inbox (properties.scrape_inbox) — viss, kas ŠOBRĪD ir ss.lv ar šo numuru (arī bez AI apstrādes,
         #    arī ja listings rinda dzēsta): Barona Cēsu 31 aeonb/hpmnn bija tikai inbox (2026-10-28). Apstiprinot IZVEIDO.
@@ -754,6 +831,7 @@ def _sslv_analysis(src: dict, rows: list[dict]) -> dict:
             "partner_notes": f"ss.lv sludinājums ievietots {str(r.get('date_posted') or r.get('created_at'))[:10]}",
             "sslv_listing_id": int(r["sslv_listing_id"]) if r.get("sslv_listing_id") else None,
             "sslv_link": r.get("link"),
+            "sslv_gone": bool(r.get("sslv_gone")),
         })
         if r.get("origin") == "inbox":
             u["evidence"] = f"ss.lv sludinājums (skrāpera inbox) {r.get('link') or ''}"
@@ -792,13 +870,15 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
     rows = _sslv_rows(src)
     decided = _decided_sslv_ids(src["id"])
     rows = [r for r in rows if _norm_link(r.get("link")) not in decided]
-    ids = sorted(_norm_link(r.get("link")) or str(r["id"]) for r in rows)
+    gone = _sslv_gone_listings(src)
+    ids = sorted((_norm_link(r.get("link")) or str(r["id"])) + (":gone" if r.get("sslv_gone") else "") for r in rows)
+    ids += sorted(f"gone:{g['id']}" for g in gone)
     fp = hashlib.sha1(("sslv:" + ",".join(ids)).encode("utf-8")).hexdigest()
     result: dict = {"source_id": src["id"], "name": src["name"], "scanned_at": scanned_at.isoformat(),
                     "unit_folders": len(rows), "price_files": 0, "changed": fp != src.get("last_fingerprint"), "fingerprint": fp,
                     "intake_id": None, "skipped": None, "web_recipe": None, "list_only": False,
                     "other_addresses": _other_addresses(src)}
-    if not rows:
+    if not rows and not gone:
         result["skipped"] = ("ēkas vēl nav pievienotas — «Pievienot ēkas»" if not _src_addresses(src)
                              else "nav jaunu ss.lv sludinājumu ar šo numuru šajā ēkā")
         result["changed"] = False
@@ -827,6 +907,13 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
     meta["drive_fingerprint"] = fp
     meta["sslv_listing_ids"] = ids
     meta["prebuilt_analysis"] = _sslv_analysis(src, rows)
+    # pazudušie: ēka parādās arī bez jaunām telpām (reconcile tos ieliek «nav sarakstā» ar ieķeksētu «iznomāts»)
+    meta["sslv_gone_ids"] = [int(g["id"]) for g in gone]
+    for g in gone:
+        a = _row_address(src, g)
+        meta["prebuilt_analysis"]["addresses"].append({
+            "street": a.get("bp_address") or a.get("street") or g.get("street"), "city": a.get("city") or g.get("city") or "Rīga",
+            "district": None, "building_name": None, "address_known": True, "list_complete_here": False, "units": []})
     d = partner_intake.INTAKE_DIR / meta["intake_id"]
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     # ss.lv galerijas kandidāti bildēm — tie paši sludinājumi (bez e-pasta linku meklēšanas)
@@ -910,7 +997,9 @@ def _actionable(report: dict) -> dict:
     new = updates = missing = 0
     for a in report.get("addresses") or []:
         for u in a.get("units") or []:
-            if u.get("status") != "match":
+            if u.get("sslv_gone"):
+                missing += 1   # jāredz, ka pazudis
+            elif u.get("status") != "match":
                 new += 1
             elif u.get("decision") == "update":
                 updates += 1

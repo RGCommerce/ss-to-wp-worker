@@ -1586,6 +1586,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                       for x in meta.get("attachments") or [])
         total_units = sum(len(a.get("units") or []) for a in analysis.get("addresses") or [])
         missing_seen: set[int] = set()   # «nav sarakstā» ids pāri adresēm (viena ēka var būt 2 adresēs)
+        gone_ids = {int(x) for x in meta.get("sslv_gone_ids") or []}   # apstiprināti partnera sludinājumi, kas pazuduši no ss.lv
         email_sslv = _email_sslv_candidates(d)   # partnera e-pastā ieliktie ss.lv sludinājumi (galerija bildēm)
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
             bps = []
@@ -1745,7 +1746,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         "price": l["price"], "source": l["source"], "on_website": l["on_website"],
                         "wp_synced_at": str(l["wp_synced_at"])[:10] if l["wp_synced_at"] else None,
                         "created_at": str(l["created_at"])[:10] if l["created_at"] else None,
-                        "decision": "ask", "default_checked": default_on,
+                        "decision": "ask", "default_checked": default_on or int(l["id"]) in gone_ids,
+                        "gone_from_sslv": int(l["id"]) in gone_ids,
                     })
                 report["summary"]["missing"] += len(a_out["missing_in_list"])
             report["addresses"].append(a_out)
@@ -1778,7 +1780,10 @@ def notify(report: dict) -> int:
     partner = (report.get("partner") or {}).get("company") or (report.get("partner") or {}).get("email") or "partneris"
     addrs = ", ".join(f"{a.get('street') or a.get('building_name') or '?'}" for a in report["addresses"][:4])
     link = f"{PANEL_URL}/partner-intake/{report['intake_id']}"
-    if not report.get("is_vacancy_offer") or s["units"] == 0:
+    gone_n = sum(1 for a in report["addresses"] for m in a.get("missing_in_list") or [] if m.get("gone_from_sslv"))
+    if gone_n and s["units"] == 0:
+        html = (f"🔴 <b>{html_mod.escape(str(partner))}</b>: pazudis no ss.lv — {gone_n} · {html_mod.escape(addrs)}\n{link}")
+    elif not report.get("is_vacancy_offer") or s["units"] == 0:
         html = (f"⚠ <b>AI nesaprata piedāvājumu</b> — {html_mod.escape(str(report.get('subject') or ''))}\n"
                 f"Nav atrastas telpas. Paskaties pats: {link}")
     else:
