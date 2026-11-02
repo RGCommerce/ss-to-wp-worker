@@ -461,6 +461,16 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
                           else (AI_OUTPUT_FIELDS + ["investment_description"]) if inv
                           else None)
         _update_listing_with_ai(listing_id, locked, result, output_fields=_output_fields)
+        # Cilvēka «der arī kā» AI nenoņem, bet savu atzinumu PIELIEK (Raimonds 2026-11-02: Medicīna paliek, Sporta zāle klāt)
+        if "Potential_space_group" in locked and not land:
+            import agent_publish
+            _ai_pot = result.get("Potential_space_group")
+            _ai_list = _ai_pot if isinstance(_ai_pot, list) else str(_ai_pot or "").split(",")
+            _cur_pot = [p.strip() for p in str(row.get("Potential_space_group") or "").split(",") if p.strip() and p.strip() != "unknown"]
+            _adds_pot = [p.strip() for p in _ai_list if p.strip() in agent_publish._POTENTIAL_ALLOWED and p.strip() not in _cur_pot]
+            if _adds_pot:
+                with psycopg.connect(DATABASE_URL) as _pc:
+                    _pc.execute('UPDATE properties.listings SET "Potential_space_group"=%s WHERE id=%s', (", ".join(_cur_pot + list(dict.fromkeys(p.strip() for p in _adds_pot))), listing_id))
     except Exception as e:
         return False, f"DB update kļūda: {type(e).__name__}: {str(e)[:300]}"
 

@@ -1885,7 +1885,7 @@ def _unit_facts_for_insert(facts: dict) -> dict:
 
 
 def _apply_potential(conn, lid: int, extra: list) -> None:
-    """«Der arī kā» esošai telpai: Potential_space_group = DB Space_group + izvēlētie (tikai atļautie), lock."""
+    """«Der arī kā» esošai telpai: Potential_space_group = DB Space_group + jau esošie (AI atzinums paliek) + izvēlētie, lock."""
     import agent_publish
     if not extra:
         return
@@ -1893,8 +1893,9 @@ def _apply_potential(conn, lid: int, extra: list) -> None:
     if not r:
         return
     sg = (r["Space_group"] if isinstance(r, dict) else r[0]) or ""
+    have = str((r["Potential_space_group"] if isinstance(r, dict) else r[1]) or "").split(",")
     pot: list[str] = []
-    for t in [sg] + list(extra):
+    for t in [sg] + [x.strip() for x in have] + list(extra):
         if t and t in agent_publish._POTENTIAL_ALLOWED and t not in pot:
             pot.append(t)
     if not pot:
