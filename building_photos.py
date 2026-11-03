@@ -154,8 +154,44 @@ def add_photo(bp_id: int, data: bytes, filename: str, ptype: str = "fasade", by:
     return item
 
 
+def _removed_path(bp_id: int) -> Path:
+    return _dir(bp_id) / "_removed.json"
+
+
+def _load_removed(bp_id: int) -> list[dict]:
+    try:
+        return json.loads(_removed_path(bp_id).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _is_removed(bp_id: int, data: bytes) -> bool:
+    """Cilvēka izdzēsta ēkas bilde: automātiskā savākšana to neliek atpakaļ (ūdenstornis, Raimonds 2026-11-03)."""
+    import hashlib
+    removed = _load_removed(bp_id)
+    if not removed:
+        return False
+    sha1 = hashlib.sha1(data).hexdigest()
+    h = _dhash(data)
+    for r in removed:
+        if r.get("sha1") == sha1:
+            return True
+        if h is not None and r.get("dhash") and bin(h ^ int(r["dhash"], 16)).count("1") <= DUP_DISTANCE:
+            return True
+    return False
+
+
 def delete_photo(bp_id: int, fn: str) -> bool:
     p = file_path(bp_id, fn)
+    gone = next((it for it in list_photos(bp_id) if it.get("fn") == fn), None)
+    if gone and p and p.is_file():
+        try:
+            import hashlib
+            data = p.read_bytes()
+            h = _dhash(data)
+            _removed_path(bp_id).write_text(json.dumps(_load_removed(bp_id) + [{"sha1": hashlib.sha1(data).hexdigest(), "dhash": f"{h:016x}" if h is not None else None}]), encoding="utf-8")
+        except Exception:
+            pass
     items = [it for it in list_photos(bp_id) if it.get("fn") != fn]
     _save(bp_id, items)
     if p:
@@ -345,7 +381,10 @@ def harvest_from_listings(conn, bp_id: int) -> dict:
                     continue
                 out["candidates"] += 1
                 try:
-                    it = add_photo(bp_id, src.read_bytes(), name, "fasade", "auto: ēkas listingi", int(r["id"]))
+                    photo_bytes = src.read_bytes()
+                    if _is_removed(bp_id, photo_bytes):
+                        continue
+                    it = add_photo(bp_id, photo_bytes, name, "fasade", "auto: ēkas listingi", int(r["id"]))
                 except ValueError:
                     continue
                 if it.get("duplicate"):

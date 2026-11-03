@@ -709,7 +709,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
 
     # Ēkas konteksts (vajadzīgs gan virsrakstam, gan ievadam)
     addr_nom = _street_nominative(g("street") or gb("full_address"))  # virsraksta adrese
-    bdesc = _clean_bdesc(gb("Building_description") or g("Building_description"))
+    # telpas pašas apraksts pirmais (pēc tās bildēm); kopīgais ēkas apraksts tikai, ja sava nav. Viena adrese var būt
+    # vairākas ēkas: Gustava Zemgala 77 visām lapām rakstīja «ūdenstornis» no cita sludinājuma (Raimonds 2026-11-03)
+    bdesc = _clean_bdesc(g("Building_description")) or _clean_bdesc(gb("Building_description"))
     btype = gb("building_type") or g("building_type")
     bname = gb("building_name")
     is_complex = _truthy(bp.get("is_business_complex"))
