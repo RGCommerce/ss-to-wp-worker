@@ -1560,6 +1560,115 @@ def _merge_same_addresses(addresses: list[dict]) -> list[dict]:
     return out
 
 
+# ── Lēmumu atmiņa (Raimonds 2026-11-03): ko cilvēks izlēma, paliek, līdz partneris maina informāciju.
+#    Visiem avotiem (PDF/e-pasts, Drive, web, ss.lv). «Izlaist» / atteikta cenas maiņa / «nav iznomāts» neatgriežas,
+#    kamēr cena tā pati; mainās cena → rādās atkal. Glabā INTAKE_DIR/_decisions.json.
+def _mem_path() -> Path:
+    return INTAKE_DIR / "_decisions.json"
+
+
+def _mem_load() -> dict:
+    try:
+        return json.loads(_mem_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _mem_save(mem: dict) -> None:
+    INTAKE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _mem_path().with_suffix(".tmp")
+    tmp.write_text(json.dumps(mem, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(_mem_path())
+
+
+def _mem_partner(meta: dict, report: dict) -> Optional[str]:
+    if meta.get("drive_source_id"):
+        return f"src:{meta['drive_source_id']}"
+    p = report.get("partner") or {}
+    k = (p.get("email") or p.get("company") or meta.get("forwarder_email") or "").strip().lower()
+    return f"p:{k}" if k else None
+
+
+def _mem_unit_key(addr: dict, u: dict) -> str:
+    place = str((addr.get("bp") or {}).get("id") or _street_key(addr.get("street") or addr.get("building_name") or ""))
+    area = _num(u.get("area_m2"))
+    return f"{place}|{round(float(area), 1) if area else '-'}|{u.get('floor_norm') or _floor_norm(u.get('floor')) or '-'}|{u.get('deal') or 'rent'}"
+
+
+def _mem_price(u: dict) -> Optional[float]:
+    if (u.get("deal") or "rent") != "rent":
+        return _num(u.get("sale_price"))
+    t = _num(u.get("rent_total"))
+    if t is None and _num(u.get("area_m2")) and u.get("rent_per_m2_min"):
+        t = float(_num(u["area_m2"])) * float(u["rent_per_m2_min"])
+    return t
+
+
+def _same_price(a, b) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(float(a) - float(b)) <= max(5.0, 0.02 * float(b))
+
+
+def _remember_decisions(meta: dict, report: dict, unit_dec: dict, miss_dec: dict) -> None:
+    """Apstiprinot: izlaistās telpas, atteiktās cenas maiņas un «nav iznomāts» → atmiņā ar cenu; darbība → izdzēš."""
+    pk = _mem_partner(meta, report)
+    mem = _mem_load()
+    links = mem.setdefault("links", {})
+    book = mem.setdefault(pk, {}) if pk else {}
+    for a in report.get("addresses") or []:
+        for u in a.get("units") or []:
+            dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
+            if dec == "review":
+                dec = "skip"
+            price = _mem_price(u)
+            key = _mem_unit_key(a, u)
+            if u.get("sslv_link"):
+                links[_bare_sslv(u["sslv_link"])] = {"d": dec, "price": price}
+            if not pk:
+                continue
+            if dec == "skip":
+                book[key] = {"d": "skip", "price": price, "at": _now().isoformat()}
+            elif dec == "keep" and u.get("status") == "match" and u.get("diff"):
+                book[key] = {"d": "keep_price", "price": price, "at": _now().isoformat()}
+            else:
+                book.pop(key, None)
+        for m in a.get("missing_in_list") or []:
+            if not pk:
+                continue
+            mk = f"miss:{m['id']}"
+            if miss_dec.get(str(m["id"])) == "occupied":
+                book.pop(mk, None)
+            elif m.get("default_checked"):
+                book[mk] = {"d": "not_occupied", "at": _now().isoformat()}
+    _mem_save(mem)
+
+
+def _apply_memory(meta: dict, report: dict) -> None:
+    """Salīdzinot: ja tā pati telpa ar to pašu cenu jau reiz izlemta → tas pats lēmums, un tā nav «jauna» ziņa."""
+    pk = _mem_partner(meta, report)
+    book = (_mem_load().get(pk) or {}) if pk else {}
+    if not book:
+        return
+    for a in report.get("addresses") or []:
+        for u in a.get("units") or []:
+            hit = book.get(_mem_unit_key(a, u))
+            if not hit or not _same_price(_mem_price(u), hit.get("price")):
+                continue
+            if hit["d"] == "skip" and u.get("status") != "match":
+                u["decision"] = "skip"
+                u["remembered"] = "skip"
+            elif hit["d"] == "keep_price" and u.get("status") == "match" and u.get("diff"):
+                u["decision"] = "keep"
+                u["diff"] = {}
+                u["remembered"] = "keep_price"
+        for m in a.get("missing_in_list") or []:
+            if book.get(f"miss:{m['id']}") and m.get("default_checked"):
+                m["default_checked"] = False
+                m["remembered"] = "not_occupied"
+
+
+
 def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
     d = INTAKE_DIR / intake_id
     meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
@@ -1760,6 +1869,10 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
         before = len(a_out["missing_in_list"])
         a_out["missing_in_list"] = [m for m in a_out["missing_in_list"] if int(m["id"]) not in all_matched]
         report["summary"]["missing"] -= before - len(a_out["missing_in_list"])
+    try:
+        _apply_memory(meta, report)
+    except Exception as e:
+        logger.warning("partner_intake: lēmumu atmiņa %s: %s", intake_id, e)
     (d / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     meta["status"] = "ready"
     (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -2665,6 +2778,10 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
         result["errors"].append(f"fakti: {type(e).__name__}: {str(e)[:150]}")
     meta_p = d / "meta.json"
     meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    try:
+        _remember_decisions(meta, report, unit_dec, miss_dec)
+    except Exception as e:
+        result["errors"].append(f"lēmumu atmiņa: {type(e).__name__}: {str(e)[:120]}")
     if prev:
         meta.setdefault("apply_history", []).append(prev)
         for k in ("created", "updated", "occupied", "created_units"):

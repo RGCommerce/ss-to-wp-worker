@@ -870,7 +870,17 @@ def scan_sslv_source(src: dict, force: bool = False) -> dict:
         logger.warning("partner_drive: trusted sync %s: %s", src.get("name"), e)
     rows = _sslv_rows(src)
     decided = _decided_sslv_ids(src["id"])
-    rows = [r for r in rows if _norm_link(r.get("link")) not in decided]
+    seen_price = partner_intake._mem_load().get("links") or {}
+
+    def _still_decided(r) -> bool:
+        k = _norm_link(r.get("link"))
+        if k not in decided:
+            return False
+        hit = seen_price.get(k)
+        # vecie lēmumi bez cenas paliek izlemti; ar cenu — tikai, kamēr ss.lv cena tā pati (Raimonds 2026-11-03)
+        return not hit or partner_intake._same_price(partner_intake._num(r.get("price")), hit.get("price"))
+
+    rows = [r for r in rows if not _still_decided(r)]
     gone = _sslv_gone_listings(src)
     ids = sorted((_norm_link(r.get("link")) or str(r["id"])) + (":gone" if r.get("sslv_gone") else "") for r in rows)
     ids += sorted(f"gone:{g['id']}" for g in gone)
@@ -998,6 +1008,8 @@ def _actionable(report: dict) -> dict:
     new = updates = missing = 0
     for a in report.get("addresses") or []:
         for u in a.get("units") or []:
+            if u.get("remembered"):
+                continue   # jau izlemts, nekas nav mainījies
             if u.get("sslv_gone"):
                 missing += 1   # jāredz, ka pazudis
             elif u.get("status") != "match":
