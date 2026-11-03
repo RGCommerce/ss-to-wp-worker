@@ -1705,7 +1705,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 # «pārbaudīt» tikai tam, ko vēl nezinām: sakritusī telpa JAU ir DB — zema AI pārliecība tur neko nemaina
                 # (Spire Barona 15 143,4 m² katru dienu «pārbaudīt», Raimonds 2026-10-28)
                 needs_review = (status == "ambiguous"
-                                or (status != "match" and (conf < 0.6 or not a_out["address_known"]
+                                or (status != "match" and (conf < 0.6
+                                                           # ēka atrasta pēc nosaukuma, ko cilvēks reiz sasaistīja (FLEX Biroji) = adrese zināma
+                                                           or not (a_out["address_known"] or (bp or {}).get("how") in ("name", "agent"))
                                                            or not u.get("space_type") or price_missing)))
                 decision = ("review" if (needs_review and status != "match") else
                             ("update" if (status == "match" and (diff or reactivate)) else
