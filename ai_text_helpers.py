@@ -1158,12 +1158,10 @@ Secondary Source:
 - TEXT
 
 Rules:
-- checked ONLY if there is real hoist/crane evidence:
-  * a ceiling/beam-mounted hoist or overhead crane is clearly visible in a photo, OR
-  * CRANE RUNWAY visible: continuous crane rails / runway beams running along the
-    columns high up on both sides of the hall, often with yellow crane-access platforms
-    and ladders at rail height — the crane bridge may be outside the frame, the runway
-    itself is the evidence, OR
+- checked ONLY if there is real hoist/crane evidence (Raimonds 2026-11-03 — STRICT):
+  * the hoist DEVICE ITSELF is clearly visible in a photo: a hook block hanging on a chain
+    or wire rope, an electric chain hoist / trolley on a beam, or a crane bridge (a girder
+    spanning across the hall, usually yellow, with a hoist trolley on it), OR
   * text explicitly names an industrial hoist/crane: "telferis", "tālferis", "celtnis",
     "tilta celtnis", "krāna sija", "kran-balka", "konsoles celtnis", "liellaidu celtnis",
     "кран-балка", "тельфер", "overhead crane".
@@ -1171,8 +1169,12 @@ Rules:
   checked — even if no photo shows it. There is no reason to doubt the seller here.
 - the generic word "pacēlājs" / "kravas pacēlājs" / "pacelšanas iekārta" ALONE is NOT
   enough (Raimonds) — it is usually a freight lift, a scissor lift or a car lift.
-- ventilation ducts, cable trays, sprinkler pipes, roof trusses, light rails, overhead
-  sectional door tracks are NOT a hoist.
+- RAILS / BEAMS ALONE ARE NOT ENOUGH: steel roof trusses, lattice girders, ceiling beams,
+  purlins, "runway-looking" beams along walls, ventilation ducts, cable trays, sprinkler
+  pipes, light rails, overhead sectional door tracks are NOT a hoist. If you cannot point to
+  a hook / chain / hoist trolley / crane bridge in a specific photo -> not checked.
+- an old factory floor above the 1st floor almost never has a crane — require text or a
+  clearly visible device.
 - the photo evidence must be in the OFFERED space; a crane in a neighbouring tenant's
   hall that is shown only for context does not count if the text/plan shows it is not
   part of the offer.
@@ -1180,8 +1182,7 @@ Rules:
   "kravas un pasažieru lifti", "Stāvs: X/Y/lifts" mean a passenger / freight ELEVATOR, which is a
   different building-level feature, NOT a telferis -> do NOT set checked based on these alone.
 - a car service lift belongs to Auto_pacelajs_check, not here.
-- if enough evidence exists and no hoist/crane is present -> not checked
-- if evidence is insufficient -> unknown
+- no visible device and no text -> not checked (do not use unknown for "maybe rails").
 
 ---
 
@@ -2841,6 +2842,9 @@ def analyze_with_openai(listing_url: str, listing_text: str, image_urls: List[st
 
     if not data.get("Debug_status"):
         data["Debug_status"] = "ok"
+    # Raimonds 2026-11-03: telferis tikai ar redzamu iekārtu vai tekstu — «nezināms» = nav
+    if str(data.get("Treifelis_Pacelajs") or "") == "unknown":
+        data["Treifelis_Pacelajs"] = "not checked"
 
     if not data.get("Debug_note"):
         data["Debug_note"] = f"Analizēts teksts un {len(image_urls)} attēli"
