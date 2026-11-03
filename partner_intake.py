@@ -1910,7 +1910,7 @@ def notify(report: dict) -> int:
                 f"Nav atrastas telpas. Paskaties pats: {link}")
     else:
         html = (f"🟢 <b>AI sagatavoja: {html_mod.escape(str(partner))}</b> — {s['units']} telpas · {html_mod.escape(addrs)}\n"
-                f"✅ gatavas: {s['ready']}   ⚠ pārbaudīt: {s['needs_review']}   🔁 sakrīt: {s['match']}"
+                f"✅ gatavas: {s['ready']}   ⚠ nav info: {s['needs_review']}   🔁 sakrīt: {s['match']}"
                 f"   ✖ mūsu nav sarakstā: {s['missing']}\n{link}")
     sent = 0
     with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
