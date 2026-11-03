@@ -1738,6 +1738,13 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 u["_idx"] = idx
                 if u.get("rent_total") and _num(u.get("area_m2")) and u.get("rent_per_m2_min") is None:
                     u["rent_per_m2_min"] = round(float(u["rent_total"]) / float(_num(u["area_m2"])), 2)
+                # noma = platība × €/m² (Raimonds 2026-11-03, Valdemāra Pasāža 210: 115,8 m² × 8 € = 926, bet AI kopsummā
+                # ielika arī apsaimniekošanu 2,65 → 1233). Vienai likmei kopsumma vienmēr no likmes; diapazonam — kā dokumentā.
+                _ar, _rt = _num(u.get("area_m2")), _num(u.get("rent_per_m2_min"))
+                if (u.get("deal") or "rent") == "rent" and _ar and _rt and (u.get("rent_per_m2_max") in (None, u.get("rent_per_m2_min"))):
+                    _calc = round(float(_ar) * float(_rt), 2)
+                    if u.get("rent_total") is None or abs(float(u["rent_total"]) - _calc) > max(5.0, 0.02 * _calc):
+                        u["rent_total"] = _calc
                 area = _num(u.get("area_m2"))
                 floor = _floor_norm(u.get("floor"))
                 fd = _floor_digits(floor)
