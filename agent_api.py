@@ -2037,3 +2037,16 @@ def listing_source_file(listing_id: int, _auth: None = Depends(require_token)):
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{name}"'},
     )
+
+
+@router.post("/listings/{listing_id}/reanalyze")
+def listing_reanalyze_start(listing_id: int, requested_by: Optional[str] = None, _auth: None = Depends(require_token)) -> dict:
+    """«Pāranalizēt» (Raimonds 2026-11-04): AI no jauna apskata šī sludinājuma bildes + tekstu, fonā."""
+    import listing_reanalyze
+    return {"ok": True, **listing_reanalyze.start(listing_id, requested_by)}
+
+
+@router.get("/listings/{listing_id}/reanalyze")
+def listing_reanalyze_status(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    import listing_reanalyze
+    return {"ok": True, **listing_reanalyze.status(listing_id)}
