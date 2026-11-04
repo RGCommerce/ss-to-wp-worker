@@ -2050,3 +2050,27 @@ def listing_reanalyze_start(listing_id: int, requested_by: Optional[str] = None,
 def listing_reanalyze_status(listing_id: int, _auth: None = Depends(require_token)) -> dict:
     import listing_reanalyze
     return {"ok": True, **listing_reanalyze.status(listing_id)}
+
+
+class SslvAttachReq(BaseModel):
+    link: str
+    requested_by: Optional[str] = None
+
+
+@router.get("/listings/{listing_id}/sslv-candidates")
+def listing_sslv_candidates(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    """«Atrast ss.lv» (Raimonds 2026-11-04): aktīvi ss.lv sludinājumi, kas varētu būt šī telpa."""
+    import listing_sslv
+    return {"ok": True, **listing_sslv.candidates(listing_id)}
+
+
+@router.post("/listings/{listing_id}/sslv-attach")
+def listing_sslv_attach(listing_id: int, req: SslvAttachReq, _auth: None = Depends(require_token)) -> dict:
+    import listing_sslv
+    return {"ok": True, **listing_sslv.start_attach(listing_id, req.link, req.requested_by)}
+
+
+@router.get("/listings/{listing_id}/sslv-attach")
+def listing_sslv_attach_status(listing_id: int, _auth: None = Depends(require_token)) -> dict:
+    import listing_sslv
+    return {"ok": True, **listing_sslv.status(listing_id)}
