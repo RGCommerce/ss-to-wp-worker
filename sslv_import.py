@@ -451,6 +451,7 @@ def import_from_url(url: str, wp_user_id: int = 0) -> dict:
                 helpers.apply_office_from_industrial_gates(ai_result, fields.get("floor"))
                 helpers.apply_building_class_gate(ai_result, bp_id)
                 helpers.apply_fence_gate(ai_result, bp_id, _bf)
+                helpers.apply_own_entrance_gate(ai_result, fields.get("floor"), fields.get("area_m2"), text or "")
                 ai_fields = {k: ai_result.get(k) for k in ai_allowed
                              if ai_result.get(k) not in (None, "", "unknown")}
                 if ai_result.get("Debug_note"):

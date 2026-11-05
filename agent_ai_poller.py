@@ -444,6 +444,7 @@ def _process_one(row: Dict[str, Any]) -> tuple[bool, str]:
             helpers.apply_office_from_industrial_gates(result, row.get("floor"))
             helpers.apply_building_class_gate(result, row.get("building_profile_id"))
             helpers.apply_fence_gate(result, row.get("building_profile_id"), _bf)
+            helpers.apply_own_entrance_gate(result, row.get("floor"), row.get("area_m2"), text or "")
             # ēkas poga «pielāgo» → PVD/Medicīna pieliek ARĪ aizslēgtam potenciālam (Raimonds 2026-11-01)
             if "Potential_space_group" in locked:
                 _adds = helpers.forced_potential_adds(result, _bf)

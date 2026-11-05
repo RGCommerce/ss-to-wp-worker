@@ -1300,9 +1300,26 @@ Rules:
 ---
 
 ## Sava_ieeja_check
-- separate dedicated entrance visible or stated -> checked
-- enough evidence and clearly absent -> not checked
-- insufficient evidence -> unknown
+Meaning (Raimonds 2026-11-05): the unit has ITS OWN door or gate from the OUTSIDE (street or
+yard) straight into the unit — you do not pass through a corridor, lobby, staircase or hall
+shared with other tenants. An internal corridor INSIDE the unit after its own door (e.g. own
+door + 6 cabinets along a private corridor) is fine -> checked.
+checked:
+- a photo shows the unit's own exterior door / shop front / own gate opening into the unit
+- text says "sava ieeja", "atsevišķa ieeja", "ieeja no ielas", "atsevišķas kāpnes"
+- the whole building is offered
+- a warehouse / production / autoservice unit on the 1st floor with its own overhead gate
+not checked:
+- a lobby / reception / shared corridor / shared staircase / shared lift is how you get in
+- the unit is on the 2nd floor or higher, or in a basement — unless the text says it has
+  its own entrance
+- a small room inside a bigger building with no own exterior door visible
+unknown: only for a large 1st-floor unit where neither photos nor text show the entrance.
+(The code applies these rules after you; describe honestly what you see.)
+
+## street_entrance vs Sava_ieeja_check
+street_entrance = the door opens DIRECTLY onto the STREET (visible to passers-by — shops,
+cafes, salons). A gate from a yard is own entrance but NOT a street entrance.
 
 ---
 
@@ -2737,6 +2754,52 @@ def apply_fence_gate(result, building_profile_id=None, building_flags=None):
         result["Nozogota_teritorija_check"] = new
         result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | žogs={new} ({src})")[:500]
     return f"{new} ({src})"
+
+
+# ---------------------------------------------------------------------------
+# SAVA IEEJA — Raimonda noteikumi 2026-11-05 (20/20 uz viņa atzīmēm). Pēc AI, bez AI izsaukuma.
+# ---------------------------------------------------------------------------
+_OWN_ENTRANCE_TEXT_RE = None
+
+
+def apply_own_entrance_gate(result, floor_raw=None, area_m2=None, listing_text=""):
+    """Sava_ieeja_check pēc 7 noteikumiem. Atgriež iemeslu."""
+    import re as _re
+    global _OWN_ENTRANCE_TEXT_RE
+    if _OWN_ENTRANCE_TEXT_RE is None:
+        _OWN_ENTRANCE_TEXT_RE = _re.compile(
+            r"atsevišķ\w*\s+ieej|sav\w*\s+ieej|atsevišķ\w*\s+kāpņ|own entrance|separate entrance|"
+            r"отдельн\w*\s+вход", _re.I)
+    fl = _floor_number(floor_raw)
+    fs = str(floor_raw or "").lower()
+    area = _to_float(area_m2)
+    ai = str(result.get("Sava_ieeja_check") or "unknown")
+    sg = str(result.get("Space_group") or "")
+    gates = str(result.get("Pacelamie_varti_check") or "") == "checked"
+    street = str(result.get("street_entrance") or "") == "checked"
+    if str(result.get("Sava_eka_check") or "") == "checked":
+        new, why = "checked", "visa ēka"
+    elif listing_text and _OWN_ENTRANCE_TEXT_RE.search(listing_text):
+        new, why = "checked", "tekstā sava/atsevišķa ieeja"
+    elif (fl is not None and fl > 1) or "pagrab" in fs or "cokol" in fs:
+        new, why = "not checked", "augšstāvs / pagrabs"
+    elif sg in ("Noliktava", "Ražošana", "Autoserviss", "StockOfiss") and gates:
+        new, why = "checked", "1. stāvs ar saviem vārtiem"
+    elif ai == "checked":
+        if sg in ("Tirdzniecība", "Restorans/Cafe") or street or (area if area is not None else 999) >= 300:
+            new, why = "checked", "AI: savas durvis (veikals / ielas ieeja / liela telpa)"
+        else:
+            new, why = "not checked", "AI ir, bet maza telpa bez vārtiem / ielas ieejas"
+    elif ai == "not checked":
+        new, why = "not checked", "AI: caur kopīgu telpu"
+    elif area is not None and area < 300:
+        new, why = "not checked", "maza telpa, nav pierādījuma"
+    else:
+        new, why = "unknown", "liela telpa bez pierādījuma"
+    if new != ai:
+        result["Sava_ieeja_check"] = new
+        result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | ieeja: {why}")[:500]
+    return why
 
 
 def union_potential(current, adds):
