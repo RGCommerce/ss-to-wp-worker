@@ -2777,12 +2777,15 @@ def apply_own_entrance_gate(result, floor_raw=None, area_m2=None, listing_text="
     sg = str(result.get("Space_group") or "")
     gates = str(result.get("Pacelamie_varti_check") or "") == "checked"
     street = str(result.get("street_entrance") or "") == "checked"
-    if str(result.get("Sava_eka_check") or "") == "checked":
-        new, why = "checked", "visa ēka"
-    elif listing_text and _OWN_ENTRANCE_TEXT_RE.search(listing_text):
+    upper = (fl is not None and fl > 1) or "pagrab" in fs or "cokol" in fs
+    has_text = bool(listing_text and _OWN_ENTRANCE_TEXT_RE.search(listing_text))
+    if has_text:
         new, why = "checked", "tekstā sava/atsevišķa ieeja"
-    elif (fl is not None and fl > 1) or "pagrab" in fs or "cokol" in fs:
+    elif upper:
+        # Raimonds 2026-11-05: 2. stāvā un augstāk / pagrabā sava ieeja nav — arī ja «visa ēka» atzīmēta
         new, why = "not checked", "augšstāvs / pagrabs"
+    elif str(result.get("Sava_eka_check") or "") == "checked":
+        new, why = "checked", "visa ēka"
     elif sg in ("Noliktava", "Ražošana", "Autoserviss", "StockOfiss") and gates:
         new, why = "checked", "1. stāvs ar saviem vārtiem"
     elif ai == "checked":
@@ -2799,6 +2802,9 @@ def apply_own_entrance_gate(result, floor_raw=None, area_m2=None, listing_text="
     if new != ai:
         result["Sava_ieeja_check"] = new
         result["Debug_note"] = (str(result.get("Debug_note") or "") + f" | ieeja: {why}")[:500]
+    # Ieeja no ielas: bez savas ieejas vai augšstāvā/pagrabā tās nav (Raimonds 2026-11-05)
+    if str(result.get("street_entrance") or "") != "not checked" and (upper or new == "not checked") and not has_text:
+        result["street_entrance"] = "not checked"
     return why
 
 
