@@ -617,10 +617,10 @@ are visible) honestly — the code then decides. For your own Potential_space_gr
 same simple rule:
 - PVD when the space has ALL THREE: washable walls (tiles are one option) + a water
   connection (floor drains or a sink IN the room) + a ventilation system.
-- Floor level does not matter (a 5th-floor production space with a lift is fine), the
-  building type does not matter (a canteen kitchen inside an office building qualifies).
-- NEVER for an office, studio, medical or gym space — those are not turned into food
-  production.
+- Floor level does not matter (a 5th-floor production space with a lift is fine).
+- NEVER for an office, studio, medical or gym space, and NEVER for a restaurant / cafe /
+  canteen with guests (Raimonds 2026-11-06: Ēdināšana = Restorans/Cafe, PVD = production —
+  separate categories).
 - text with PVD registration / food production / production kitchen -> PVD.
 Marketing words ("piemērots pārtikai") alone do not qualify.
 
@@ -704,6 +704,16 @@ Primary:
 - PHOTO (interior)
 Secondary:
 - TEXT
+- PHOTO (facade / building exterior) — when there is NO interior photo
+
+Judge in levels (Raimonds 2026-11-06):
+1. Interior photos of the offered unit exist -> judge by the interior.
+2. NO interior photos -> judge by the facade / building exterior: peeling plaster, old
+   windows, rust, worn roof, Soviet-era industrial building without renovation -> the
+   inside is at best "Lietots" (often "Nepieciešams remonts"). An old / worn facade is
+   NEVER "Labs" or "Jauns".
+3. "Labs" / "Jauns" require positive evidence: a renovated interior, or a new / clearly
+   renovated building (modern facade, new windows) when the interior is not shown.
 
 Map visually:
 - Jauns = newly renovated / fresh / no visible wear
@@ -2519,16 +2529,15 @@ def apply_pvd_gates(result, floor_raw=None, building_flags=None, listing_text=""
     gfloor = str(result.get("Gridas_materials") or "")
     walls = str(result.get("Mazgajamas_sienas_check") or "") == "checked"
     vent = str(result.get("Ventilacijas_sistema_check") or "") == "checked"
-    # ūdens = trapi grīdā VAI izlietne darba telpā VAI virtuve telpā VAI tā ir restorāna/kafejnīcas telpa
-    # (virtuvē ūdens ir pēc definīcijas) — Raimonds: «trapi vai citi»
+    # ūdens = trapi grīdā VAI izlietne darba telpā VAI virtuve telpā — Raimonds: «trapi vai citi»
     water = (("trap" in gfloor.lower())
              or str(result.get("Ir_izlietne_telpa_check") or "") == "checked"
-             or str(result.get("Virtuve_check") or "") == "checked"
-             or sg == "Restorans/Cafe")
+             or str(result.get("Virtuve_check") or "") == "checked")
 
     if sg == PVD or (listing_text and _PVD_TEXT_RE.search(listing_text)):
         want, why = True, "aktīvs PVD / PVD kods tekstā"
-    elif sg in ("Birojs", "Studija", "Medicīna", "Sporta zāle"):
+    elif sg in ("Birojs", "Studija", "Medicīna", "Sporta zāle", "Restorans/Cafe"):
+        # Raimonds 2026-11-06: ēdināšana (restorāns/kafejnīca) ≠ PVD (ražošana) — atsevišķas kategorijas
         want, why = False, f"{sg} — par pārtikas ražotni nepārtaisa"
     elif walls and water and vent:
         want, why = True, "mazgājamas sienas + ūdens + ventilācija"
