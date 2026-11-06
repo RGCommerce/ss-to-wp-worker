@@ -715,10 +715,14 @@ Judge in levels (Raimonds 2026-11-06):
 3. "Labs" / "Jauns" require positive evidence: a renovated interior, or a new / clearly
    renovated building (modern facade, new windows) when the interior is not shown.
 
-Map visually:
-- Jauns = newly renovated / fresh / no visible wear
-- Labs = maintained, usable, clean, no major issues
-- Lietots = visibly used but usable
+Map visually (Raimonds 2026-11-06 — be strict, most units are "Lietots"):
+- Jauns = new building or a FRESH full renovation: new floor, new ceiling, new lighting, no
+  wear at all, modern finishes. Old furniture or any visible wear -> NOT Jauns.
+- Labs = a modern, well-kept finish that a tenant can move into without any work: good floor,
+  modern ceiling and lighting, no visible wear.
+- Lietots = the DEFAULT for a normal used space: older laminate / linoleum, painted concrete
+  floor, exposed wiring or pipes, older office furniture and shelving, dated doors / partitions,
+  visible wear. Usable as is, but clearly not new.
 - Nepabeigts = unfinished / shell / grey-finish
 - Nepieciešams remonts = needs repair
 - Kapitālais remonts = severe repair need
