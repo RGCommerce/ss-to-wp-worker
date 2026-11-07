@@ -1525,6 +1525,13 @@ def _email_sslv_for_unit(cands: list[dict], u: dict, n_units_total: int) -> list
     1 telpa (vai 1 ēka ar nomas+pārdošanas variantiem — Vircava) un 1 links → tas."""
     if not cands:
         return []
+    # telpa = konkrēts ss.lv sludinājums (ss.lv numura avots) → tikai TĀ bildes, ne cita līdzīgas platības sludinājuma
+    # (Barona kvartāls 2026-11-06: Cēsu 31 75 m² rādīja Brīvības 155 76 m² galeriju; saite veda uz pareizo)
+    own = _bare_sslv(u.get("sslv_link")) if u.get("sslv_link") else None
+    if own:
+        mine = [c for c in cands if _bare_sslv(c.get("link")) == own]
+        return mine[:1] if mine else [{"link": own, "area_m2": u.get("area_m2"), "floor": u.get("floor"), "same_room_score": 1.5,
+                                       "is_agent": False, "from_email": True}]
     area = _num(u.get("area_m2"))
     hits = []
     for c in cands:
