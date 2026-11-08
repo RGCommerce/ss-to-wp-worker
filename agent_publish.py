@@ -286,6 +286,33 @@ def _bp_apply_updates(conn, bp_id: int, building: dict) -> None:
         )
 
 
+def _propagate_building_parkings(conn, bp_id: int, building: dict) -> int:
+    """#99: ēkas «Stāvvieta: Jā» → visi ēkas sludinājumi bez stāvvietas (tukšs/unknown/Nav/tikai iela) → «Ir vietas»,
+    atzīmēts kā cilvēka (AI nepārraksta). Mājaslapā esošos pārpublicē. Atgriež mainīto skaitu."""
+    if not str(building.get("Parkings") or "").startswith("Ir vietas"):
+        return 0
+    rows = conn.execute(
+        """UPDATE properties.listings
+              SET "Parkings" = 'Ir vietas'::properties.parkings_enum,
+                  agent_locked_fields = array_append(array_remove(coalesce(agent_locked_fields, '{}'), 'Parkings'), 'Parkings'),
+                  updated_at = now()
+            WHERE building_profile_id = %s
+              AND coalesce("Parkings"::text, 'unknown') IN ('unknown', 'Nav', 'Tikai ielas parking')
+              AND NOT ("Parkings" IS NOT NULL AND 'Parkings' = ANY(coalesce(agent_locked_fields, '{}')))
+        RETURNING id, on_website""",
+        (bp_id,),
+    ).fetchall()
+    for lid, on_web in rows:
+        if on_web:
+            conn.execute(
+                """INSERT INTO properties.wp_export_queue (listing_id, action, status, requested_by)
+                   VALUES (%s, 'publish', 'pending', 'stāvvieta (ēka)')
+                   ON CONFLICT (listing_id) WHERE status='pending' DO NOTHING""",
+                (lid,),
+            )
+    return len(rows)
+
+
 def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     """Atgriež building_profile_id. Ja existing_building_id (vai existing_bp_id)
     ir norādīts → UPDATE (auto-update building_profile: aģenta ievadītā vērtība
@@ -1053,6 +1080,15 @@ def publish_anketa(payload: dict) -> dict:
             # (imports bez foto: poller pats renderē PDF lapas no source_file_path un importu nekad neliek
             #  low_evidence — Prompta aģents 2026-10-28, zars prompti; tāpēc izņēmuma «paliek ok» vairs nav)
             listing_ids.append(listing_id)
+
+        # #99 (Raimonds 2026-11-08): ēkai atzīmēta stāvvieta → visi ēkas sludinājumi «Ir vietas»
+        # (konkrētāks «par maksu/bezmaksas» un cilvēka atzīmētais paliek).
+        try:
+            _n = _propagate_building_parkings(conn, bp_id, building)
+            if _n:
+                log.append(f"✓ stāvvieta atzīmēta {_n} ēkas sludinājumos")
+        except Exception as e:
+            warnings.append(f"stāvvietas atzīme ēkas sludinājumos: {type(e).__name__}: {e}")
 
         # IMPORTS — Step 4/5 izlaiž (nav WP rindas). Piesaista avota PDF + pdf_jobs
         # «done» rindu (LP «Pievienot PDF LP» un /publish «Lejupielādēt» lieto pdf_jobs).
