@@ -894,7 +894,11 @@ def publish(listing_id: int, dry_run: bool = False, force: bool = False,
         # secībā var nebūt pirmā), floor_plan_attachment_ids → plugin būvē
         # Houzez 'floor_plans' grupu
         common = dict(
-            title=title, content=body, excerpt=excerpt, status="publish",
+            # #104 «Privāts» (Raimonds 2026-11-08): wp_silent → WP post_status='private' — redzams TIKAI
+            # klienta LP (Baltās WP guard), nekur publiski. Katra pārpublicēšana to saglabā (bez šī
+            # jebkurš bilžu/teksta re-publish privāto padarītu publisku).
+            title=title, content=body, excerpt=excerpt,
+            status="private" if listing.get("wp_silent") else "publish",
             author=agent, meta=meta, taxonomies=tax,
             featured_media=featured_id,
             floor_plan_attachment_ids=plan_attach_ids,
