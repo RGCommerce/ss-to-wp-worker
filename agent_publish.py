@@ -632,6 +632,20 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
         "project_completion": uget("project_completion", "project_completion"),
     }
 
+    # #109 (Raimonds 2026-11-08): ēka pieder vairākiem īpašniekiem → telpai savs īpašnieks (vārds, tel., e-pasts, www).
+    # Listinga kontakti ir pirmie (panelis/izsūtne ēkas kontaktu ņem tikai, ja listingam nav sava).
+    _oc = unit.get("owner_contact") if isinstance(unit.get("owner_contact"), dict) else None
+    if _oc and any(str(_oc.get(k) or "").strip() for k in ("name", "phone", "email")):
+        for _col, _key in (("owner", "name"), ("phone_numbers", "phone"), ("email", "email")):
+            _v = str(_oc.get(_key) or "").strip()
+            if _v:
+                cols[_col] = _v
+                if _col not in locked:
+                    locked.append(_col)
+        cols["agent_locked_fields"] = locked
+        if str(_oc.get("www") or "").strip():
+            cols["owner_website"] = str(_oc["www"]).strip()
+
     # FULL režīma papildlauki — visi pieņem abus kapitalizācijas variantus
     if mode == "full":
         full_field_pairs = [
@@ -795,6 +809,13 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
                                    cols.get("floor"), cols.get("price_type"))
     if dup:
         raise DuplicateListingError(dup)
+
+    # #109: owner_website tikai, kad migrācija 2026-11-08_listings_owner_website ir dzīvē (citādi INSERT kristu)
+    if "owner_website" in cols:
+        _has = conn.execute("""SELECT 1 FROM information_schema.columns WHERE table_schema='properties'
+                               AND table_name='listings' AND column_name='owner_website'""").fetchone()
+        if not _has:
+            cols.pop("owner_website")
 
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)
