@@ -1210,7 +1210,7 @@ def _our_listings(conn, bp_id: int) -> list[dict]:
     return conn.execute(
         """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
                   on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
-                  "Apsaimniekosanas_maksa", partner_unit_ref,
+                  "Apsaimniekosanas_maksa", partner_unit_ref, link,
                   cardinality(local_image_paths_processed) AS n_processed,
                   cardinality(local_image_paths_raw) AS n_raw
              FROM properties.listings
@@ -1230,7 +1230,7 @@ def _our_listings_safe(conn, bp_id: int) -> list[dict]:
         return conn.execute(
             """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
                       on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
-                      "Apsaimniekosanas_maksa", NULL::text AS partner_unit_ref,
+                      "Apsaimniekosanas_maksa", NULL::text AS partner_unit_ref, link,
                       cardinality(local_image_paths_processed) AS n_processed,
                       cardinality(local_image_paths_raw) AS n_raw
                  FROM properties.listings
@@ -1757,11 +1757,35 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 fd = _floor_digits(floor)
                 approx = bool(u.get("area_approx"))
                 cands = []
+                own_link = _bare_sslv(u.get("sslv_link")) if u.get("sslv_link") else None
                 for l in ours:
-                    if l.get("partner_unit_ref") and u.get("ref") and l["partner_unit_ref"].strip().lower() == str(u["ref"]).strip().lower():
+                    # tas pats ss.lv sludinājums = tā pati telpa
+                    if own_link and l.get("link") and _bare_sslv(l["link"]) == own_link:
                         cands = [l]
                         break
+                if own_link and not cands:
+                    # ss.lv sludinājums jau ir DB kā skrāpēts (vēl nav mūsējais / mājaslapā) → tas pats, nevis jauns
+                    _same = conn.execute(
+                        """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
+                                  on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
+                                  "Apsaimniekosanas_maksa", NULL::text AS partner_unit_ref, link,
+                                  cardinality(local_image_paths_processed) AS n_processed,
+                                  cardinality(local_image_paths_raw) AS n_raw
+                             FROM properties.listings
+                            WHERE building_profile_id = ANY(%s) AND link IN (%s, %s)
+                              AND coalesce("Debug_status"::text, '') NOT IN ('not_commercial', 'wanted_ad')
+                            ORDER BY id DESC LIMIT 1""",
+                        ([b["id"] for b in bps] or [-1], own_link, f"https://www.{own_link}")).fetchone()
+                    if _same:
+                        cands = [dict(_same)]
+                for l in ([] if cands else ours):
                     la = _num(l.get("area_m2"))
+                    # ref sakrīt, bet platība krasi cita → cita telpa: ss.lv numura ref ir «iela · tips», vienāds visām ēkas
+                    # noliktavām (SIRIN Lubānas 160: 1967 un 1244 m² sasaistījās ar 631 m² #112021, Raimonds 2026-11-11)
+                    if (l.get("partner_unit_ref") and u.get("ref") and l["partner_unit_ref"].strip().lower() == str(u["ref"]).strip().lower()
+                            and (area is None or la is None or _area_close(area, la, True))):
+                        cands = [l]
+                        break
                     if not _area_close(area, la, approx):
                         continue
                     lf = _floor_digits(l.get("floor"))
@@ -1866,6 +1890,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied" or int(l["id"]) in missing_seen:
                         continue   # jau iznomātos / citā adresē jau uzskaitītos nepiedāvā vēlreiz
+                    if meta.get("source") == "sslv" and int(l["id"]) not in gone_ids:
+                        continue   # ss.lv numuru ieplūdē ir tikai jaunie/mainītie sludinājumi — «nav sarakstā» tikai pazudušie no ss.lv
                     missing_seen.add(int(l["id"]))
                     a_out["missing_in_list"].append({
                         "id": int(l["id"]), "street": l["street"], "area_m2": l["area_m2"], "floor": l["floor"],
