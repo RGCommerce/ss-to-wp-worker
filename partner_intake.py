@@ -1786,7 +1786,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                             and (area is None or la is None or _area_close(area, la, True))):
                         cands = [l]
                         break
-                    if not _area_close(area, la, approx):
+                    # tā pati ēka + stāvs + platība ±5 % = tā pati telpa (1500 vs 1450 m², Raimonds 2026-11-11)
+                    if not (_area_close(area, la, approx) or (area and la and abs(area - la) <= 0.05 * max(area, la))):
                         continue
                     lf = _floor_digits(l.get("floor"))
                     if fd and lf and fd != lf:
@@ -1794,6 +1795,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     cands.append(l)
                 # vairāki kandidāti, bet tikai viens brīvs → tas (iznomātais = vēsturisks dvīnis)
                 dup_ids: list[int] = []
+                # vairāki kandidāti → tas pats tips izšķir (Noliktava ≠ Birojs)
+                if len(cands) > 1 and u.get("space_type"):
+                    same_type = [c for c in cands if (c.get("Space_group") or "") == u["space_type"]]
+                    if same_type:
+                        cands = same_type
                 if len(cands) > 1:
                     free = [c for c in cands if c.get("occupancy_status") != "occupied"]
                     if len(free) == 1:
