@@ -1043,6 +1043,9 @@ def _norm_txt(t: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", t)).strip()
 
 
+_HEAD_ADDR_RE = re.compile(r"\b[A-ZĀČĒĢĪĶĻŅŠŪŽ][\wāčēģīķļņšūž.\-]+\s+(?:iela|gatve|bulv[āa]ris|bulv\.|prospekts|dambis|laukums)\s+\d+")
+
+
 def _pdf_sections(pdf_path: Path, addresses: list[dict]) -> Optional[list[dict]]:
     """PDF lapas → ēku sadaļu virsraksti (y, adreses indekss) + lapas vārdi ar koordinātām.
     Virsraksts = teksta bloks, kurā ir adreses ielas atslēga AR numuru («ulbrokas 23») vai ēkas nosaukums."""
@@ -1053,6 +1056,9 @@ def _pdf_sections(pdf_path: Path, addresses: list[dict]) -> Optional[list[dict]]
     keys: list[tuple[int, str]] = []
     for i, a in enumerate(addresses):
         sk = _street_key(a.get("street") or "")
+        # «ulbrokas 23 riga» → «ulbrokas 23» (AI mēdz pielikt pilsētu — tad virsrakstu neatpazina)
+        m = re.match(r"(.*?\b\d+[a-z]?)\b", sk)
+        sk = m.group(1) if m else sk
         if sk and any(ch.isdigit() for ch in sk):
             keys.append((i, sk))
         bn = _norm_txt(a.get("building_name") or "")
@@ -1073,6 +1079,10 @@ def _pdf_sections(pdf_path: Path, addresses: list[dict]) -> Optional[list[dict]]
                 hit = {i for i, k in keys if k in bt or k in bts}
                 if len(hit) == 1:
                     heads.append((float(b[1]), hit.pop()))
+                elif hit or _HEAD_ADDR_RE.search(raw):
+                    # virsraksts ar adresi, ko AI adresēs nav (vai atbilst vairākām) → «nezināma sadaļa» (-1): rindas
+                    # zem tās NEpiešķir iepriekšējai ēkai (Zaļā 2026-11-13: visa Ulbrokas 23 aizgāja pie Astras 1c)
+                    heads.append((float(b[1]), -1))
             words = [(float(w[1]), w[4]) for w in page.get_text("words")]
             pages.append({"heads": sorted(heads), "words": words})
     return pages
@@ -1096,13 +1106,16 @@ def _unit_section(pages: list[dict], page_no: int, area: float) -> Optional[int]
                 ys.append(y)
         except ValueError:
             pass
+    if carry == -1:
+        carry = None
     if not ys:
         return carry if not pg["heads"] else None
     found: set[Optional[int]] = set()
     for y in ys:
         above = [h for h in pg["heads"] if h[0] <= y + 1]
         found.add(above[-1][1] if above else carry)
-    found.discard(None)
+    if -1 in found or None in found:
+        return None   # nezināma sadaļa / nav virsraksta → nepārceļ
     return found.pop() if len(found) == 1 else None
 
 
@@ -1117,12 +1130,14 @@ def _fix_pdf_sections(data: dict, intake_dir: Path, meta: dict) -> list[str]:
         return []
     moves: list[tuple[int, int, dict]] = []
     notes: list[str] = []
+    pages_all: list[dict] = []
     for pdf in pdfs:
         if len(pdfs) > 1:
             units_here = [u for a in addrs for u in a.get("units") or [] if pdf.name.lower() in (u.get("attachment_hint") or "").lower()]
             if not units_here:
                 continue
         pages = _pdf_sections(pdf, addrs)
+        pages_all.extend(pages or [])
         # tikai dokumentam ar ēku SADAĻĀM (≥ 2 dažādu adrešu virsraksti); viena tabula ar ēku kodiem → nekas
         if not pages or len({h[1] for p in pages for h in p["heads"]}) < 2:
             continue
@@ -1137,6 +1152,18 @@ def _fix_pdf_sections(data: dict, intake_dir: Path, meta: dict) -> list[str]:
                 sec = _unit_section(pages, int(m.group(0)), float(area))
                 if sec is not None and sec != ai:
                     moves.append((ai, sec, u))
+    # drošības vārsts (Zaļā 2026-11-13): adresei, kuras virsraksts PDF ir atrasts, jāpārceļ VISAS telpas — pretruna
+    # (sadaļas neskaidras) → NEpārceļ neko, tikai brīdinājums
+    found_heads = {h[1] for p in pages_all for h in p["heads"]}
+    for ai in {m[0] for m in moves}:
+        n_all = len(addrs[ai].get("units") or [])
+        n_mv = sum(1 for m in moves if m[0] == ai)
+        if n_all >= 2 and n_mv == n_all and ai in found_heads:
+            w = (f"PDF sadaļas neskaidras: «{addrs[ai].get('street') or addrs[ai].get('building_name')}» {n_mv} no {n_all} telpām "
+                 f"PDF rādās zem citas ēkas virsraksta — nekas nav pārcelts, pārbaudi ēkas")
+            data.setdefault("warnings", []).append(w)
+            logger.warning("partner_intake: %s", w)
+            return [w]
     for ai, sec, u in moves:
         addrs[ai]["units"] = [x for x in addrs[ai].get("units") or [] if x is not u]
         ua = _num(u.get("area_m2")) or 0
@@ -4058,7 +4085,7 @@ def _assign_links_by_geometry(intake_id: str, analysis: dict) -> dict:
         names = names + [str(x) for x in (l.get("rows") or [])]   # Drive skenējums: mapes NOSAUKUMS ir rindā («1000 m² (2.stāvs), Skanstes 54A»)
         l["name_areas"] = sorted({float(m.group(1).replace(",", ".")) for n in names
                                   for m in re.finditer(r"(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|kv\.?m|kvm|sqm|sq\.?\s*m)", n, re.I)})
-        l["name_floors"] = sorted({int(m.group(1)) for n in names for m in re.finditer(r"(?<![\d.])(\d{1,2})\.?\s*st(?:āvs|avs|\.|_|)", n, re.I)})
+        l["name_floors"] = sorted({int(m.group(1)) for n in names for m in re.finditer(r"(?<![\d.])(\d{1,2})\.?\s*st(?:āvs|avs|\.|_|\b)", n, re.I)})
     stats = {"geometry": 0, "folder": 0, "ai": 0, "none": 0}
     for a in analysis.get("addresses") or []:
         for u in a.get("units") or []:
