@@ -774,6 +774,46 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
     return out
 
 
+_PREFIX_CACHE: dict[str, tuple[float, Optional[str]]] = {}
+
+
+def _live_phone_prefix(link: str) -> Optional[str]:
+    """ss.lv lapā redzamie numura pirmie cipari («28-88-***» → «2888»); None = nav maskēts / lapa nav. Kešs 6 h."""
+    import time
+    hit = _PREFIX_CACHE.get(link)
+    if hit and time.time() - hit[0] < 6 * 3600:
+        return hit[1]
+    pref = None
+    try:
+        import ai_text_helpers as helpers
+        import sslv_import
+        html = sslv_import._fetch_html(link if link.startswith("http") else f"https://www.{link}", helpers.HEADERS, helpers.REQUEST_TIMEOUT)
+        m = re.search(r'id="ptd2_\d+"[^>]*>(.*?)</td>', html or "", re.S)
+        txt = re.sub(r"<[^>]+>", "", m.group(1)) if m else ""
+        if "*" in txt:
+            d = re.sub(r"\D", "", txt.split("*")[0])
+            pref = d[3:] if d.startswith("371") else d
+    except Exception:
+        pref = None
+    _PREFIX_CACHE[link] = (time.time(), pref)
+    return pref
+
+
+def _number_really_there(g: dict, phones: list[str]) -> bool:
+    """Faktu pārbaude pirms «Pievienot ēkas»: vai ŠIS numurs tiešām ir dzīvajā ss.lv sludinājumā (ss.lv saiti mēdz
+    piešķirt citam sludinājumam → skrāpera vecais numurs pie svešas ēkas; Meierovica 16 → Barona 28a, 2026-11-13).
+    Neaktīvos nevar pārbaudīt → paliek."""
+    locs = [re.sub(r"^371", "", re.sub(r"\D", "", p)) for p in phones if p]
+    live = [a for a in g.get("ads") or [] if a.get("live") and a.get("link")][:4]
+    if not live or not locs:
+        return True
+    for a in live:
+        pref = _live_phone_prefix(a["link"])
+        if pref is None or any(l.startswith(pref) for l in locs):
+            return True
+    return False
+
+
 def _other_addresses(src: dict) -> list[dict]:
     """Adreses, kur numurs liek sludinājumus, bet kuras avotā NAV (jauna ēka?) — panelī «+ pievienot»."""
     import partner_intake
@@ -783,6 +823,8 @@ def _other_addresses(src: dict) -> list[dict]:
     try:
         for g in sslv_number_addresses(", ".join(src.get("phones") or []), days=90):
             if (g.get("bp_id") and g["bp_id"] in have_bps) or partner_intake._street_key(g["street"]) in have_keys:
+                continue
+            if not _number_really_there(g, src.get("phones") or []):
                 continue
             out.append(g)   # arī neaktīvās (panelī «· neaktīvs»; dzīvās pirmās)
     except Exception as e:
