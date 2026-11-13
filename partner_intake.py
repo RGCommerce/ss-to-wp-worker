@@ -1969,16 +1969,20 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 # DB ir 100 m² #111885; Lubānas 160 2026-11-11)
                 ref_id = (str(u.get("ref") or "").strip().lower() if u.get("ref") and "·" not in str(u["ref"]) else "")
                 ref_hits: list[int] = []
+                # Raimonds 2026-11-13: iet lēnām — 1. kārta: tā pati platība (±0,5 m²) un stāvs; TIKAI ja tādas nav,
+                # 2. kārta: ±5 % (89 → 88/90 m²). Nekad 15 % (100 m² pret 89 m² ir cits birojs).
+                exact: list[dict] = []
+                near: list[dict] = []
                 for l in ([] if cands else ours):
                     la = _num(l.get("area_m2"))
+                    close5 = bool(area and la and abs(area - la) <= max(1.0, 0.05 * max(area, la)))
                     by_ref = bool(ref_id and l.get("partner_unit_ref") and l["partner_unit_ref"].strip().lower() == ref_id
-                                  and (area is None or la is None or _area_close(area, la, True)))
-                    # tā pati ēka + stāvs + platība ±5 % = tā pati telpa (1500 vs 1450 m², Raimonds 2026-11-11)
-                    if not by_ref and not (_area_close(area, la, approx) or (area and la and abs(area - la) <= 0.05 * max(area, la))):
-                        continue
+                                  and (area is None or la is None or close5))
                     if by_ref:
                         ref_hits.append(int(l["id"]))
-                        cands.append(l)
+                        near.append(l)
+                        continue
+                    if not close5:
                         continue
                     lf = _floor_digits(l.get("floor"))
                     if fd and lf and fd != lf:
@@ -1986,7 +1990,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     # bez stāva to pašu telpu apstiprina tips (MCITY BTS noliktava 530 m² ≠ 5. st. birojs 500 m²)
                     if not fd and u.get("space_type") and l.get("Space_group") and l["Space_group"] != u["space_type"]:
                         continue
-                    cands.append(l)
+                    if abs(area - la) <= max(0.5, 0.005 * area) and (not fd or lf):
+                        exact.append(l)
+                    else:
+                        near.append(l)
+                cands = cands or exact or near
                 # vairāki kandidāti, bet tikai viens brīvs → tas (iznomātais = vēsturisks dvīnis)
                 dup_ids: list[int] = []
                 # vairāki kandidāti, viens ar TO PAŠU platību (±0,1 m²) → tas (MCITY 46 un 45,8 m²: abi ±5 % robežās,
