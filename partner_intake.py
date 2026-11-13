@@ -1964,16 +1964,21 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         ([b["id"] for b in bps] or [-1], own_link, f"https://www.{own_link}")).fetchone()
                     if _same:
                         cands = [dict(_same)]
+                # partnera telpas identifikators (PDF «270», «005-4») — ne ss.lv numura «Ieriķu 3 · Birojs», kas ir vienāds
+                # visiem ēkas birojiem (Domina 2026-11-13: lxkxd 100 m² pēc tā sasaistījās ar 89,3 m² #111881, lai gan
+                # DB ir 100 m² #111885; Lubānas 160 2026-11-11)
+                ref_id = (str(u.get("ref") or "").strip().lower() if u.get("ref") and "·" not in str(u["ref"]) else "")
+                ref_hits: list[int] = []
                 for l in ([] if cands else ours):
                     la = _num(l.get("area_m2"))
-                    # ref sakrīt, bet platība krasi cita → cita telpa: ss.lv numura ref ir «iela · tips», vienāds visām ēkas
-                    # noliktavām (SIRIN Lubānas 160: 1967 un 1244 m² sasaistījās ar 631 m² #112021, Raimonds 2026-11-11)
-                    if (l.get("partner_unit_ref") and u.get("ref") and l["partner_unit_ref"].strip().lower() == str(u["ref"]).strip().lower()
-                            and (area is None or la is None or _area_close(area, la, True))):
-                        cands = [l]
-                        break
+                    by_ref = bool(ref_id and l.get("partner_unit_ref") and l["partner_unit_ref"].strip().lower() == ref_id
+                                  and (area is None or la is None or _area_close(area, la, True)))
                     # tā pati ēka + stāvs + platība ±5 % = tā pati telpa (1500 vs 1450 m², Raimonds 2026-11-11)
-                    if not (_area_close(area, la, approx) or (area and la and abs(area - la) <= 0.05 * max(area, la))):
+                    if not by_ref and not (_area_close(area, la, approx) or (area and la and abs(area - la) <= 0.05 * max(area, la))):
+                        continue
+                    if by_ref:
+                        ref_hits.append(int(l["id"]))
+                        cands.append(l)
                         continue
                     lf = _floor_digits(l.get("floor"))
                     if fd and lf and fd != lf:
@@ -1990,6 +1995,11 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     exact = [c for c in cands if _num(c.get("area_m2")) is not None and abs(_num(c["area_m2"]) - area) <= 0.1]
                     if len(exact) == 1:
                         cands = exact
+                # vairāki kandidāti → partnera identifikators izšķir
+                if len(cands) > 1 and ref_hits:
+                    by_id = [c for c in cands if int(c["id"]) in ref_hits]
+                    if len(by_id) == 1:
+                        cands = by_id
                 # vairāki kandidāti → tas pats tips izšķir (Noliktava ≠ Birojs)
                 if len(cands) > 1 and u.get("space_type"):
                     same_type = [c for c in cands if (c.get("Space_group") or "") == u["space_type"]]
@@ -2771,6 +2781,14 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                 addr_phone = (cp or {}).get("phone")
             for u in addr["units"]:
                 dec = unit_dec.get(str(u["idx"]), u.get("decision"))
+                # ss.lv numura telpa sasaistīta ar mūsu listingu (ar roku / automātiski / nemainīt) → piesien saiti
+                _bind_to = None
+                if isinstance(dec, str) and dec.startswith("link:") and dec[5:].isdigit():
+                    _bind_to = int(dec[5:])
+                elif dec in ("keep", "update") and (u.get("matched_listing") or {}).get("id"):
+                    _bind_to = int(u["matched_listing"]["id"])
+                if _bind_to and u.get("sslv_link") and _bind_sslv_link(conn, _bind_to, u["sslv_link"]):
+                    result.setdefault("notes", []).append(f"#{_bind_to} ← ss.lv {_bare_sslv(u['sslv_link'])}")
                 if isinstance(dec, str) and dec.startswith("link:"):
                     # aģents zina, ka partnera telpa = mūsu esošais listings, lai gan platība/stāvs atšķiras
                     # (Barona 108: ss.lv 448 m² = mūsu #93413 554 m², Raimonds 2026-10-28) → sasaista, neveido jaunu
@@ -3626,6 +3644,26 @@ def search_buildings(conn, q: str, limit: int = 12) -> list[dict]:
     ).fetchall()
     return [{"id": int(r["id"]), "full_address": r["full_address"], "city": r["city"], "building_name": r["building_name"],
              "listings": int(r["n"]), "on_website": int(r["n_web"])} for r in rows]
+
+
+def _bind_sslv_link(conn, lid: int, link: Optional[str]) -> bool:
+    """Sasaistītai partnera telpai pieraksta TĀS ss.lv sludinājumu (listings.link), ja listingam saites vēl nav un
+    neviens cits listings to nelieto → turpmāk tas pats ss.lv sludinājums = tā pati telpa deterministiski, bez
+    platību minēšanas (Domina 2026-11-13: lxkxd 100 m² ↔ #111885, ebjdx 89 m² ↔ #111881). Cenu sinhronizācija
+    lockētu cenu neaiztiek."""
+    bl = _bare_sslv(link)
+    if not bl:
+        return False
+    try:
+        n = conn.execute("""UPDATE properties.listings SET link = %s, updated_at = now()
+                             WHERE id = %s AND coalesce(link, '') = ''
+                               AND NOT EXISTS (SELECT 1 FROM properties.listings x WHERE x.link IN (%s, %s) AND x.id <> %s)""",
+                         (bl, lid, bl, f"https://www.{bl}", lid)).rowcount
+        conn.commit()
+        return n > 0
+    except Exception:
+        conn.rollback()
+        return False
 
 
 def _bare_sslv(link: Optional[str]) -> Optional[str]:
