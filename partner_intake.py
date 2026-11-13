@@ -1389,6 +1389,25 @@ def _resolve_contact_phone(conn, partner: dict, bp: Optional[dict], ours: list[d
             "alternatives": alts}
 
 
+def _phone_tails(raw) -> set[str]:
+    return {d[-8:] for d in ("".join(ch for ch in p if ch.isdigit()) for p in re.split(r"[,;/]", str(raw or ""))) if len(d) >= 8}
+
+
+def _mark_own_sslv(contact: dict, units: list[dict]) -> None:
+    """ss.lv kandidāts ir «partnera paša» tikai, ja tā numurs = partnera numurs (e-pasts/PDF, partneru reģistrs, ēkas numuri).
+    Tikai tādu galeriju ņem automātiski; citu aģentu/privātpersonu sludinājumus ar to pašu ielu un platību aģents skatās
+    pats (Realto Dzelzavas 74: 36,6 m² ieguva cita mākleŗa sludinājuma citas ēkas bildes, 30,3 m² — salona bildes,
+    Raimonds 2026-11-13)."""
+    own: set[str] = set()
+    for a in (contact or {}).get("alternatives") or []:
+        src = a.get("source") or ""
+        if not src.startswith("ss.lv") and src != "mūsu listingi šajā ēkā":
+            own |= _phone_tails(a.get("phone"))
+    for u in units:
+        for c in ((u.get("images") or {}).get("sslv_inbox") or []):
+            c["own"] = bool(c.get("from_email")) or bool(own & _phone_tails(c.get("phone")))
+
+
 def _pdf_images_for_unit(intake_dir: Path, meta: dict, unit: dict) -> dict:
     """Iegultie attēli no pielikuma lapām, uz ko norāda attachment_hint/page_hint (vai mazs pielikums = plāns)."""
     hint = (unit.get("attachment_hint") or "") + " " + (unit.get("page_hint") or "")
@@ -1882,6 +1901,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 elif status == "new":
                     report["summary"]["ready"] += 1
             a_out["contact_phone"] = _resolve_contact_phone(conn, report.get("partner") or {}, bp, ours, a_out["units"])
+            _mark_own_sslv(a_out["contact_phone"], a_out["units"])
             # mūsu telpas šajā ēkā, kuru partnera sarakstā nav → piedāvā atzīmēt kā iznomātas VIENMĒR (agrāk tikai, ja
             # AI nolēma «saraksts pilns» — Domuss 2026-10-24: AI teica «nē», un Ganību d. 25d 1512 m² netika ieteikts).
             # Ķeksis pēc noklusējuma (Raimonds 2026-10-24): atsūtīts dokuments (PDF/Excel) ar telpām vai vairākas telpas
@@ -2896,9 +2916,13 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
         sel_sslv = []
         out["sslv_skipped"] = "partnerim ir savas bildes; ss.lv galerija bez izvēlēta sludinājuma netiek ņemta"
     if sel_sslv is not None:
+        if not sel.get("sslv_link"):
+            sslv = [c for c in sslv if c.get("own")]   # paneļa noklusētā galerija = partnera paša sludinājums
         sslv = sslv[:1] if sel_sslv else []   # izvēlētie URL nāk no izvēlētā (1.) kandidāta galerijas
     elif link_photos:
         sslv = []   # partnerim ir savas (Drive/web) bildes — ss.lv (ar ūdenszīmēm) pēc noklusējuma neņem
+    elif not sel.get("sslv_link"):
+        sslv = [c for c in sslv if c.get("own")]   # bez aģenta izvēles — tikai partnera paša ss.lv sludinājums
     for cand in sslv[:4]:
         try:
             import ai_text_helpers as helpers
@@ -3458,12 +3482,14 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     # visi kandidāti panelim («vēl 3 sludinājumi» — aģents var pārslēgt); pick = aģenta izvēlētais links
     out["sslv_candidates"] = [{"link": c["link"], "url": c["link"] if c["link"].startswith("http") else f"https://www.{c['link']}",
                                "area_m2": c.get("area_m2"), "floor": c.get("floor"), "price": c.get("price"),
-                               "is_agent": bool(c.get("is_agent")), "from_email": bool(c.get("from_email")),
+                               "is_agent": bool(c.get("is_agent")), "from_email": bool(c.get("from_email")), "own": bool(c.get("own")),
                                "score": c.get("same_room_score"), "n": len(cache.get(c["link"]) or []) if c["link"] in cache and isinstance(cache.get(c["link"]), list) else None}
                               for c in cands[:5]]
     pick = _bare_sslv(pick)
     if pick:
         cands = [c for c in cands if c["link"] == pick] + [c for c in cands if c["link"] != pick]
+    else:
+        cands = [c for c in cands if c.get("own")]   # automātiski tikai partnera paša ss.lv sludinājums
     # Raimonds 2026-10-26: ja 1. ss.lv sludinājums miris (tukšas bildes) — ņem NĀKAMO kandidātu; ja neviena —
     # skaidri «nav», nevis tukši rāmīši. Kešā (sslv_gallery_cache.json) mirušas galerijas pārbauda vēlreiz.
     out["sslv_pending"] = False
