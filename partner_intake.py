@@ -1038,6 +1038,137 @@ def _resolve_missing_addresses(data: dict) -> int:
     return n
 
 
+def _norm_txt(t: str) -> str:
+    t = (t or "").lower().translate(str.maketrans("āēīōūčšžģķļņŗ", "aeiouczsgklnr"))
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", t)).strip()
+
+
+def _pdf_sections(pdf_path: Path, addresses: list[dict]) -> Optional[list[dict]]:
+    """PDF lapas → ēku sadaļu virsraksti (y, adreses indekss) + lapas vārdi ar koordinātām.
+    Virsraksts = teksta bloks, kurā ir adreses ielas atslēga AR numuru («ulbrokas 23») vai ēkas nosaukums."""
+    try:
+        import pymupdf
+    except Exception:
+        return None
+    keys: list[tuple[int, str]] = []
+    for i, a in enumerate(addresses):
+        sk = _street_key(a.get("street") or "")
+        if sk and any(ch.isdigit() for ch in sk):
+            keys.append((i, sk))
+        bn = _norm_txt(a.get("building_name") or "")
+        if len(bn) >= 8:
+            keys.append((i, bn))
+    pages: list[dict] = []
+    with pymupdf.open(str(pdf_path)) as doc:
+        for page in doc:
+            heads: list[tuple[float, int]] = []
+            for b in page.get_text("blocks"):
+                raw = b[4] if len(b) > 4 else ""
+                # sadaļas virsraksts = īss bloks (viena rinda), ne tabulas rinda/visa tabula (Skanstes City cenu
+                # tabula ir viens 1200 zīmju bloks ar ēku kodiem — tas NAV sadaļa)
+                if len(raw) > 200 or len(re.findall(r"\d+(?:[.,]\d+)?", raw)) > 4:
+                    continue
+                bt = _norm_txt(raw)
+                bts = _street_key(raw)
+                hit = {i for i, k in keys if k in bt or k in bts}
+                if len(hit) == 1:
+                    heads.append((float(b[1]), hit.pop()))
+            words = [(float(w[1]), w[4]) for w in page.get_text("words")]
+            pages.append({"heads": sorted(heads), "words": words})
+    return pages
+
+
+def _unit_section(pages: list[dict], page_no: int, area: float) -> Optional[int]:
+    """Kurai ēkas sadaļai pieder telpas rinda: pēc platības vārda y uz lapas → pēdējais virsraksts virs tā;
+    lapā bez virsraksta (tabulas turpinājums) → pēdējais virsraksts iepriekšējās lapās. Neviennozīmīgs → None."""
+    if not (1 <= page_no <= len(pages)):
+        return None
+    carry: Optional[int] = None
+    for p in pages[:page_no - 1]:
+        if p["heads"]:
+            carry = p["heads"][-1][1]
+    pg = pages[page_no - 1]
+    ys = []
+    for y, w in pg["words"]:
+        t = w.strip("~*;:()").replace(",", ".").rstrip(".")
+        try:
+            if abs(float(t) - area) < 0.01:
+                ys.append(y)
+        except ValueError:
+            pass
+    if not ys:
+        return carry if not pg["heads"] else None
+    found: set[Optional[int]] = set()
+    for y in ys:
+        above = [h for h in pg["heads"] if h[0] <= y + 1]
+        found.add(above[-1][1] if above else carry)
+    found.discard(None)
+    return found.pop() if len(found) == 1 else None
+
+
+def _fix_pdf_sections(data: dict, intake_dir: Path, meta: dict) -> list[str]:
+    """Deterministiska pārbaude pēc AI: PDF tabulas rinda pieder tai ēkas sadaļai, zem kuras virsraksta tā ir
+    (arī ja tabula turpinās nākamajā lapā bez virsraksta). AI MCITY 2026-11 2. lapu (Ulbrokas 23 turpinājums)
+    pielika Gunāra Astras 1c (Raimonds 2026-11-13). Pārceļ telpas, atgriež brīdinājumus."""
+    addrs = data.get("addresses") or []
+    pdfs = [STORAGE_ROOT / a["path"] for a in meta.get("attachments") or [] if str(a.get("path", "")).lower().endswith(".pdf")]
+    pdfs = [p for p in pdfs if p.is_file()]
+    if len(addrs) < 2 or not pdfs:
+        return []
+    moves: list[tuple[int, int, dict]] = []
+    notes: list[str] = []
+    for pdf in pdfs:
+        if len(pdfs) > 1:
+            units_here = [u for a in addrs for u in a.get("units") or [] if pdf.name.lower() in (u.get("attachment_hint") or "").lower()]
+            if not units_here:
+                continue
+        pages = _pdf_sections(pdf, addrs)
+        # tikai dokumentam ar ēku SADAĻĀM (≥ 2 dažādu adrešu virsraksti); viena tabula ar ēku kodiem → nekas
+        if not pages or len({h[1] for p in pages for h in p["heads"]}) < 2:
+            continue
+        for ai, a in enumerate(addrs):
+            for u in a.get("units") or []:
+                if len(pdfs) > 1 and pdf.name.lower() not in (u.get("attachment_hint") or "").lower():
+                    continue
+                m = re.search(r"\d+", u.get("page_hint") or "")
+                area = _num(u.get("area_m2"))
+                if not m or not area:
+                    continue
+                sec = _unit_section(pages, int(m.group(0)), float(area))
+                if sec is not None and sec != ai:
+                    moves.append((ai, sec, u))
+    for ai, sec, u in moves:
+        addrs[ai]["units"] = [x for x in addrs[ai].get("units") or [] if x is not u]
+        ua = _num(u.get("area_m2")) or 0
+
+        def _same_row(x: dict) -> bool:
+            # tā pati PDF rinda = tā pati platība UN (tas pats stāvs vai tā pati likme/kopsumma); 500 m² 3. st 8,5 € un
+            # 500–730 m² 5. st 4,99 € ir DIVAS telpas
+            if abs((_num(x.get("area_m2")) or -1) - ua) >= 0.05:
+                return False
+            if _floor_digits(_floor_norm(x.get("floor"))) and _floor_digits(_floor_norm(x.get("floor"))) == _floor_digits(_floor_norm(u.get("floor"))):
+                return True
+            for k in ("rent_per_m2_min", "rent_total", "sale_price"):
+                if _num(x.get(k)) and _num(u.get(k)) and abs(_num(x[k]) - _num(u[k])) < 0.05:
+                    return True
+            return False
+
+        if any(_same_row(x) for x in addrs[sec].get("units") or []):
+            # mērķa ēkā tāda platība jau ir → AI to pašu rindu bija uzskaitījis divreiz (MCITY 18/33 m² arī «Astras 3. st»)
+            notes.append(f"{u.get('floor') or '?'} {ua:g} m² ({u.get('page_hint')}. lapa) pie «{addrs[ai].get('street')}» — "
+                         f"dublikāts (PDF tā ir «{addrs[sec].get('street')}» rinda) — izmesta")
+            continue
+        addrs[sec].setdefault("units", []).append(u)
+        note = (f"{u.get('floor') or '?'} {ua:g} m² ({u.get('page_hint')}. lapa): PDF sadaļa ir "
+                f"«{addrs[sec].get('street')}», ne «{addrs[ai].get('street')}» — pārcelta")
+        notes.append(note)
+        u["partner_notes"] = ((u.get("partner_notes") or "") + f" [sadaļa: {addrs[sec].get('street')}]").strip()
+    if notes:
+        data.setdefault("warnings", []).extend(notes)
+        logger.info("partner_intake: PDF sadaļu labojums: %s", notes)
+    return notes
+
+
 def analyze(intake_id: str) -> dict:
     """AI izlasa dokumentu ANALYZE_RUNS reizes (paralēli) → apvieno → pārbauda pret dokumenta platībām:
     ja dokumentā minēta platība, kas nav ne telpā, ne skipped_items, — vēl viens mērķēts izlasījums ar
@@ -1103,6 +1234,12 @@ def analyze(intake_id: str) -> dict:
         if fix:
             data, st2 = _merge_runs([data, fix], one_unit_per_link=is_web)
             stats["coverage_rerun"] = st2
+    try:
+        _mv = _fix_pdf_sections(data, d, meta)
+        if _mv:
+            stats["pdf_section_moves"] = _mv
+    except Exception as e:
+        logger.warning("partner_intake %s: PDF sadaļu pārbaude: %s", intake_id, e)
     stats["addresses_geocoded"] = _resolve_missing_addresses(data)
     data["_meta"] = {"model": model, "seconds": round(time.time() - t0, 1), "text_chars": len(text),
                      "images": len(images), "consistency": stats}
