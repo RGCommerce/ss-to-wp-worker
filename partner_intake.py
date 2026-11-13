@@ -1298,7 +1298,7 @@ def _find_bp(conn, street: Optional[str], city: Optional[str], district: Optiona
         try:
             key = agent_publish._canonical_bp_key(street, city or "Rīga", district or "")
             row = conn.execute("""SELECT id, full_address, city FROM properties.building_profiles
-                                   WHERE building_key = %s OR regexp_replace(building_key, '^([a-z]\\.\\s*)+', '') = %s
+                                   WHERE building_key = %s OR regexp_replace(building_key, '^([a-km-z]\\.\\s*)+', '') = %s
                                    ORDER BY (building_key = %s) DESC, listing_count_total DESC NULLS LAST, id LIMIT 1""",
                                (key, key, key)).fetchone()
             if row:

@@ -352,11 +352,12 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     # anketas), sasaistāmies ar to, nevis radām dublikātu. Agrāk = laika zīmogs
     # (vienmēr unikāls → vienmēr dublikāts).
     building_key = _canonical_bp_key(raw_street, city, building.get("district") or "")
-    # vecās atslēgas ar iniciāli («k. barona|15|riga», «z.a. meierovica|16|riga») = tā pati ēka (27 dublikātu
+    # vecās atslēgas ar personvārda iniciāli («k. barona|15|riga», «z.a. meierovica|16|riga») = tā pati ēka; «m.»/«l.»
+    # NAV iniciālis — Mazā/Lielā ir cita iela (Zaļā 2026-11-13: Juglas 16 ≠ M. Juglas 16) (27 dublikātu
     # grupas DB, K. Barona 15 → otrs profils 2026-11-13)
     existing = conn.execute(
         """SELECT id FROM properties.building_profiles
-            WHERE building_key = %s OR regexp_replace(building_key, '^([a-z]\\.\\s*)+', '') = %s
+            WHERE building_key = %s OR regexp_replace(building_key, '^([a-km-z]\\.\\s*)+', '') = %s
             ORDER BY (building_key = %s) DESC, listing_count_total DESC NULLS LAST, id LIMIT 1""",
         (building_key, building_key, building_key),
     ).fetchone()
