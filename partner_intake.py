@@ -1925,7 +1925,20 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                      "bp": bp, "new_building": bp is None,
                      "our_count": sum(1 for l in ours if l.get("occupancy_status") != "occupied"),
                      "units": [], "missing_in_list": []}
-            for u in addr.get("units") or []:
+            # partnera identifikatora (ref) pretenzijas: listings, ko kāda telpa prasa pēc ref (platība ±5 %), citai telpai
+            # nav pieejams (FLEX nr. 2 = 49,9 m² un nr. 12 = 50,3 m² — abi ±0,5 m² viens no otra, Skanstes City 2026-11-13)
+            ref_claims: dict[int, int] = {}
+            for _pos, _u in enumerate(addr.get("units") or []):
+                _rid = (str(_u.get("ref") or "").strip().lower() if _u.get("ref") and "·" not in str(_u["ref"]) else "")
+                _ar = _num(_u.get("area_m2"))
+                if not _rid:
+                    continue
+                for l in ours:
+                    la = _num(l.get("area_m2"))
+                    if (l.get("partner_unit_ref") and l["partner_unit_ref"].strip().lower() == _rid
+                            and (_ar is None or la is None or abs(_ar - la) <= max(1.0, 0.05 * max(_ar, la)))):
+                        ref_claims.setdefault(int(l["id"]), _pos)
+            for _pos, u in enumerate(addr.get("units") or []):
                 idx += 1
                 u = dict(u)
                 u["_idx"] = idx
@@ -1973,14 +1986,17 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 # 2. kārta: ±5 % (89 → 88/90 m²). Nekad 15 % (100 m² pret 89 m² ir cits birojs).
                 exact: list[dict] = []
                 near: list[dict] = []
+                refc: list[dict] = []
                 for l in ([] if cands else ours):
+                    if ref_claims.get(int(l["id"]), _pos) != _pos:
+                        continue   # cita telpa to prasa pēc sava identifikatora
                     la = _num(l.get("area_m2"))
                     close5 = bool(area and la and abs(area - la) <= max(1.0, 0.05 * max(area, la)))
                     by_ref = bool(ref_id and l.get("partner_unit_ref") and l["partner_unit_ref"].strip().lower() == ref_id
                                   and (area is None or la is None or close5))
                     if by_ref:
                         ref_hits.append(int(l["id"]))
-                        near.append(l)
+                        refc.append(l)
                         continue
                     if not close5:
                         continue
@@ -1994,7 +2010,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         exact.append(l)
                     else:
                         near.append(l)
-                cands = cands or exact or near
+                # kārtas: partnera identifikators → tā pati platība+stāvs → ±5 %
+                cands = cands or refc or exact or near
                 # vairāki kandidāti, bet tikai viens brīvs → tas (iznomātais = vēsturisks dvīnis)
                 dup_ids: list[int] = []
                 # vairāki kandidāti, viens ar TO PAŠU platību (±0,1 m²) → tas (MCITY 46 un 45,8 m²: abi ±5 % robežās,
