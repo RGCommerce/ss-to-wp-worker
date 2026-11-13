@@ -1297,8 +1297,10 @@ def _find_bp(conn, street: Optional[str], city: Optional[str], district: Optiona
     if street:
         try:
             key = agent_publish._canonical_bp_key(street, city or "Rīga", district or "")
-            row = conn.execute("SELECT id, full_address, city FROM properties.building_profiles WHERE building_key = %s",
-                               (key,)).fetchone()
+            row = conn.execute("""SELECT id, full_address, city FROM properties.building_profiles
+                                   WHERE building_key = %s OR regexp_replace(building_key, '^([a-z]\\.\\s*)+', '') = %s
+                                   ORDER BY (building_key = %s) DESC, listing_count_total DESC NULLS LAST, id LIMIT 1""",
+                               (key, key, key)).fetchone()
             if row:
                 return {"id": int(row["id"]), "full_address": row["full_address"], "city": row["city"], "how": "key"}
         except Exception:
@@ -1310,9 +1312,9 @@ def _find_bp(conn, street: Optional[str], city: Optional[str], district: Optiona
                      FROM properties.listings
                     WHERE building_profile_id IS NOT NULL
                       AND translate(lower(street),'āēīōūčšžģķļņŗ','aeiouczsgklnr') ~ %s
-                      AND (%s = '' OR lower(city) LIKE %s)
+                      AND (%s = '' OR translate(lower(city),'āēīōūčšžģķļņŗ','aeiouczsgklnr') LIKE %s)
                     GROUP BY 1 ORDER BY n DESC LIMIT 1""",
-                (like, (city or "").lower(), f"%{(city or '').lower()}%"),
+                (like, _norm_txt(city or ""), f"%{_norm_txt(city or '')}%"),
             ).fetchone()
             if row and row["id"]:
                 return {"id": int(row["id"]), "full_address": row["full_address"], "city": row["city"], "how": "street"}
@@ -1356,9 +1358,10 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
                           (SELECT count(*) FROM properties.listings l WHERE l.building_profile_id = bp.id AND l."Debug_status"='ok') AS n
                      FROM properties.building_profiles bp
                     WHERE translate(lower(coalesce(bp.full_address, bp.street || ' ' || coalesce(bp.house_number,''))),'āēīōūčšžģķļņŗ','aeiouczsgklnr') ~ %s
-                      AND (%s = '' OR lower(coalesce(bp.city,'')) LIKE %s OR lower(coalesce(bp.full_address,'')) LIKE %s)
+                      AND (%s = '' OR translate(lower(coalesce(bp.city,'')),'āēīōūčšžģķļņŗ','aeiouczsgklnr') LIKE %s
+                           OR translate(lower(coalesce(bp.full_address,'')),'āēīōūčšžģķļņŗ','aeiouczsgklnr') LIKE %s)
                     ORDER BY n DESC LIMIT 4""",
-                (like, (city or "").lower(), f"%{(city or '').lower()}%", f"%{(city or '').lower()}%"),
+                (like, _norm_txt(city or ""), f"%{_norm_txt(city or '')}%", f"%{_norm_txt(city or '')}%"),
             ).fetchall()
             for r in rows:
                 if int(r["id"]) not in seen:
