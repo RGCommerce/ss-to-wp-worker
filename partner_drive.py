@@ -1050,8 +1050,8 @@ def _actionable(report: dict) -> dict:
     new = updates = missing = 0
     for a in report.get("addresses") or []:
         for u in a.get("units") or []:
-            if u.get("remembered"):
-                continue   # jau izlemts, nekas nav mainījies
+            if u.get("remembered") or u.get("price_missing"):
+                continue   # jau izlemts / bez cenas (tikai izlaist) — nav ko darīt
             if u.get("sslv_gone"):
                 missing += 1   # jāredz, ka pazudis
             elif u.get("status") != "match":

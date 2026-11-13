@@ -2092,11 +2092,18 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                                                            # ēka atrasta pēc nosaukuma, ko cilvēks reiz sasaistīja (FLEX Biroji) = adrese zināma
                                                            or not (a_out["address_known"] or (bp or {}).get("how") in ("name", "agent"))
                                                            or not u.get("space_type") or price_missing)))
-                decision = ("review" if (needs_review and status != "match") else
+                # jauna telpa, kurai VIENĪGĀ problēma ir cena (mapē ir, cenu tabulā nav) → uzreiz «izlaist», ne «pārbaudīt»;
+                # tas nav darbs cilvēkam un nerada paziņojumu (Raimonds 2026-11-14). Kad cena parādās → atkal kā jauna.
+                only_price = bool(price_missing and status == "new" and u.get("space_type")
+                                  and (a_out["address_known"] or (bp or {}).get("how") in ("name", "agent")))
+                if only_price:
+                    needs_review = False
+                decision = ("skip" if only_price else
+                            "review" if (needs_review and status != "match") else
                             ("update" if (status == "match" and (diff or reactivate)) else
                              ("keep" if status == "match" else "create")))
                 unit_out = {k: v for k, v in u.items() if not k.startswith("_")}
-                unit_out.update({"idx": idx, "floor_norm": floor, "status": status, "decision": decision,
+                unit_out.update({"idx": idx, "floor_norm": floor, "status": status, "decision": decision, "price_missing": only_price,
                                  "matched_listing": {k: (str(v) if isinstance(v, datetime) else v)
                                                      for k, v in match.items()} if match else None,
                                  "candidates": [int(c["id"]) for c in cands] if status == "ambiguous" else [],
