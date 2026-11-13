@@ -357,7 +357,7 @@ def _get_or_create_bp(conn, building: dict, wp_user_id: int) -> int:
     # grupas DB, K. Barona 15 → otrs profils 2026-11-13)
     existing = conn.execute(
         """SELECT id FROM properties.building_profiles
-            WHERE building_key = %s OR regexp_replace(building_key, '^([a-km-z]\\.\\s*)+', '') = %s
+            WHERE building_key = %s OR regexp_replace(building_key, '^([a-kn-z]\\.\\s*)+', '') = %s
             ORDER BY (building_key = %s) DESC, listing_count_total DESC NULLS LAST, id LIMIT 1""",
         (building_key, building_key, building_key),
     ).fetchone()
