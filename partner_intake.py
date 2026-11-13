@@ -1151,6 +1151,9 @@ def _fix_pdf_sections(data: dict, intake_dir: Path, meta: dict) -> list[str]:
             for k in ("rent_per_m2_min", "rent_total", "sale_price"):
                 if _num(x.get(k)) and _num(u.get(k)) and abs(_num(x[k]) - _num(u[k])) < 0.05:
                     return True
+            # abām nav ne stāva, ne cenas (BTS «750–1500 pēc pieprasījuma») → tā pati rinda
+            if not _floor_digits(_floor_norm(x.get("floor"))) and not _floor_digits(_floor_norm(u.get("floor")))                     and not any(_num(x.get(k)) or _num(u.get(k)) for k in ("rent_per_m2_min", "rent_total", "sale_price")):
+                return True
             return False
 
         if any(_same_row(x) for x in addrs[sec].get("units") or []):
@@ -1948,9 +1951,18 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     lf = _floor_digits(l.get("floor"))
                     if fd and lf and fd != lf:
                         continue
+                    # bez stāva to pašu telpu apstiprina tips (MCITY BTS noliktava 530 m² ≠ 5. st. birojs 500 m²)
+                    if not fd and u.get("space_type") and l.get("Space_group") and l["Space_group"] != u["space_type"]:
+                        continue
                     cands.append(l)
                 # vairāki kandidāti, bet tikai viens brīvs → tas (iznomātais = vēsturisks dvīnis)
                 dup_ids: list[int] = []
+                # vairāki kandidāti, viens ar TO PAŠU platību (±0,1 m²) → tas (MCITY 46 un 45,8 m²: abi ±5 % robežās,
+                # bet 46 m² ir #111749, nevis brīvais 45,8 m² #111750)
+                if len(cands) > 1 and area:
+                    exact = [c for c in cands if _num(c.get("area_m2")) is not None and abs(_num(c["area_m2"]) - area) <= 0.1]
+                    if len(exact) == 1:
+                        cands = exact
                 # vairāki kandidāti → tas pats tips izšķir (Noliktava ≠ Birojs)
                 if len(cands) > 1 and u.get("space_type"):
                     same_type = [c for c in cands if (c.get("Space_group") or "") == u["space_type"]]
