@@ -1941,6 +1941,27 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     if (l.get("partner_unit_ref") and l["partner_unit_ref"].strip().lower() == _rid
                             and (_ar is None or la is None or abs(_ar - la) <= max(1.0, 0.05 * max(_ar, la)))):
                         ref_claims.setdefault(int(l["id"]), _pos)
+            # tāpat PRECĪZAS platības pretenzijas: listings, kam kāda telpa sakrīt ±0,5 m² (un stāvs), citai telpai ar
+            # ±5 % vairs nav pieejams (Realto Dzelzavas 74: 104,1 un 105,7 m² abas gāja uz #61706 104 m², 2026-11-14)
+            ex_claims: dict[int, int] = {}
+            _pairs: list[tuple[float, int, int]] = []
+            for _pos, _u in enumerate(addr.get("units") or []):
+                _ar = _num(_u.get("area_m2"))
+                _fd = _floor_digits(_floor_norm(_u.get("floor")))
+                if not _ar:
+                    continue
+                for l in ours:
+                    la = _num(l.get("area_m2"))
+                    lf = _floor_digits(l.get("floor"))
+                    if la and abs(_ar - la) <= max(0.5, 0.005 * _ar) and not (_fd and lf and _fd != lf):
+                        _pairs.append((abs(_ar - la), _pos, int(l["id"])))
+            # tuvākais pāris pirmais; katra telpa un katrs listings tikai vienreiz (37,2→#111781, 36,6→#112306, ne abi 313.)
+            _taken_pos: set[int] = set()
+            for _diff, _pos, _lid in sorted(_pairs):
+                if _lid in ex_claims or _pos in _taken_pos:
+                    continue
+                ex_claims[_lid] = _pos
+                _taken_pos.add(_pos)
             for _pos, u in enumerate(addr.get("units") or []):
                 idx += 1
                 u = dict(u)
@@ -1991,8 +2012,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 near: list[dict] = []
                 refc: list[dict] = []
                 for l in ([] if cands else ours):
-                    if ref_claims.get(int(l["id"]), _pos) != _pos:
-                        continue   # cita telpa to prasa pēc sava identifikatora
+                    if ref_claims.get(int(l["id"]), _pos) != _pos or ex_claims.get(int(l["id"]), _pos) != _pos:
+                        continue   # cita telpa to prasa pēc sava identifikatora / precīzas platības
                     la = _num(l.get("area_m2"))
                     close5 = bool(area and la and abs(area - la) <= max(1.0, 0.05 * max(area, la)))
                     by_ref = bool(ref_id and l.get("partner_unit_ref") and l["partner_unit_ref"].strip().lower() == ref_id
@@ -2138,7 +2159,9 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied" or int(l["id"]) in missing_seen:
                         continue   # jau iznomātos / citā adresē jau uzskaitītos nepiedāvā vēlreiz
                     if meta.get("source") == "sslv" and int(l["id"]) not in gone_ids:
-                        continue   # ss.lv numuru ieplūdē ir tikai jaunie/mainītie sludinājumi — «nav sarakstā» tikai pazudušie no ss.lv
+                        continue   # ss.lv numuru ieplūdē ir tikai jaunie/mainītie sludinājumi — «nav sarakstā» tikai pazudušie
+                    if meta.get("source") == "sheet":
+                        continue   # partnera reģistrs (Realto tabula) nav dzīvs saraksts — iznomātos pēc tā nepiedāvā (Raimonds 2026-11-14) no ss.lv
                     missing_seen.add(int(l["id"]))
                     a_out["missing_in_list"].append({
                         "id": int(l["id"]), "street": l["street"], "area_m2": l["area_m2"], "floor": l["floor"],

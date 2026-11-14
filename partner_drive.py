@@ -89,6 +89,11 @@ def upsert_source(data: dict) -> dict:
     if kind == "web":
         if not re.match(r"^https?://[^\s]+$", web_url):
             raise ValueError("Mājaslapas saite nav derīga (jāsākas ar http)")
+    elif kind == "sheet":
+        # partnera brīvo telpu reģistrs Google Sheets tabulā (Realto 2026-11-14) — publiska saite, lasa partner_sheet
+        import partner_sheet
+        if not partner_sheet.sheet_id(web_url):
+            raise ValueError("Google Sheets saite nav atpazīta (docs.google.com/spreadsheets/d/…)")
     elif kind == "sslv":
         # partnera ss.lv numurs + adrese (Raimonds 2026-10-28): katrs jauns ss.lv sludinājums ar ŠO numuru ŠAJĀ ēkā
         # pēdējās N dienās → ieplūde apstiprināšanai (manuāli, nekad automātiski)
@@ -171,7 +176,7 @@ def upsert_source(data: dict) -> dict:
         "contact_phone": (data.get("contact_phone") or (cur or {}).get("contact_phone") or "").strip(),
         "notes": (data.get("notes") or (cur or {}).get("notes") or "").strip(),
         **sslv,
-        "schedule": data.get("schedule") if data.get("schedule") in SCHEDULES else (cur or {}).get("schedule") or ("hourly" if kind == "sslv" else "daily"),
+        "schedule": data.get("schedule") if data.get("schedule") in SCHEDULES else (cur or {}).get("schedule") or ("hourly" if kind == "sslv" else "weekly" if kind == "sheet" else "daily"),
         "enabled": bool(data.get("enabled", (cur or {}).get("enabled", True))),
         "created_at": (cur or {}).get("created_at") or _now().isoformat(),
     }
@@ -991,6 +996,9 @@ def scan_source(src: dict, force: bool = False) -> dict:
         return scan_web_source(src, force=force)
     if src.get("kind") == "sslv":
         return scan_sslv_source(src, force=force)
+    if src.get("kind") == "sheet":
+        import partner_sheet
+        return partner_sheet.scan_sheet_source(src, force=force)
     import link_media
     import partner_intake
     scanned_at = _now()
