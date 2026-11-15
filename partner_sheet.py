@@ -186,7 +186,8 @@ def build_analysis(src: dict, rows: list[dict], street: str, city: str, district
     for r in rows:
         kind, why = classify(r)
         if kind == "skip":
-            skipped.append({"item": _row_label(r), "reason": why})
+            skipped.append({"item": _row_label(r), "reason": why, "status": r.get("status") or "",
+                            "ref": " ".join(x for x in (r.get("part"), r.get("room")) if x) or None})
             continue
         u = _blank_unit()
         area = float(r["area"])
@@ -286,8 +287,14 @@ def scan_sheet_source(src: dict, force: bool = False) -> dict:
                               "unit_folders": len(rows), "price_files": 0, "addresses": len(groups),
                               "changed": False, "fingerprint": whole_fp, "intake_id": None, "intakes": [], "skipped": None}
     created: list[tuple[str, dict]] = []
+    # ēka, kurai bija mūsu ieplūde, tabulā pazudusi pavisam → tukša grupa (reconcile piedāvās mūsu telpas kā iznomātas)
+    for key, st in state.items():
+        if key not in groups and st.get("intake_id") and st.get("fp") != "gone":
+            city = key.split("|")[-1].title() if "|" in key else "Rīga"
+            groups[key] = {"street": st.get("street") or key.split("|")[0], "city": "Rīga" if city.lower() == "rīga" else city,
+                           "district": None, "rows": [], "gone": True}
     for key, g in groups.items():
-        fp = _fp(g["rows"])
+        fp = "gone" if g.get("gone") else _fp(g["rows"])
         st = state.get(key) or {}
         if fp == st.get("fp") and not force:
             continue

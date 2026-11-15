@@ -1380,7 +1380,7 @@ def _our_listings(conn, bp_id: int) -> list[dict]:
     return conn.execute(
         """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
                   on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
-                  "Apsaimniekosanas_maksa", partner_unit_ref, link,
+                  "Apsaimniekosanas_maksa", partner_unit_ref, partner_list_id, link,
                   cardinality(local_image_paths_processed) AS n_processed,
                   cardinality(local_image_paths_raw) AS n_raw
              FROM properties.listings
@@ -1400,7 +1400,7 @@ def _our_listings_safe(conn, bp_id: int) -> list[dict]:
         return conn.execute(
             """SELECT id, street, area_m2, floor, price, price_type, price_per_m2, "Space_group", source,
                       on_website, wp_post_id, wp_synced_at, created_at, occupancy_status,
-                      "Apsaimniekosanas_maksa", NULL::text AS partner_unit_ref, link,
+                      "Apsaimniekosanas_maksa", NULL::text AS partner_unit_ref, NULL::bigint AS partner_list_id, link,
                       cardinality(local_image_paths_processed) AS n_processed,
                       cardinality(local_image_paths_raw) AS n_raw
                  FROM properties.listings
@@ -1892,6 +1892,22 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
         total_units = sum(len(a.get("units") or []) for a in analysis.get("addresses") or [])
         missing_seen: set[int] = set()   # «nav sarakstā» ids pāri adresēm (viena ēka var būt 2 adresēs)
         all_matched: set[int] = set()   # sakritušie pāri VISĀM adresēm: divas adreses var būt viena ēka (Skanstes 50 + FLEX Biroji)
+        # partnera reģistrs (Google tabula): «iznomāts» piedāvā TIKAI mūsu telpām, kas nākušas no ŠĪ reģistra (to saraksti),
+        # ja tās tabulā vairs nav vai statuss vairs nav «brīva» (Raimonds 2026-11-15)
+        sheet_lists: set[int] = set()
+        sheet_status: dict[str, str] = {}
+        if meta.get("source") == "sheet" and meta.get("drive_source_id"):
+            try:
+                same_src = [p.parent.name for p in INTAKE_DIR.glob("*/meta.json")
+                            if json.loads(p.read_text(encoding="utf-8")).get("drive_source_id") == meta["drive_source_id"]]
+                if same_src:
+                    sheet_lists = {int(r["id"]) for r in conn.execute(
+                        "SELECT id FROM properties.partner_lists WHERE intake_id = ANY(%s)", (same_src,)).fetchall()}
+            except Exception as e:
+                logger.warning("partner_intake %s: reģistra saraksti: %s", intake_id, e)
+            for sk in analysis.get("skipped_items") or []:
+                if isinstance(sk, dict) and sk.get("ref"):
+                    sheet_status[str(sk["ref"]).strip().lower()] = str(sk.get("status") or sk.get("reason") or "")
         gone_ids = {int(x) for x in meta.get("sslv_gone_ids") or []}   # apstiprināti partnera sludinājumi, kas pazuduši no ss.lv
         email_sslv = _email_sslv_candidates(d)   # partnera e-pastā ieliktie ss.lv sludinājumi (galerija bildēm)
         for addr in _merge_same_addresses(analysis.get("addresses") or []):
@@ -2160,16 +2176,26 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         continue   # jau iznomātos / citā adresē jau uzskaitītos nepiedāvā vēlreiz
                     if meta.get("source") == "sslv" and int(l["id"]) not in gone_ids:
                         continue   # ss.lv numuru ieplūdē ir tikai jaunie/mainītie sludinājumi — «nav sarakstā» tikai pazudušie
+                    sheet_note = None
                     if meta.get("source") == "sheet":
-                        continue   # partnera reģistrs (Realto tabula) nav dzīvs saraksts — iznomātos pēc tā nepiedāvā (Raimonds 2026-11-14) no ss.lv
+                        if int(l.get("partner_list_id") or 0) not in sheet_lists:
+                            continue   # telpa nav nākusi no šī reģistra — pēc tabulas to neaiztiekam
+                        st_ = sheet_status.get(str(l.get("partner_unit_ref") or "").strip().lower())
+                        if st_ is None:
+                            sheet_note, sheet_on = "tabulā vairs nav", True
+                        else:
+                            sheet_note = f"tabulā: {st_}"
+                            sheet_on = bool(re.search(r"iznom|rezerv|aizņem|aiznem|nav brīv|nav briv", st_, re.I))
                     missing_seen.add(int(l["id"]))
                     a_out["missing_in_list"].append({
                         "id": int(l["id"]), "street": l["street"], "area_m2": l["area_m2"], "floor": l["floor"],
                         "price": l["price"], "source": l["source"], "on_website": l["on_website"],
                         "wp_synced_at": str(l["wp_synced_at"])[:10] if l["wp_synced_at"] else None,
                         "created_at": str(l["created_at"])[:10] if l["created_at"] else None,
-                        "decision": "ask", "default_checked": default_on or int(l["id"]) in gone_ids,
+                        "decision": "ask",
+                        "default_checked": (sheet_on if sheet_note else (default_on or int(l["id"]) in gone_ids)),
                         "gone_from_sslv": int(l["id"]) in gone_ids,
+                        "sheet_note": sheet_note,
                     })
                 report["summary"]["missing"] += len(a_out["missing_in_list"])
             all_matched |= matched_ids
