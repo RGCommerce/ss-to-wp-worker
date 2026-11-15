@@ -151,8 +151,11 @@ def split_address(street_raw: str, loc: str) -> tuple[str, str, Optional[str], O
 
 def _space_type(func: str, notes: str, fallback: Optional[str]) -> Optional[str]:
     f = (func or "").lower()
-    if "biroj" in f and ("noliktav" in f or "darbn" in f):
+    # StockOfiss = birojs + NOLIKTAVA; «birojs / darbnīca» ir birojs (Raimonds 2026-11-15: «nekāda sakara ar stock ofisu»)
+    if "biroj" in f and "noliktav" in f:
         return "StockOfiss"
+    if f.startswith("biroj"):
+        return "Birojs"
     for pats, t in TYPE_RULES:
         if any(p in f for p in pats):
             return t
