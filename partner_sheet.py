@@ -87,11 +87,17 @@ def download_xlsx(url: str) -> bytes:
 def sheet_rows(data: bytes) -> list[dict]:
     """Visas datu rindas no lapām, kurās ir galvene ar «Adrese» un «Platība» (kolonnas pēc nosaukumiem, ne pozīcijām)."""
     import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+    # NE read_only: vajag redzēt SLĒPTĀS rindas — tās partneris ir paslēpis (vecas/dublētas; Realto 167 slēptas rindas,
+    # P. Brieža 43 telpas slēptajās rindās vēlreiz — Raimonds 2026-11-15). Ņemam tikai redzamās.
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
     out: list[dict] = []
     for ws in wb.worksheets:
+        if ws.sheet_state != "visible":
+            continue
         cols: dict[str, int] = {}
-        for row in ws.iter_rows(values_only=True):
+        for ri, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if cols and ws.row_dimensions[ri].hidden:
+                continue
             if not cols:
                 low = [str(c or "").strip().lower() for c in row]
                 if any("adrese" in c for c in low) and any("plat" in c for c in low):
