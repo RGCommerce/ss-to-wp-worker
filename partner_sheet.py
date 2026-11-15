@@ -343,12 +343,16 @@ def scan_sheet_source(src: dict, force: bool = False) -> dict:
                 partner_drive._mark_superseded(supersede, meta["intake_id"], None)   # tikai šīs adreses vecā
             created.append((meta["intake_id"], rep))
         else:
+            # jaunajā nolasījumā nav ko darīt → arī VECĀ neapstiprinātā šīs ēkas ieplūde vairs nav aktuāla (Realto 2026-11-15:
+            # pēc slēpto rindu izmešanas Murjāņu 91 / Atlasa 8 vecās ieplūdes palika rindā ar neesošām telpām)
+            if supersede:
+                partner_drive._mark_superseded(supersede, meta["intake_id"], None)
             mp = partner_intake.INTAKE_DIR / meta["intake_id"] / "meta.json"
             m2 = json.loads(mp.read_text(encoding="utf-8"))
             m2["status"] = "nochange"
             m2["nochange_at"] = scanned_at.isoformat()
             mp.write_text(json.dumps(m2, ensure_ascii=False, indent=1), encoding="utf-8")
-        state[key] = {"fp": fp, "intake_id": meta["intake_id"] if act["any"] else st.get("intake_id"),
+        state[key] = {"fp": fp, "intake_id": meta["intake_id"] if act["any"] else (None if supersede else st.get("intake_id")),
                       "street": g["street"], "units": n_units, "at": scanned_at.isoformat()}
         result["intakes"].append({"intake_id": meta["intake_id"], "street": g["street"], "units": n_units,
                                   "summary": rep.get("summary"), "actionable": act["any"]})
