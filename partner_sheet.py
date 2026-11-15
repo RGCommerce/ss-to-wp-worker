@@ -156,9 +156,12 @@ def _space_type(func: str, notes: str, fallback: Optional[str]) -> Optional[str]
         return "StockOfiss"
     if f.startswith("biroj"):
         return "Birojs"
-    for pats, t in TYPE_RULES:
-        if any(p in f for p in pats):
-            return t
+    # galvenā ir PIRMĀ funkcija («noliktava/darbnīca» = Noliktava, ne Ražošana)
+    first = re.split(r"[/,;]", f)[0].strip()
+    for part in (first, f):
+        for pats, t in TYPE_RULES:
+            if any(p in part for p in pats):
+                return t
     n = (notes or "").lower()
     for pats, t in TYPE_RULES:
         if any(p in n for p in pats):
