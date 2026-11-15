@@ -204,7 +204,12 @@ def build_analysis(src: dict, rows: list[dict], street: str, city: str, district
     typed = [t for t in (_space_type(r["func"], "", None) for r in rows) if t]
     dominant = max(set(typed), key=typed.count) if typed else None
     units, skipped = [], []
-    for r in rows:
+    try:
+        facts_list = notes_to_facts([r.get("notes") or "" for r in rows])
+    except Exception as e:
+        logger.warning("partner_sheet: fakti: %s", e)
+        facts_list = [{} for _ in rows]
+    for r, facts in zip(rows, facts_list):
         kind, why = classify(r)
         if kind == "skip":
             skipped.append({"item": _row_label(r), "reason": why, "status": r.get("status") or "",
@@ -230,6 +235,8 @@ def build_analysis(src: dict, rows: list[dict], street: str, city: str, district
             "evidence": f"{src.get('name')} reģistrs: {_row_label(r)} · {r.get('func') or '?'} · {r.get('status')}",
             "attachment_hint": None, "page_hint": None, "link_ids": [],
         })
+        if facts:
+            u["facts"] = facts   # «Par telpu» priekšaizpilde (panelis); apstiprinot iet uz listingu kā aģenta fakti
         units.append(u)
     return {
         "is_vacancy_offer": True,
@@ -319,8 +326,8 @@ def scan_sheet_source(src: dict, force: bool = False) -> dict:
         st = state.get(key) or {}
         if fp == st.get("fp") and not force:
             continue
-        if fp == st.get("fp") and _pending(st.get("intake_id")):
-            continue   # tas pats, vēl gaida apstiprināšanu
+        if fp == st.get("fp") and _pending(st.get("intake_id")) and not force:
+            continue   # tas pats, vēl gaida apstiprināšanu («Skenēt tagad» ar force — pārbūvē, piem. pēc koda labojuma)
         analysis = build_analysis(src, g["rows"], g["street"], g["city"], g["district"])
         n_units = len(analysis["addresses"][0]["units"])
         if n_units == 0 and not st.get("intake_id"):
@@ -398,3 +405,148 @@ def _notify(src: dict, created: list[tuple[str, dict]]) -> int:
     except Exception as e:
         logger.warning("partner_sheet: notify %s: %s", src.get("name"), e)
         return 0
+
+
+# ── piezīmes → «Par telpu» fakti (Raimonds 2026-11-15: «nav siltuma» → Apkure: Nav, «kabinets ar WC» → WC) ──
+NOTE_FACT_FIELDS: dict[str, Any] = {
+    "Apkure": ["Centrālā", "Gāzes", "Elektriskā", "Nav"],
+    "cik_WC": ["1 WC telpā", "2 WC telpā", "3 WC telpā", "4 WC telpā", "1 WC koplietošanā", "2 WC koplietošanā", "Nav"],
+    "Space_condition": ["Jauns", "Labs", "Lietots", "Nepabeigts", "Nepieciešams remonts", "Kapitālais remonts"],
+    "Planojums": ["Atvērts", "Zāle + palīgtelpas", "Kabinetu", "Sekciju"],
+    "Mebeleta_telpa": ["Jā", "Nē", "Daļēji"],
+    "Logu_type": ["Lielie Logi", "Standarta logi", "Maz logu", "Nav logi"],
+    "Virtuve_check": "check", "Ir_izlietne_telpa_check": "check", "Sava_ieeja_check": "check", "street_entrance": "check",
+    "Ventilacijas_sistema_check": "check", "Pacelamie_varti_check": "check", "Rampa_logistikai_check": "check",
+    "Cik_telpas": "num", "Griestu_augstums": "num", "electric_power_kw": "num",
+}
+NOTES_MODEL_DEFAULT = "gpt-4o-mini"
+
+
+def _facts_cache_path():
+    import partner_intake
+    return partner_intake.INTAKE_DIR / "_sheet_facts_cache.json"
+
+
+def _facts_schema() -> dict:
+    props: dict = {"i": {"type": "integer"}}
+    for k, spec in NOTE_FACT_FIELDS.items():
+        if spec == "check":
+            props[k] = {"type": ["string", "null"], "enum": ["checked", "not checked", None]}
+        elif spec == "num":
+            props[k] = {"type": ["number", "null"]}
+        else:
+            props[k] = {"type": ["string", "null"], "enum": list(spec) + [None]}
+    item = {"type": "object", "additionalProperties": False, "properties": props, "required": list(props)}
+    return {"type": "object", "additionalProperties": False, "required": ["items"],
+            "properties": {"items": {"type": "array", "items": item}}}
+
+
+# AI drīkst atzīmēt lauku TIKAI, ja piezīmē ir atbilstošs vārds (pret izdomājumiem: «3 fāz. el.» ≠ 3 kW, mēbeles bez «mēbel»)
+FACT_GUARDS: dict[str, str] = {
+    "Apkure": r"apkur|siltum|radiator|gāz|gaz|elektr.*sild",
+    "cik_WC": r"\bwc\b|tualet|sanmezgl|sanitār",
+    "Space_condition": r"remont|stāvokl|stavokl|renov|jaun|nolietot|apdar|kosm",
+    "Planojums": r"kabinet|atvērt|atvert|open|zāle|zale|sekcij|telpas|telpām",
+    "Mebeleta_telpa": r"mēbel|mebel",
+    "Logu_type": r"log|gaiš|gais",
+    "Virtuve_check": r"virtuv",
+    "Ir_izlietne_telpa_check": r"izlietn|ūdens|udens",
+    "Sava_ieeja_check": r"ieej",
+    "street_entrance": r"ieej.*iel|no ielas",
+    "Ventilacijas_sistema_check": r"ventil",
+    "Pacelamie_varti_check": r"vārt|vart",
+    "Rampa_logistikai_check": r"ramp",
+    "Cik_telpas": r"\d|div|trīs|tris|četr|cetr|piec|telp|kabinet",
+    "Griestu_augstums": r"griest",
+    "electric_power_kw": r"kw\b|kilovat",
+}
+
+
+def _guard(note: str, facts: dict) -> dict:
+    low = (note or "").lower()
+    out = {}
+    for k, v in facts.items():
+        g = FACT_GUARDS.get(k)
+        if g and not re.search(g, low):
+            continue
+        if k == "Apkure" and v == "Centrālā" and "centr" not in low:
+            continue
+        if k == "Space_condition" and v == "Jauns" and not re.search(r"\bjaun", low):
+            v = "Labs"
+        if k == "cik_WC":
+            continue   # WC nosaka tikai pēc vārda zemāk (AI te bieži kļūdās: «6 kabineti, wc» → «Nav»)
+        if k == "Planojums" and not ((v == "Kabinetu" and "kabinet" in low) or (v == "Atvērts" and re.search(r"atvērt|atvert|open", low))
+                                     or (v == "Zāle + palīgtelpas" and re.search(r"zāl|zal", low)) or (v == "Sekciju" and "sekcij" in low)):
+            continue
+        if k == "Cik_telpas":
+            words = {"div": 2, "trīs": 3, "tris": 3, "četr": 4, "cetr": 4, "piec": 5, "seš": 6, "ses": 6, "septiņ": 7, "astoņ": 8, "deviņ": 9}
+            nums = {int(x) for x in re.findall(r"(\d{1,2})\s*(?:kabinet|telp|istab)", low)}
+            nums |= {val for w, val in words.items() if re.search(w + r"\w*\s+(?:kabinet|telp|istab)", low)}
+            try:
+                if int(float(v)) not in nums:
+                    continue
+            except Exception:
+                continue
+        out[k] = v
+    # WC — AI to bieži izlaiž; skaidrs vārds piezīmē = fakts («kabinets ar WC» → 1 WC telpā; «2 WC» → 2; «WC izbūve» = vēl nav)
+    if "cik_WC" not in out and re.search(r"\bwc\b", low) and not re.search(r"wc\s+izb[ūu]v|iekļaut\w*\s+k[āa]pņu", low):
+        m = re.search(r"\b([2-4])\s*wc\b", low)
+        shared = "koplieto" in low
+        out["cik_WC"] = f"{m.group(1) if m else 1} WC {'koplietošanā' if shared else 'telpā'}" if not (shared and m and int(m.group(1)) > 2) else "2 WC koplietošanā"
+    return out
+
+
+def notes_to_facts(notes: list[str]) -> list[dict]:
+    """Piezīmju teksti → fakti katrai (tikai tas, kas SKAIDRI rakstīts; nezināms = null). Kešs pēc teksta — AI
+    lasa tikai jaunas/mainītas piezīmes (gpt-4o-mini, visa Realto tabula ≈ daži centi)."""
+    import os
+    cache_p = _facts_cache_path()
+    try:
+        cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
+    except Exception:
+        cache = {}
+    keyf = lambda t: hashlib.sha1(t.strip().lower().encode("utf-8")).hexdigest()[:16]   # noqa: E731
+    todo = sorted({n.strip() for n in notes if n and n.strip() and keyf(n) not in cache})
+    api_key = os.getenv("OPENAI_API_KEY")
+    if todo and api_key:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        model = os.getenv("SHEET_NOTES_MODEL") or NOTES_MODEL_DEFAULT
+        for i0 in range(0, len(todo), 40):
+            chunk = todo[i0:i0 + 40]
+            listing = "\n".join(f"{i}. {t}" for i, t in enumerate(chunk))
+            prompt = ("Tās ir komercīpašumu telpu piezīmes no iznomātāja tabulas (latviski, saīsinājumi). Katrai piezīmei (i = numurs) "
+                      "aizpildi TIKAI to, kas tajā SKAIDRI pateikts; viss pārējais null. Piemēri: «nav siltuma»/«bez apkures» → Apkure «Nav»; "
+                      "«ar WC», «WC telpā» → cik_WC «1 WC telpā»; «WC koplietošanā» → «1 WC koplietošanā»; «remonts nepieciešams», «kosm.remonts» "
+                      "→ Space_condition «Nepieciešams remonts»; «labs stāvoklis», «renovēts», «izremontēts» → «Labs» (NE «Jauns»); «Apkure.» (ir apkure, "
+                      "tips nav teikts) → Apkure null; tikai «centrālā apkure» → «Centrālā»; «4 kabineti» → Cik_telpas 4, Planojums "
+                      "«Kabinetu»; «izlietne» → Ir_izlietne_telpa_check «checked»; «virtuve» → Virtuve_check «checked»; «sava ieeja» → "
+                      "Sava_ieeja_check; «ieeja no ielas» → street_entrance; «vārti» → Pacelamie_varti_check; «rampa» → Rampa_logistikai_check; "
+                      "«gaiša telpa, lieli logi» → Logu_type «Lielie Logi»; «bez logiem» → «Nav logi»; «ar mēbelēm» → Mebeleta_telpa «Jā». "
+                      "NEminē: ja piezīmē nekas par lauku nav teikts, tas ir null.\n\n" + listing)
+            try:
+                resp = client.responses.create(
+                    model=model, input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                    text={"format": {"type": "json_schema", "name": "facts", "schema": _facts_schema(), "strict": True}})
+                data = json.loads(resp.output_text)
+                for it in data.get("items") or []:
+                    i = it.get("i")
+                    if isinstance(i, int) and 0 <= i < len(chunk):
+                        cache[keyf(chunk[i])] = {k: v for k, v in it.items() if k != "i" and v not in (None, "")}
+            except Exception as e:
+                logger.warning("partner_sheet: piezīmju fakti (%d): %s", len(chunk), e)
+                break
+        try:
+            cache_p.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+    out = []
+    for n in notes:
+        f = _guard(n, dict(cache.get(keyf(n)) or {})) if n and n.strip() else {}
+        for k, v in list(f.items()):
+            if isinstance(v, float) and v.is_integer():
+                f[k] = int(v)
+            if NOTE_FACT_FIELDS.get(k) == "num":
+                f[k] = str(f[k])
+        out.append(f)
+    return out
