@@ -109,7 +109,16 @@ def sheet_rows(data: bytes) -> list[dict]:
             out.append({"loc": _txt(g("loc")), "street_raw": street, "part": _txt(g("part")), "floor": _txt(g("floor")),
                         "room": _txt(g("room")), "area": area, "func": _txt(g("func")), "rate": _num(g("rate")),
                         "total": _num(g("total")), "notes": _txt(g("notes")), "status": _txt(g("status")), "sheet": ws.title})
-    return out
+    # tabulā viena un tā pati rinda mēdz būt divreiz (Realto P. Brieža 43: 4 telpas × 2) → vienreiz
+    seen: set[tuple] = set()
+    uniq: list[dict] = []
+    for r in out:
+        k = tuple(str(r.get(x) or "").strip().lower() for x in ("street_raw", "part", "floor", "room", "area", "func", "rate", "total", "status"))
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(r)
+    return uniq
 
 
 def split_address(street_raw: str, loc: str) -> tuple[str, str, Optional[str], Optional[str]]:

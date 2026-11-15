@@ -2179,13 +2179,16 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     sheet_note = None
                     if meta.get("source") == "sheet":
                         if int(l.get("partner_list_id") or 0) not in sheet_lists:
-                            continue   # telpa nav nākusi no šī reģistra — pēc tabulas to neaiztiekam
-                        st_ = sheet_status.get(str(l.get("partner_unit_ref") or "").strip().lower())
-                        if st_ is None:
-                            sheet_note, sheet_on = "tabulā vairs nav", True
+                            # mūsu telpa šajā ēkā, kas nav no reģistra → rāda (aģents var atzīmēt «iznomāts»), neieķeksēta
+                            # (Raimonds 2026-11-15: «rāda, kas mums webā ir, ar iespēju uzlikt ķeksi»)
+                            sheet_note, sheet_on = "mūsu DB, tabulā nav", False
                         else:
-                            sheet_note = f"tabulā: {st_}"
-                            sheet_on = bool(re.search(r"iznom|rezerv|aizņem|aiznem|nav brīv|nav briv", st_, re.I))
+                            st_ = sheet_status.get(str(l.get("partner_unit_ref") or "").strip().lower())
+                            if st_ is None:
+                                sheet_note, sheet_on = "tabulā vairs nav", True
+                            else:
+                                sheet_note = f"tabulā: {st_}"
+                                sheet_on = bool(re.search(r"iznom|rezerv|aizņem|aiznem|nav brīv|nav briv", st_, re.I))
                     missing_seen.add(int(l["id"]))
                     a_out["missing_in_list"].append({
                         "id": int(l["id"]), "street": l["street"], "area_m2": l["area_m2"], "floor": l["floor"],
