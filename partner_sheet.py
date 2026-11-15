@@ -473,6 +473,8 @@ def _guard(note: str, facts: dict) -> dict:
             continue
         if k == "Space_condition" and v == "Jauns" and not re.search(r"\bjaun", low):
             v = "Labs"
+        if k == "Logu_type" and v == "Nav logi" and re.search(r"no kuriem|daļ|dal[aē]|dažiem|dažas|vairāki|atsevišķ|ir bez logiem", low):
+            v = "Maz logu"   # tikai daļai kabinetu nav logu (Zaļā 2026-11-15: «9 kabineti, no kuriem seši bez logiem»)
         if k == "cik_WC":
             continue   # WC nosaka tikai pēc vārda zemāk (AI te bieži kļūdās: «6 kabineti, wc» → «Nav»)
         if k == "Planojums" and not ((v == "Kabinetu" and "kabinet" in low) or (v == "Atvērts" and re.search(r"atvērt|atvert|open", low))
