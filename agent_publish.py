@@ -15,6 +15,7 @@ Pieņem JSON no /agent/publish endpoint un izpilda:
 """
 from __future__ import annotations
 
+import logging
 import json
 import os
 import re
@@ -720,10 +721,14 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
             if v:
                 cols[k] = v
 
-        # WC location no UI
+        # WC location no UI — listings kolonnas «WC_location» NAV; tas ir cik_WC («1 WC telpā» / «1 WC koplietošanā»)
+        # (PDF imports 2026-11-16: INSERT krita 500 «column WC_location does not exist»)
         wc_loc = uget("WC_location")
-        if wc_loc:
-            cols["WC_location"] = wc_loc
+        if wc_loc and not cols.get("cik_WC"):
+            if str(wc_loc).lower().startswith("telp"):
+                cols["cik_WC"] = "1 WC telpā"
+            elif str(wc_loc).lower().startswith("koplie"):
+                cols["cik_WC"] = "1 WC koplietošanā"
 
         # building_class/building_type uz listing (mig 014+ — listings = primary)
         if building.get("building_class"):
@@ -842,12 +847,12 @@ def _insert_listing(conn, bp_id: int, unit: dict, building: dict,
     if dup:
         raise DuplicateListingError(dup)
 
-    # #109: owner_website tikai, kad migrācija 2026-11-08_listings_owner_website ir dzīvē (citādi INSERT kristu)
-    if "owner_website" in cols:
-        _has = conn.execute("""SELECT 1 FROM information_schema.columns WHERE table_schema='properties'
-                               AND table_name='listings' AND column_name='owner_website'""").fetchone()
-        if not _has:
-            cols.pop("owner_website")
+    # tikai esošās kolonnas — neesošs lauks (vecs UI nosaukums, migrācija vēl nav) vairs negāž visu publicēšanu ar 500
+    _existing = {(r["column_name"] if isinstance(r, dict) else r[0]) for r in conn.execute("""SELECT column_name FROM information_schema.columns
+                                               WHERE table_schema='properties' AND table_name='listings'""").fetchall()}
+    for _k in [k for k in cols if k not in _existing]:
+        logging.getLogger("agent_publish").warning("listings kolonnas «%s» nav — izlaižu", _k)
+        cols.pop(_k)
 
     # INSERT
     col_list = ", ".join(f'"{k}"' for k in cols)
