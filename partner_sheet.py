@@ -235,6 +235,12 @@ def build_analysis(src: dict, rows: list[dict], street: str, city: str, district
             "evidence": f"{src.get('name')} reģistrs: {_row_label(r)} · {r.get('func') or '?'} · {r.get('status')}",
             "attachment_hint": None, "page_hint": None, "link_ids": [],
         })
+        if m:
+            try:
+                d_, m_, y_ = m.group(1).split(".")
+                facts = {**facts, "available_from": f"{y_}-{int(m_):02d}-{int(d_):02d}"}
+            except Exception:
+                pass
         if facts:
             u["facts"] = facts   # «Par telpu» priekšaizpilde (panelis); apstiprinot iet uz listingu kā aģenta fakti
         units.append(u)
@@ -490,6 +496,14 @@ def _guard(note: str, facts: dict) -> dict:
             except Exception:
                 continue
         out[k] = v
+    if "Cik_telpas" not in out:
+        words = {"div": 2, "trīs": 3, "tris": 3, "četr": 4, "cetr": 4, "piec": 5, "seš": 6, "ses": 6, "septiņ": 7, "astoņ": 8, "deviņ": 9}
+        nums = [int(x) for x in re.findall(r"(\d{1,2})\s*(?:kabinet|telp|istab)", low)]
+        nums += [val for w, val in words.items() if re.search(w + r"\w*\s+(?:kabinet|telp|istab)", low)]
+        if len(set(nums)) == 1:
+            out["Cik_telpas"] = str(nums[0])
+        elif not nums and re.search(r"^\s*(?:1|viena|atsevišķa|atsevisķa|maza|liela|gaiša|gaisa)?\s*(?:kabinets|telpa)\b|\bviena telpa\b|\b1 telpa\b", low):
+            out["Cik_telpas"] = "1"   # «kabinets ar WC, nav siltuma», «1 telpa nav siltuma», «viena atsevišķa telpa»
     # WC — AI to bieži izlaiž; skaidrs vārds piezīmē = fakts («kabinets ar WC» → 1 WC telpā; «2 WC» → 2; «WC izbūve» = vēl nav)
     if "cik_WC" not in out and re.search(r"\bwc\b", low) and not re.search(r"wc\s+izb[ūu]v|iekļaut\w*\s+k[āa]pņu", low):
         m = re.search(r"\b([2-4])\s*wc\b", low)

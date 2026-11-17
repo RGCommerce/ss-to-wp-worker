@@ -202,7 +202,7 @@ def _street_like(street: str) -> Optional[str]:
     if not toks:
         return None
     # mājas nr. ar burtu (ss.lv «Dēļu 4s», «Ganību d. 25d») sakrīt ar «4»/«25» — bet ne «41» ar «4» (MBC 2026-10-25)
-    toks = [t + "[a-z]?" if t.isdigit() else re.escape(t) for t in toks]
+    toks = [t + "[a-z]?" if t.isdigit() else (t[:-1] + "[a-z]?" if re.fullmatch(r"\d+[a-z]", t) else re.escape(t)) for t in toks]
     if len(toks) == 1:
         return r"(^|[^a-z0-9])" + toks[0] + r"($|[^a-z0-9])"
     # starp daļām drīkst būt tikai VĀRDI (tips «iela», «gatve», «bulv.»), ne cipari — citādi «Duntes 3» atrada
@@ -1369,7 +1369,34 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
                     seen.add(int(r["id"]))
         except Exception:
             conn.rollback()
+    try:
+        import agent_publish
+        key = agent_publish._canonical_bp_key(street or "", city or "Rīga", district or "")
+        parts = key.split("|")
+        if len(parts) == 3 and re.fullmatch(r"\d+[a-z]?", parts[1]):
+            num = re.sub(r"[a-z]$", "", parts[1])
+            pat = "^" + re.escape(parts[0]) + r"\|" + num + r"[a-z]?\|" + re.escape(parts[2]) + "$"
+            for r in conn.execute(
+                """SELECT id, full_address, city FROM properties.building_profiles
+                    WHERE regexp_replace(building_key, '^([a-kn-z]\\.\\s*)+', '') ~ %s ORDER BY listing_count_total DESC NULLS LAST, id""",
+                (pat,)).fetchall():
+                if int(r["id"]) not in seen:
+                    out.append({"id": int(r["id"]), "full_address": r["full_address"], "city": r["city"], "how": "variant"})
+                    seen.add(int(r["id"]))
+    except Exception:
+        conn.rollback()
     return out
+
+
+_TYPE_COMPAT = {frozenset(x) for x in (("Birojs", "StockOfiss"), ("Noliktava", "StockOfiss"), ("Noliktava", "Ražošana"),
+                                        ("Tirdzniecība", "Birojs"), ("Studija", "Birojs"))}
+
+
+def _types_compatible(a, b) -> bool:
+    """Telpu grupas, ko partneris un mēs varam saukt dažādi par to pašu telpu; pārējās = citas telpas."""
+    if not a or not b or a == b:
+        return True
+    return frozenset((a, b)) in _TYPE_COMPAT
 
 
 def _our_listings(conn, bp_id: int) -> list[dict]:
@@ -1978,6 +2005,29 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     continue
                 ex_claims[_lid] = _pos
                 _taken_pos.add(_pos)
+            # un ±5 % pretenzijas tām telpām, kam nav ne ref, ne precīzas: tuvākā uzvar, katrs listings vienreiz
+            # (Realto 401C: 493,3 un 523,7 m² abas gāja uz #111896 500 m², 2026-11-17)
+            _claimed_pos = set(_taken_pos) | set(ref_claims.values())
+            _near_pairs: list[tuple[float, int, int]] = []
+            for _pos, _u in enumerate(addr.get("units") or []):
+                if _pos in _claimed_pos:
+                    continue
+                _ar = _num(_u.get("area_m2"))
+                _fd = _floor_digits(_floor_norm(_u.get("floor")))
+                if not _ar:
+                    continue
+                for l in ours:
+                    la = _num(l.get("area_m2"))
+                    lf = _floor_digits(l.get("floor"))
+                    if (la and abs(_ar - la) <= max(1.0, 0.05 * max(_ar, la)) and not (_fd and lf and _fd != lf)
+                            and _types_compatible(_u.get("space_type"), l.get("Space_group"))
+                            and int(l["id"]) not in ex_claims and int(l["id"]) not in ref_claims):
+                        _near_pairs.append((abs(_ar - la), _pos, int(l["id"])))
+            for _diff, _pos, _lid in sorted(_near_pairs):
+                if _lid in ex_claims or _pos in _claimed_pos:
+                    continue
+                ex_claims[_lid] = _pos
+                _claimed_pos.add(_pos)
             for _pos, u in enumerate(addr.get("units") or []):
                 idx += 1
                 u = dict(u)
@@ -2048,7 +2098,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         continue
                     if abs(area - la) <= max(0.5, 0.005 * area) and (not fd or lf):
                         exact.append(l)
-                    else:
+                    elif _types_compatible(u.get("space_type"), l.get("Space_group")):
                         near.append(l)
                 # kārtas: partnera identifikators → tā pati platība+stāvs → ±5 %
                 cands = cands or refc or exact or near
