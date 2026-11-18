@@ -451,7 +451,7 @@ def _resolve_bps(street: str, city: str) -> list[dict]:
     from psycopg.rows import dict_row
     with psycopg.connect(partner_intake.DATABASE_URL, row_factory=dict_row) as conn:
         conn.read_only = True
-        found = partner_intake._find_bps(conn, street, city, None, None) or []
+        found = [b for b in (partner_intake._find_bps(conn, street, city, None, None) or []) if b.get("how") != "variant"]
         if found:
             return found
         m = re.search(r"\d+[a-zA-Z]?", street or "")
@@ -766,7 +766,7 @@ def sslv_number_addresses(phones: str, days: int = 90) -> list[dict]:
             elif g.get("no_house"):
                 g["bp_address"] = g["street"]   # bez mājas nr ēkas profila nav — seko pēc ielas atslēgas
             else:
-                bps = partner_intake._find_bps(conn, g["street"], g["city"], None, None) or []
+                bps = [b for b in (partner_intake._find_bps(conn, g["street"], g["city"], None, None) or []) if b.get("how") != "variant"]
                 if bps:
                     g["bp_id"] = int(bps[0]["id"])
                     g["bp_address"] = bps[0].get("full_address")

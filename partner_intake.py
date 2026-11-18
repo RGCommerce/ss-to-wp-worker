@@ -1338,6 +1338,23 @@ def _find_bp(conn, street: Optional[str], city: Optional[str], district: Optiona
     return None
 
 
+def _house_parts(street: str) -> tuple[str, str, str]:
+    """«Lāčplēša iela 20a» → («lacplesa», «20», «a»)."""
+    toks = _street_key(street or "").split()
+    for i, t in enumerate(toks):
+        m = re.fullmatch(r"(\d+)([a-z]?)", t)
+        if m:
+            return " ".join(toks[:i]), m.group(1), m.group(2)
+    return " ".join(toks), "", ""
+
+
+def _is_house_variant(query_street: str, full_address: str) -> bool:
+    """Viena iela un numurs, bet burts atšķiras (Zaļā 2026-11-18: Lāčplēša 20 ≠ 20a; tomēr Brīvības 401 ↔ 401C ir
+    viens komplekss) → ēku uzskata par VARIANTU: tās telpas der tikai sasaistei, ne par galveno ēku, ne «nav sarakstā»."""
+    a, b = _house_parts(query_street), _house_parts(full_address)
+    return bool(a[1]) and a[1] == b[1] and a[2] != b[2] and (a[0] == b[0] or a[0] in b[0] or b[0] in a[0])
+
+
 def _find_bps(conn, street, city, district, building_name) -> list[dict]:
     """Visi ticamie BP (DB ir dublikāti, piem. 'rupnicu|4|olaine' un 'rupnicu 4, olaine|olaine')."""
     out: list[dict] = []
@@ -1385,6 +1402,10 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
                     seen.add(int(r["id"]))
     except Exception:
         conn.rollback()
+    for b in out:
+        if b.get("how") != "variant" and street and _is_house_variant(street, b.get("full_address") or ""):
+            b["how"] = "variant"
+    out.sort(key=lambda b: b.get("how") == "variant")   # precīzie pirmie, varianti beigās
     return out
 
 
@@ -1955,21 +1976,30 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             bps = bps or _find_bps(conn, addr.get("street"), addr.get("city"), addr.get("district"), addr.get("building_name"))
             ours = []
             per_bp = []
+            var_bp: list[tuple[int, dict]] = []
             for b in bps:
                 ls = _our_listings_safe(conn, b["id"])
-                per_bp.append((len(ls), b))
+                if b.get("how") == "variant":
+                    # 401 ↔ 401C: telpas der sasaistei (tā pati telpa citā rakstībā), bet ēka NAV galvenā un tās
+                    # pārējās telpas nekad nav «nav sarakstā» (Zaļā 2026-11-18: Lāčplēša 20 → 20a iznomātu svešas)
+                    for l in ls:
+                        l["_variant"] = True
+                    var_bp.append((len(ls), b))
+                else:
+                    per_bp.append((len(ls), b))
                 ours.extend(ls)
             per_bp.sort(key=lambda x: -x[0])
             bp = per_bp[0][1] if per_bp else None
             if bp:
-                bp = {**bp, "alternatives": [{**b, "our_count": n} for n, b in per_bp[1:]]}
+                bp = {**bp, "alternatives": [{**b, "our_count": n} for n, b in per_bp[1:] + var_bp]}
             matched_ids: set[int] = set()
             # Google atrastais garais nosaukums → DB ēkas adrese (jaunie listingi ar «Meierovica bulv. 16», ne «Zigfrīda Annas …»)
             street_out = (bp.get("full_address") if (bp and addr.get("address_source") == "google" and bp.get("full_address")) else addr.get("street"))
             a_out = {"street": street_out, "city": addr.get("city") or "Rīga", "district": addr.get("district"),
                      "building_name": addr.get("building_name"), "address_known": bool(addr.get("address_known", True)),
                      "bp": bp, "new_building": bp is None,
-                     "our_count": sum(1 for l in ours if l.get("occupancy_status") != "occupied"),
+                     "our_count": sum(1 for l in ours if l.get("occupancy_status") != "occupied" and not l.get("_variant")),
+                     "variant_buildings": [{"id": int(b["id"]), "full_address": b.get("full_address")} for _n, b in var_bp],
                      "units": [], "missing_in_list": []}
             # partnera identifikatora (ref) pretenzijas: listings, ko kāda telpa prasa pēc ref (platība ±5 %), citai telpai
             # nav pieejams (FLEX nr. 2 = 49,9 m² un nr. 12 = 50,3 m² — abi ±0,5 m² viens no otra, Skanstes City 2026-11-13)
@@ -2224,6 +2254,8 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied" or int(l["id"]) in missing_seen:
                         continue   # jau iznomātos / citā adresē jau uzskaitītos nepiedāvā vēlreiz
+                    if l.get("_variant"):
+                        continue   # varianta ēkas (20a pie 20) telpas nekad nav «nav sarakstā»
                     if meta.get("source") == "sslv" and int(l["id"]) not in gone_ids:
                         continue   # ss.lv numuru ieplūdē ir tikai jaunie/mainītie sludinājumi — «nav sarakstā» tikai pazudušie
                     sheet_note = None
