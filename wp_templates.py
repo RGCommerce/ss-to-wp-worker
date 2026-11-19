@@ -703,7 +703,20 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
         # investment_description JAU iepin aģenta aprakstu (AI naratīvs vai fallback),
         # tāpēc Agent_comment atsevišķi NErenderē — teksts saplūst vienā.
         ihtml: list[str] = []
-        ihtml += _paras(g("investment_description"))
+        inv_txt = g("investment_description")
+        if not str(inv_txt or "").strip():
+            # ss.lv skrāpēts sludinājums, ko AI klasificēja kā investīciju objektu — investment_description to
+            # neuzbūvē (tikai anketas ceļš) → mājaslapā bija tikai «Sazinieties ar mums» (Biķernieku 162b, 2026-11-19).
+            # Saliek to pašu šablonu no listinga laukiem (ēkas, zeme, ienākumi, stratēģija, aģenta apraksts) + ēkas apraksts.
+            try:
+                import investment_ai
+                inv_txt = investment_ai.build_investment_description(L, {"Investiciju_strategija": g("Investiciju_strategija")})
+            except Exception:
+                inv_txt = g("Agent_comment") or ""
+            bd = _clean_bdesc(g("Building_description")) or _clean_bdesc(gb("Building_description"))
+            if bd and bd not in str(inv_txt):
+                inv_txt = (str(inv_txt).rstrip() + "\n\n" + bd) if inv_txt else bd
+        ihtml += _paras(inv_txt)
         ihtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢</p>")
         return "".join(ihtml)
 
