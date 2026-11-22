@@ -3400,7 +3400,7 @@ def _attach_images(conn, listing_id: int, u: dict, intake_id: str) -> dict:
     links = {**links, "photos": sorted(links.get("photos") or [], key=lambda r: _rank.get(_tp.get(r, "interjers"), 2))}
     for kind in ("link_photos", "photos", "plans", "link_plans", "uploads"):
         if kind == "uploads":
-            rels = sel_uploads
+            rels = sorted(sel_uploads, key=lambda r: _rank.get(_tp.get(r, "interjers"), 2))
         elif kind.startswith("link_"):
             rels = links.get(kind[5:], [])
             if sel_links is not None:
@@ -4026,6 +4026,11 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     up = d / "uploads" / str(unit["idx"])
     if up.is_dir():
         out["uploads"] = sorted(f"partner_intake/{intake_id}/uploads/{unit['idx']}/{f.name}" for f in up.iterdir() if f.is_file())
+        try:
+            _tc = json.loads((d / "image_types_cache.json").read_text(encoding="utf-8"))
+            out["types"].update({k: _tc[k] for k in out["uploads"] if k in _tc})   # no citiem listingiem nokopētās ar tipu
+        except Exception:
+            pass
     bp_id = (addr.get("bp") or {}).get("id")
     if bp_id:
         import building_photos
@@ -4189,6 +4194,48 @@ def save_unit_upload(intake_id: str, idx: str, filename: str, data: bytes) -> st
     fn = f"up_{uuid.uuid4().hex}{ext}"
     (d / fn).write_bytes(data)
     return f"partner_intake/{intake_id}/uploads/{idx}/{fn}"
+
+
+def copy_unit_images(intake_id: str, idx: str, items: list[dict]) -> dict:
+    """«Pievienot no esošajiem listingiem» importa stadijā (Raimonds 2026-11-23: fasāde u.c. no tās pašas ēkas
+    sludinājumiem; visiem partneru avotiem): listings/<src>/<mape>/<fails> → partner_intake/<id>/uploads/<idx>/
+    (tālāk kā aģenta augšupielāde), izvēlētais tips → image_types_cache (fasāde = «Nav fasādes» pazūd, kārtojas pirmā)."""
+    if not re.fullmatch(r"\d{1,4}", str(idx)):
+        raise ApplyError("nederīgs idx")
+    d = INTAKE_DIR / intake_id
+    if not (d / "report.json").is_file():
+        raise ApplyError("ieplūde nav atrasta")
+    up = d / "uploads" / str(idx)
+    up.mkdir(parents=True, exist_ok=True)
+    cache_p = d / "image_types_cache.json"
+    try:
+        cache = json.loads(cache_p.read_text(encoding="utf-8")) if cache_p.is_file() else {}
+    except Exception:
+        cache = {}
+    saved: list[str] = []
+    skipped: list[dict] = []
+    for it in items[:60]:
+        fn = str(it.get("filename") or "")
+        folder = str(it.get("folder") or "")
+        if folder not in ("raw", "ai_ready", "wp_raw") or not fn or fn.startswith(".") or "/" in fn or "\\" in fn or ".." in fn:
+            skipped.append({"filename": fn, "reason": "nederīgs ceļš"})
+            continue
+        src = STORAGE_ROOT / "listings" / str(int(it.get("src_listing_id") or 0)) / folder / fn
+        ext = src.suffix.lower()
+        if ext not in (".jpg", ".jpeg", ".png", ".webp") or not src.is_file():
+            skipped.append({"filename": fn, "reason": "fails nav atrasts"})
+            continue
+        out_fn = f"up_{uuid.uuid4().hex}{ext}"
+        shutil.copy2(src, up / out_fn)
+        rel = f"partner_intake/{intake_id}/uploads/{idx}/{out_fn}"
+        saved.append(rel)
+        if it.get("type") in ("fasade", "interjers", "plans"):
+            cache[rel] = it["type"]
+    try:
+        cache_p.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    return {"ok": True, "saved": saved, "skipped": skipped}
 
 
 def rollback(intake_id: str, requested_by: Optional[str]) -> dict:

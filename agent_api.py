@@ -1766,6 +1766,24 @@ def partner_intake_unit_upload(intake_id: str, idx: str, files: list[UploadFile]
     return {"ok": True, "saved": saved, "errors": errors}
 
 
+class UnitCopyReq(BaseModel):
+    items: list[ImageCopyItem]
+
+
+@router.post("/partner-intake/{intake_id}/unit-copy/{idx}")
+def partner_intake_unit_copy(intake_id: str, idx: str, req: UnitCopyReq, _auth: None = Depends(require_token)) -> dict:
+    """Importa stadijā: bildes no esošiem listingiem (tā pati ēka / meklēts) → telpas augšupielādes."""
+    import partner_intake
+    if not re.fullmatch(_INTAKE_ID_RE, intake_id) or not re.fullmatch(r"\d{1,4}", idx):
+        raise HTTPException(400, "Nederīgs ceļš")
+    if not req.items:
+        raise HTTPException(400, "Nav izvēlētu bilžu")
+    try:
+        return partner_intake.copy_unit_images(intake_id, idx, [it.model_dump() for it in req.items])
+    except partner_intake.ApplyError as e:
+        raise HTTPException(404, str(e))
+
+
 @router.delete("/partner-intake/{intake_id}/unit-upload/{idx}/{fn}")
 def partner_intake_unit_upload_delete(intake_id: str, idx: str, fn: str, _auth: None = Depends(require_token)) -> dict:
     import partner_intake
