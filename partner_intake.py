@@ -1392,7 +1392,7 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
         parts = key.split("|")
         if len(parts) == 3 and re.fullmatch(r"\d+[a-z]?", parts[1]):
             num = re.sub(r"[a-z]$", "", parts[1])
-            pat = "^" + re.escape(parts[0]) + r"\|" + num + r"[a-z]?\|" + re.escape(parts[2]) + "$"
+            pat = "^" + re.escape(parts[0]) + r"\|" + num + r"[a-z]?\|(" + re.escape(parts[2]) + r")?$"
             for r in conn.execute(
                 """SELECT id, full_address, city FROM properties.building_profiles
                     WHERE regexp_replace(building_key, '^([a-kn-z]\\.\\s*)+', '') ~ %s ORDER BY listing_count_total DESC NULLS LAST, id""",
@@ -1410,7 +1410,7 @@ def _find_bps(conn, street, city, district, building_name) -> list[dict]:
 
 
 _TYPE_COMPAT = {frozenset(x) for x in (("Birojs", "StockOfiss"), ("Noliktava", "StockOfiss"), ("Noliktava", "Ražošana"),
-                                        ("Tirdzniecība", "Birojs"), ("Studija", "Birojs"))}
+                                        ("StockOfiss", "Ražošana"), ("Tirdzniecība", "Birojs"), ("Studija", "Birojs"))}
 
 
 def _types_compatible(a, b) -> bool:
@@ -1418,6 +1418,47 @@ def _types_compatible(a, b) -> bool:
     if not a or not b or a == b:
         return True
     return frozenset((a, b)) in _TYPE_COMPAT
+
+
+def _fact_same(old, new) -> bool:
+    a, b = str(old).strip().replace(",", "."), str(new).strip().replace(",", ".")
+    try:
+        return abs(float(a) - float(b)) < 1e-6
+    except ValueError:
+        return a.lower() == b.lower()
+
+
+def _facts_diff(conn, lid: int, facts) -> dict:
+    """Partnera piezīmju fakti («4 telpas un WC, nepieciešams remonts») pret DB sludinājumu: {kolonna: {old, new}} tur,
+    kur DB tukšs/«unknown» vai citādi → ieplūde piedāvā «Atjaunot — fakti», aģents pirms tam var palabot «Par telpu»
+    (Raimonds 2026-11-23: «no exela uzzinām … jāpiedāvā to izlabot»)."""
+    facts = _clean_unit_facts(facts)
+    if not facts:
+        return {}
+    cols = list(facts.keys())
+    try:
+        row = conn.execute(f"SELECT {', '.join(chr(34) + c + chr(34) for c in cols)} FROM properties.listings WHERE id = %s", (lid,)).fetchone()
+    except Exception:
+        conn.rollback()
+        return {}
+    if not row:
+        return {}
+    out: dict = {}
+    for k, v in facts.items():
+        old = row[k] if isinstance(row, dict) else None
+        old_s = "" if old is None else str(old).strip()
+        if old_s.lower() in ("unknown", "none", "null"):
+            old_s = ""
+        if old_s and _fact_same(old_s, v):
+            continue
+        if k == "cik_WC" and re.fullmatch(r"\d+", old_s) and str(v).startswith(old_s + " "):
+            continue   # vecais ieraksts «1» = «1 WC telpā»
+        out[k] = {"old": old_s or None, "new": v}
+    return out
+
+
+def _facts_fp(fd) -> str:
+    return json.dumps({k: str((v or {}).get("new")) for k, v in sorted((fd or {}).items())}, ensure_ascii=False)
 
 
 def _our_listings(conn, bp_id: int) -> list[dict]:
@@ -1873,8 +1914,8 @@ def _remember_decisions(meta: dict, report: dict, unit_dec: dict, miss_dec: dict
                 continue
             if dec == "skip":
                 book[key] = {"d": "skip", "price": price, "at": _now().isoformat()}
-            elif dec == "keep" and u.get("status") == "match" and u.get("diff"):
-                book[key] = {"d": "keep_price", "price": price, "at": _now().isoformat()}
+            elif dec == "keep" and u.get("status") == "match" and (u.get("diff") or u.get("facts_diff")):
+                book[key] = {"d": "keep_price", "price": price, "facts": _facts_fp(u.get("facts_diff")), "at": _now().isoformat()}
             else:
                 book.pop(key, None)
         for m in a.get("missing_in_list") or []:
@@ -1902,9 +1943,12 @@ def _apply_memory(meta: dict, report: dict) -> None:
             if hit["d"] == "skip" and u.get("status") != "match":
                 u["decision"] = "skip"
                 u["remembered"] = "skip"
-            elif hit["d"] == "keep_price" and u.get("status") == "match" and u.get("diff"):
+            elif hit["d"] == "keep_price" and u.get("status") == "match" and (u.get("diff") or u.get("facts_diff")):
+                if u.get("facts_diff") and hit.get("facts") != _facts_fp(u.get("facts_diff")):
+                    continue   # citi fakti nekā toreiz atteiktie → piedāvā vēlreiz
                 u["decision"] = "keep"
                 u["diff"] = {}
+                u["facts_diff"] = {}
                 u["remembered"] = "keep_price"
         for m in a.get("missing_in_list") or []:
             if book.get(f"miss:{m['id']}") and m.get("default_checked"):
@@ -1993,6 +2037,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
             if bp:
                 bp = {**bp, "alternatives": [{**b, "our_count": n} for n, b in per_bp[1:] + var_bp]}
             matched_ids: set[int] = set()
+            dup_of: dict[int, int] = {}   # mūsu dublikāts → paliekošais sludinājums (tā pati telpa DB divreiz)
             # Google atrastais garais nosaukums → DB ēkas adrese (jaunie listingi ar «Meierovica bulv. 16», ne «Zigfrīda Annas …»)
             street_out = (bp.get("full_address") if (bp and addr.get("address_source") == "google" and bp.get("full_address")) else addr.get("street"))
             a_out = {"street": street_out, "city": addr.get("city") or "Rīga", "district": addr.get("district"),
@@ -2161,9 +2206,12 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         free.sort(key=lambda c: (bool(c.get("on_website")), (c.get("n_processed") or 0) + (c.get("n_raw") or 0), int(c["id"])), reverse=True)
                         dup_ids = [int(c["id"]) for c in free[1:]]
                         cands = free[:1]
+                        for _i in dup_ids:
+                            dup_of[_i] = int(free[0]["id"])
                 status = "new"
                 match = None
                 diff = {}
+                facts_diff: dict = {}
                 reactivate = False
                 if len(cands) == 1:
                     status = "match"
@@ -2187,6 +2235,7 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                         diff["price"] = {"old": old_total, "new": round(new_total, 2)}
                     # atzīmēts «iznomāts», bet partneris to atkal piedāvā → atjaunot kā brīvu
                     reactivate = match.get("occupancy_status") == "occupied"
+                    facts_diff = _facts_diff(conn, int(match["id"]), u.get("facts"))
                 elif len(cands) > 1:
                     status = "ambiguous"
                 pdf_imgs = _pdf_images_for_unit(d, meta, u) if addr.get("street") or addr.get("building_name") else {"photos": [], "plans": []}
@@ -2220,14 +2269,14 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                     needs_review = False
                 decision = ("skip" if only_price else
                             "review" if (needs_review and status != "match") else
-                            ("update" if (status == "match" and (diff or reactivate)) else
+                            ("update" if (status == "match" and (diff or reactivate or facts_diff)) else
                              ("keep" if status == "match" else "create")))
                 unit_out = {k: v for k, v in u.items() if not k.startswith("_")}
                 unit_out.update({"idx": idx, "floor_norm": floor, "status": status, "decision": decision, "price_missing": only_price,
                                  "matched_listing": {k: (str(v) if isinstance(v, datetime) else v)
                                                      for k, v in match.items()} if match else None,
                                  "candidates": [int(c["id"]) for c in cands] if status == "ambiguous" else [],
-                                 "diff": diff, "reactivate": reactivate, "images": images, "has_photo_source": has_photo,
+                                 "diff": diff, "facts_diff": facts_diff, "reactivate": reactivate, "images": images, "has_photo_source": has_photo,
                                  "link_source": u.get("link_source"),
                                  "duplicates": dup_ids,
                                  "needs_review": needs_review})
@@ -2254,12 +2303,17 @@ def reconcile(intake_id: str, analysis: Optional[dict] = None) -> dict:
                 for l in ours:
                     if int(l["id"]) in matched_ids or l.get("occupancy_status") == "occupied" or int(l["id"]) in missing_seen:
                         continue   # jau iznomātos / citā adresē jau uzskaitītos nepiedāvā vēlreiz
-                    if l.get("_variant"):
+                    is_dup = int(l["id"]) in dup_of
+                    if l.get("_variant") and not is_dup:
                         continue   # varianta ēkas (20a pie 20) telpas nekad nav «nav sarakstā»
-                    if meta.get("source") == "sslv" and int(l["id"]) not in gone_ids:
+                    if meta.get("source") == "sslv" and int(l["id"]) not in gone_ids and not is_dup:
                         continue   # ss.lv numuru ieplūdē ir tikai jaunie/mainītie sludinājumi — «nav sarakstā» tikai pazudušie
                     sheet_note = None
-                    if meta.get("source") == "sheet":
+                    if is_dup:
+                        # tā pati telpa DB divreiz (401C 527 un 520 m² = viena 523,7 m² reģistrā, Raimonds 2026-11-23):
+                        # viena paliek un tiek atjaunota, otru piedāvā iznomāt, lai mājaslapā nerādās divas
+                        sheet_note, sheet_on = f"dublikāts #{dup_of[int(l['id'])]}", True
+                    elif meta.get("source") == "sheet":
                         if int(l.get("partner_list_id") or 0) not in sheet_lists:
                             # mūsu telpa šajā ēkā, kas nav no reģistra → rāda (aģents var atzīmēt «iznomāts»), neieķeksēta
                             # (Raimonds 2026-11-15: «rāda, kas mums webā ir, ar iespēju uzlikt ķeksi»)
@@ -2513,11 +2567,13 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
         for u in addr.get("units") or []:
             facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
             potential = list(u.get("_potential") or [])
+            dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
+            if dec == "keep" and u.get("facts_diff"):
+                facts = {}   # «jau ir DB — nemainīt» = partnera piezīmju faktus neraksta pāri
             if not facts and not potential:
                 continue
             lid = None
             try:
-                dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
                 lid = created_map.get(str(u["idx"])) or linked_map.get(str(u["idx"]))
                 if lid is None and dec.startswith("link:") and dec[5:].isdigit():
                     lid = int(dec[5:])
@@ -3144,7 +3200,8 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                             f"Atkal brīvs — partnera ({partner.get('company') or '?'}) sarakstā {report.get('list_date') or report.get('received_at','')[:10]}")
                         sets.append("occupancy_set_by = %s"); vals.append(requested_by)
                         sets.append("occupancy_set_at = now()")
-                    if sets:
+                    # tikai fakti mainās (cena tā pati) → tāpat «atjaunots» + mājaslapa pārpublicējas (teksts lieto faktus)
+                    if sets or u.get("facts_diff"):
                         if diff:
                             sets.append("""agent_locked_fields = (SELECT ARRAY(SELECT DISTINCT x FROM unnest(COALESCE(agent_locked_fields,'{}'::text[]) || ARRAY['price','price_per_m2']) x))""")
                         sets.append("updated_at = now()")
@@ -3182,7 +3239,9 @@ def apply(intake_id: str, decisions: dict, requested_by: Optional[str], wp_user_
                         conn.execute("""UPDATE properties.listings SET occupancy_status='occupied', occupied_from=CURRENT_DATE,
                                         occupied_until=NULL,
                                         occupied_note=%s, occupancy_set_by=%s, occupancy_set_at=now(), updated_at=now() WHERE id=%s""",
-                                     (f"Nav partnera ({partner.get('company') or '?'}) vakanču sarakstā {report.get('list_date') or report.get('received_at','')[:10]}",
+                                     ((f"Dublikāts — tā pati telpa kā #{str(m.get('sheet_note')).split('#')[-1]} (partnera {partner.get('company') or '?'} saraksts {report.get('list_date') or report.get('received_at','')[:10]})"
+                                       if str(m.get("sheet_note") or "").startswith("dublikāts") else
+                                       f"Nav partnera ({partner.get('company') or '?'}) vakanču sarakstā {report.get('list_date') or report.get('received_at','')[:10]}"),
                                       requested_by, lid))
                         if m.get("on_website"):
                             # jau gaidošs rindas ieraksts (publish/unpublish) → pārliek uz unpublish, nevis krīt ar

@@ -149,8 +149,15 @@ def split_address(street_raw: str, loc: str) -> tuple[str, str, Optional[str], O
     return s, city, district, corp
 
 
-def _space_type(func: str, notes: str, fallback: Optional[str]) -> Optional[str]:
+def _space_type(func: str, notes: str, fallback: Optional[str], floor: Optional[str] = None) -> Optional[str]:
     f = (func or "").lower()
+    # «Pakalpojumi» biroju ēkas 2.+ stāvā = Studija (10 m² 3. stāvā nav tirdzniecība; Raimonds 2026-11-23);
+    # 1./0. stāvā (skatlogi, ieeja no ielas) = Tirdzniecība
+    if "pakalpojum" in f and not re.search(r"tirdzniec|veikal", f):
+        fl = re.search(r"\d+", str(floor or ""))
+        if fl and int(fl.group(0)) >= 2:
+            return "Studija"
+        return "Tirdzniecība"
     # StockOfiss = birojs + NOLIKTAVA; «birojs / darbnīca» ir birojs (Raimonds 2026-11-15: «nekāda sakara ar stock ofisu»)
     if "biroj" in f and "noliktav" in f:
         return "StockOfiss"
@@ -201,7 +208,7 @@ def classify(r: dict) -> tuple[str, Optional[str]]:
 
 def build_analysis(src: dict, rows: list[dict], street: str, city: str, district: Optional[str]) -> dict:
     """Vienas adreses prebuilt analīze (kā ss.lv numura avotam) — bez AI."""
-    typed = [t for t in (_space_type(r["func"], "", None) for r in rows) if t]
+    typed = [t for t in (_space_type(r["func"], "", None, r.get("floor")) for r in rows) if t]
     dominant = max(set(typed), key=typed.count) if typed else None
     units, skipped = [], []
     try:
@@ -226,7 +233,7 @@ def build_analysis(src: dict, rows: list[dict], street: str, city: str, district
         ref = " ".join(x for x in (r.get("part"), r.get("room")) if x) or None
         u.update({
             "ref": ref, "building_part": r.get("part") or None, "floor": r.get("floor") or None,
-            "area_m2": area, "area_approx": False, "space_type": _space_type(r["func"], r.get("notes") or "", dominant),
+            "area_m2": area, "area_approx": False, "space_type": _space_type(r["func"], r.get("notes") or "", dominant, r.get("floor")),
             "deal": "rent", "rent_per_m2_min": rate, "rent_total": total,
             "condition": ("jāremontē" if re.search(r"remont", (r.get("notes") or "").lower()) else None),
             "available_from": m.group(1) if m else "tagad",
