@@ -175,6 +175,10 @@ def upsert_source(data: dict) -> dict:
         "contact_email": (data.get("contact_email") or (cur or {}).get("contact_email") or "").strip(),
         "contact_phone": (data.get("contact_phone") or (cur or {}).get("contact_phone") or "").strip(),
         "notes": (data.get("notes") or (cur or {}).get("notes") or "").strip(),
+        # kind=sheet: partnera ēku lapas bildēm {adrese: URL} (Raimonds 2026-11-22: Realto 401C = realto.lv/manufaktura/);
+        # receptes (AI iemācītās, partner_web) paliek pie avota
+        "pages": {str(k).strip(): str(v).strip() for k, v in (data.get("pages") if isinstance(data.get("pages"), dict) else (cur or {}).get("pages") or {}).items() if str(v).strip()},
+        "web_recipes": (cur or {}).get("web_recipes") or {},
         **sslv,
         "schedule": data.get("schedule") if data.get("schedule") in SCHEDULES else (cur or {}).get("schedule") or ("hourly" if kind == "sslv" else "weekly" if kind == "sheet" else "daily"),
         "enabled": bool(data.get("enabled", (cur or {}).get("enabled", True))),

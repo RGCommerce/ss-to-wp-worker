@@ -1962,6 +1962,7 @@ class DriveSourceReq(BaseModel):
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
     notes: Optional[str] = None
+    pages: Optional[dict] = None     # kind=sheet: {adrese: partnera ēkas lapas URL} bildēm
     schedule: Optional[str] = None   # daily | weekly
     enabled: Optional[bool] = None
 

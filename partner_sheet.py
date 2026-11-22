@@ -355,6 +355,14 @@ def scan_sheet_source(src: dict, force: bool = False) -> dict:
         meta["prebuilt_analysis"] = analysis
         (partner_intake.INTAKE_DIR / meta["intake_id"] / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        try:
+            n_pages = _page_links(src, g["street"], partner_intake.INTAKE_DIR / meta["intake_id"])
+            if n_pages:
+                meta["page_links"] = n_pages
+                (partner_intake.INTAKE_DIR / meta["intake_id"] / "meta.json").write_text(
+                    json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        except Exception as e:
+            logger.warning("partner_sheet: ēkas lapa %s: %s", g["street"], e)
         rep = partner_intake.process_intake(meta["intake_id"], do_notify=False)
         act = partner_drive._actionable(rep)
         if act["any"]:
@@ -384,6 +392,58 @@ def scan_sheet_source(src: dict, force: bool = False) -> dict:
     else:
         result["skipped"] = "nav izmaiņu nevienā ēkā"
     return result
+
+
+def page_for_address(src: dict, street: str) -> Optional[str]:
+    """Partnera ēkas lapa šai adresei: tā pati iela+numurs (burts nav svarīgs: Brīvības gatve 401 un 401C ir viena
+    Realto lapa /manufaktura/)."""
+    import partner_intake
+    pages = src.get("pages") or {}
+    if not pages or not street:
+        return None
+    k = partner_intake._street_key(street)
+    hp = partner_intake._house_parts(street)
+    for addr, url in pages.items():
+        if partner_intake._street_key(addr) == k:
+            return url
+        ap = partner_intake._house_parts(addr)
+        if hp[1] and ap[1] == hp[1] and (ap[0] == hp[0] or ap[0] in hp[0] or hp[0] in ap[0]):
+            return url
+    return None
+
+
+def _page_links(src: dict, street: str, d) -> int:
+    """Partnera ēkas lapa (realto.lv/manufaktura/) → telpu lapas ar bildēm kā saites L1.. (links.json + web_links.json);
+    process_intake tās lejupielādē un piesaista telpām pēc platības kartiņas tekstā (_assign_links_by_geometry).
+    Bez AI, ja lapa nolasās ar heiristikām; citādi vienreiz iemācās recepti (partner_web) un glabā pie avota."""
+    import partner_drive
+    import partner_web
+    url = page_for_address(src, street)
+    if not url:
+        return 0
+    recipes = src.get("web_recipes") or {}
+    col = partner_web.collect(url, recipe=recipes.get(url))
+    if col.get("needs_recipe") and col.get("_raw"):
+        try:
+            rec = partner_web.learn_recipe(url, col["_raw"])
+            recipes[url] = rec
+            sources = partner_drive.load_sources()
+            for s_ in sources:
+                if s_.get("id") == src["id"]:
+                    s_["web_recipes"] = recipes
+            partner_drive.save_sources(sources)
+            col = partner_web.collect(url, recipe=rec)
+        except Exception as e:
+            logger.warning("partner_sheet: recepte %s: %s", url, e)
+    wl = partner_web.web_links(col)
+    wl = [x for x in wl if x.get("images") or x.get("pdfs")]
+    if not wl:
+        return 0
+    links = [{"url": x["url"], "source": "mājaslapa", "page": None, "id": f"L{i + 1}", "rows": [x.get("row_text") or ""],
+              "geo": [{"areas": [], "floor": None, "rents": []}], "kind": "web"} for i, x in enumerate(wl)]
+    (d / "web_links.json").write_text(json.dumps(wl, ensure_ascii=False, indent=1), encoding="utf-8")
+    (d / "links.json").write_text(json.dumps(links, ensure_ascii=False, indent=1), encoding="utf-8")
+    return len(links)
 
 
 def _notify(src: dict, created: list[tuple[str, dict]]) -> int:
