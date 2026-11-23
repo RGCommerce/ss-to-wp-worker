@@ -639,14 +639,26 @@ def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
 
 
 def _join_sents(sents: list[str], sep: str) -> str:
-    """Teikumi vienā rindkopā; vairākrindu bloks (aģenta teksts ar <br>) sākas un beidzas ar jaunu rindu —
-    «…iznomāšanu). Cena ir …» vienā rindā (Raimonds 2026-11-23) → tukša rinda starp."""
+    """Teikumi vienā rindkopā. Jauna rinda (viens <br>, kā Shift+Enter WordPress — Raimonds 2026-11-23: «normāla
+    atstarpe, ne huge») starp teikumiem, ja: teikumā ir rindu pārtraukums (aģenta teksts ar Enter), teikums beidzas ar
+    «:» (saraksta ievads) vai teikums ir saraksta rinda «1) …». Teikuma malās liekus <br> noņem (aģents raksta
+    «Īpašumā ietilpst: <br>» / «<br>Zemes platība»), lai nesanāk dubulti."""
+    _edge = re.compile(r"^(\s*<br>\s*)+|(\s*<br>\s*)+$")
+    items = []
+    for x in sents:
+        x = str(x)
+        core = _edge.sub("", x).strip()
+        if core:
+            items.append((core, x.lstrip().startswith("<br>"), x.rstrip().endswith("<br>")))
+    is_item = lambda x: bool(re.match(r"^\d+\)", x))
     out = ""
-    for i, x in enumerate(sents):
+    for i, (x, lead, _tr) in enumerate(items):
         if i == 0:
             out = x
-        elif sep == " " and ("<br>" in x or "<br>" in sents[i - 1]):
-            out += "<br><br>" + x
+            continue
+        prev, _pl, prev_trail = items[i - 1]
+        if sep == " " and (lead or prev_trail or "<br>" in x or "<br>" in prev or prev.endswith(":") or is_item(x) or is_item(prev)):
+            out += "<br>" + x
         else:
             out += sep + x
     return out
@@ -757,7 +769,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
                 continue
             low = para.lower()
             listy = "\n" in para or bool(re.match(r"^\d+\)", para))
-            sents = [para.replace("\n", "<br>")] if listy else _split_sents(para)
+            sents = [ln.strip() for ln in para.split("\n") if ln.strip()] if listy else _split_sents(para)
             if listy or low.startswith(("tiek pārdots investīciju", "tiek iznomāts investīciju", "īpašumā ietilpst",
                                         "zemes platība", "īpašums ir ")) or (bd and bd in para):
                 eka_s += sents
