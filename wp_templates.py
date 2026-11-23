@@ -23,6 +23,7 @@ Lietošana:
 """
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -637,11 +638,25 @@ def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
                                  "sep": " ", "sents": [txt]})
 
 
+def _join_sents(sents: list[str], sep: str) -> str:
+    """Teikumi vienā rindkopā; vairākrindu bloks (aģenta teksts ar <br>) sākas un beidzas ar jaunu rindu —
+    «…iznomāšanu). Cena ir …» vienā rindā (Raimonds 2026-11-23) → tukša rinda starp."""
+    out = ""
+    for i, x in enumerate(sents):
+        if i == 0:
+            out = x
+        elif sep == " " and ("<br>" in x or "<br>" in sents[i - 1]):
+            out += "<br><br>" + x
+        else:
+            out += sep + x
+    return out
+
+
 def _render_from_segs(segs: list[dict]) -> str:
     """_segs → HTML (tas pats formāts kā blocks-ceļā)."""
     html: list[str] = []
     for s in segs:
-        body = _md_bold(s["sep"].join(x for x in s["sents"] if x))
+        body = _md_bold(_join_sents([x for x in s["sents"] if x], s["sep"]))
         k = s["kind"]
         if k == "B":
             html.append(f"<p>{_b(body)}</p>")
@@ -776,7 +791,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
         _seg("cena", "P", cena_s)
         _seg(None, "P", ["Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢"])
         if _segments_out is not None:
-            _segments_out.append(_segs)
+            _segments_out.append(copy.deepcopy(_segs))
         segments_i = _parse_segments(L.get("Agent_text_segments"))
         if segments_i:
             _apply_segments(_segs, segments_i)
@@ -1168,7 +1183,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
 
     # ── Teksta būvētājs: atdod struktūru (body_segments) + ievij papildinājumus ──
     if _segments_out is not None:
-        _segments_out.append(_segs)
+        _segments_out.append(copy.deepcopy(_segs))
     segments = _parse_segments(L.get("Agent_text_segments"))
     if segments:
         _apply_segments(_segs, segments)
