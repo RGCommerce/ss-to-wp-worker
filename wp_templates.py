@@ -812,14 +812,15 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
                 cena_s.append(f"Cena ir {_money_lv(price_i)} EUR" + (f" ({_money_lv(ppm2_i)} EUR/m²)" if ppm2_i else "") + ".")
             else:
                 cena_s.append(f"Nomas maksa ir {_money_lv(price_i)} EUR mēnesī.")
-        _seg("eka", "P", eka_s)
-        _seg("apraksts", "P", apr_s)
+        # katrs būvētāja teikums savā rindā (kā Enter), Raimonds 2026-11-23
+        _seg("eka", "P", eka_s, sep="<br>")
+        _seg("apraksts", "P", apr_s, sep="<br>")
         extra_i = (g("Agent_text_extra") or "").strip()
         for _para in extra_i.split("\n\n"):
             _para = _para.strip()
             if _para:
                 _seg(None, "P", [_para.replace("\n", "<br>")])
-        _seg("cena", "P", cena_s)
+        _seg("cena", "P", cena_s, sep="<br>")
         _seg(None, "P", ["Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢"])
         if _segments_out is not None:
             _segments_out.append(copy.deepcopy(_segs))
