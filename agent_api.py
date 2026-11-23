@@ -191,7 +191,9 @@ def listing_body_segments(
     sg = (str(L.get("Space_group") or "")).strip()
     Lp = dict(L)
     if bp:
-        for loc in ("city", "district", "street"):
+        # tikai pilsēta/rajons — iela paliek listinga (ar mājas numuru; bp.street bez numura deva «Dzelzavas iela – 610 m²»
+        # priekšskatījumā, publicēšana lieto listinga ielu; Raimonds 2026-11-23)
+        for loc in ("city", "district"):
             if bp.get(loc):
                 Lp[loc] = bp[loc]
     sections = wp_templates.body_segments(sg, Lp, bp)

@@ -230,7 +230,8 @@ def build_investment_description(row_data: Dict[str, Any], result: Dict[str, Any
                 or (result or {}).get("investment_strategy") or "").strip()
     income = bool(_clean(row_data.get("investment_income")))
     if income:
-        blocks.append("Īpašums ir ienākumus nesošs komercaktīvs ar esošu īres plūsmu.")
+        # Raimonds 2026-11-23: pateikt, ka ir nomnieks (ne «ienākumus nesošs komercaktīvs ar esošu īres plūsmu»)
+        blocks.append("Īpašumā šobrīd ir nomnieks, kas nodrošina regulārus nomas ienākumus.")
     elif strat == "Distressed":
         blocks.append("Īpašums ir attīstāms komercaktīvs, kam tā potenciāla realizēšanai nepieciešami ieguldījumi.")
     else:  # Value-Add / Core / nezināms bez ienākumiem

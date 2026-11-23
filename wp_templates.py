@@ -519,10 +519,22 @@ def _split_sents(text) -> list[str]:
     return [x.strip() for x in parts if x.strip()]
 
 
+# Pārrakstīti šablona teikumi: vecais (aģenta labojuma anchor) → jaunais; labojums nepazūd (Dzelzavas 17, 2026-11-23)
+_SENT_ALIASES = {
+    "īpašums ir ienākumus nesošs komercaktīvs ar esošu īres plūsmu": "īpašumā šobrīd ir nomnieks, kas nodrošina regulārus nomas ienākumus",
+}
+
+
 def _norm_sent(s) -> str:
     """Teikuma normalizācija anchor-salīdzināšanai (atstarpes/reģistrs/gala punkts)."""
     s = re.sub(r"\s+", " ", str(s or "")).strip().lower()
-    return s.rstrip(".!?").strip()
+    s = s.rstrip(".!?").strip()
+    return _SENT_ALIASES.get(s, s)
+
+
+def _md_bold(html: str) -> str:
+    """Aģenta tekstā **treknraksts** (Markdown) → <strong> (Raimonds 2026-11-23)."""
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html) if "**" in html else html
 
 
 def _parse_segments(raw) -> list[dict]:
@@ -629,7 +641,7 @@ def _render_from_segs(segs: list[dict]) -> str:
     """_segs → HTML (tas pats formāts kā blocks-ceļā)."""
     html: list[str] = []
     for s in segs:
-        body = s["sep"].join(x for x in s["sents"] if x)
+        body = _md_bold(s["sep"].join(x for x in s["sents"] if x))
         k = s["kind"]
         if k == "B":
             html.append(f"<p>{_b(body)}</p>")
@@ -1169,10 +1181,10 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
             html.append(f"<p>{_b(val)}</p>")
         elif typ == "P":
             if val:
-                html.append(f"<p>{val}</p>")
+                html.append(f"<p>{_md_bold(val)}</p>")
         elif typ == "S":
             head, body = val  # type: ignore
-            html.append(f"<p>{_b(head)}<br>{body}</p>")
+            html.append(f"<p>{_b(head)}<br>{_md_bold(body)}</p>")
     return "".join(html)
 
 
