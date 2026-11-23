@@ -509,7 +509,14 @@ def _street_locative(s) -> str:
 _SECTION_LABELS = {
     "eka": "Par ēku", "telpa": "Par telpu",
     "priek": "Priekšrocības", "cena": "Par cenu",
+    "apraksts": "Apraksts",   # investīciju objekts: aģenta/AI apraksts
 }
+
+
+def _split_sents(text) -> list[str]:
+    """Rindkopa → teikumi (teksta būvētājam: pie katra var pierakstīt)."""
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-ZĀČĒĢĪĶĻŅŠŪŽ0-9])", str(text or "").strip())
+    return [x.strip() for x in parts if x.strip()]
 
 
 def _norm_sent(s) -> str:
@@ -691,34 +698,77 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
     # kopsavilkums + highlights; salika investment_ai.build_investment_description).
     # Plus aģenta apraksts (Agent_comment) papildu kontekstam. ──
     if sg == "Investīciju objekts":
-        # BEZ bold virsraksta (Raimonds 2026-07-05) — teksts sākas tieši ar
-        # "Tiek pārdots...". Rindkopas atdala "\n\n"; rindas "\n" → <br>.
-        def _paras(txt: str) -> list[str]:
-            out = []
-            for para in str(txt or "").split("\n\n"):
-                para = para.strip()
-                if para:
-                    out.append("<p>" + para.replace("\n", "<br>") + "</p>")
-            return out
-        # investment_description JAU iepin aģenta aprakstu (AI naratīvs vai fallback),
-        # tāpēc Agent_comment atsevišķi NErenderē — teksts saplūst vienā.
-        ihtml: list[str] = []
+        # Virsraksts treknā + teksta būvētāja sekcijas kā citiem sludinājumiem (Raimonds 2026-11-23: #1512 Dzelzavas 17
+        # — «teksts bez bold, nevar labot»; agrāk 2026-07-05 bija bez virsraksta). Teksts: investment_description
+        # (anketa/AI) vai no listinga laukiem (ss.lv skrāpēts, Biķernieku 162b 2026-11-19), sadalīts sekcijās:
+        # «Par ēku» (objekts, ēku saraksts, zeme, stratēģija, ēkas apraksts) / «Apraksts» (aģenta un AI teksts) /
+        # «Par cenu» (ienākumi, atdeve, cena).
+        addr_i = _street_nominative(g("street") or gb("full_address"))
+        head_i = ("Pārdod " if sale else "Iznomā ") + veids
+        dist_i = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
+        if dist_i:
+            head_i += " " + dist_i
+        if addr_i:
+            head_i += (f", {addr_i}" if dist_i else f" {addr_i}")
+        if area:
+            head_i += f" – {area} m²"
+        _seg("virsraksts", "B", [head_i])
         inv_txt = g("investment_description")
         if not str(inv_txt or "").strip():
-            # ss.lv skrāpēts sludinājums, ko AI klasificēja kā investīciju objektu — investment_description to
-            # neuzbūvē (tikai anketas ceļš) → mājaslapā bija tikai «Sazinieties ar mums» (Biķernieku 162b, 2026-11-19).
-            # Saliek to pašu šablonu no listinga laukiem (ēkas, zeme, ienākumi, stratēģija, aģenta apraksts) + ēkas apraksts.
             try:
                 import investment_ai
                 inv_txt = investment_ai.build_investment_description(L, {"Investiciju_strategija": g("Investiciju_strategija")})
             except Exception:
                 inv_txt = g("Agent_comment") or ""
-            bd = _clean_bdesc(g("Building_description")) or _clean_bdesc(gb("Building_description"))
-            if bd and bd not in str(inv_txt):
-                inv_txt = (str(inv_txt).rstrip() + "\n\n" + bd) if inv_txt else bd
-        ihtml += _paras(inv_txt)
-        ihtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢</p>")
-        return "".join(ihtml)
+        bd = _clean_bdesc(g("Building_description")) or _clean_bdesc(gb("Building_description"))
+        eka_s: list[str] = []
+        apr_s: list[str] = []
+        cena_s: list[str] = []
+        for para in str(inv_txt or "").split("\n\n"):
+            para = para.strip()
+            if not para:
+                continue
+            low = para.lower()
+            listy = "\n" in para or bool(re.match(r"^\d+\)", para))
+            sents = [para.replace("\n", "<br>")] if listy else _split_sents(para)
+            if listy or low.startswith(("tiek pārdots investīciju", "tiek iznomāts investīciju", "īpašumā ietilpst",
+                                        "zemes platība", "īpašums ir ")) or (bd and bd in para):
+                eka_s += sents
+            elif low.startswith(("īres ienākumi", "prognozētā atdeve")):
+                cena_s += sents
+            else:
+                apr_s += sents
+        if bd and not any(bd in x for x in eka_s + apr_s):
+            eka_s += _split_sents(bd)
+        # teikumam gala punkts (ēkas apraksts DB mēdz būt bez tā)
+        _dot = lambda xs: [x if ("<br>" in x or x[-1:] in ".!?:") else x + "." for x in xs]
+        eka_s, apr_s = _dot(eka_s), _dot(apr_s)
+        price_i = _num(L.get("price"))
+        if price_i:
+            if sale:
+                ppm2_i = None
+                try:
+                    ppm2_i = str(round(float(price_i) / float(area), 2)) if area else None
+                except (ValueError, ZeroDivisionError):
+                    ppm2_i = None
+                cena_s.append(f"Cena ir {_money_lv(price_i)} EUR" + (f" ({_money_lv(ppm2_i)} EUR/m²)" if ppm2_i else "") + ".")
+            else:
+                cena_s.append(f"Nomas maksa ir {_money_lv(price_i)} EUR mēnesī.")
+        _seg("eka", "P", eka_s)
+        _seg("apraksts", "P", apr_s)
+        extra_i = (g("Agent_text_extra") or "").strip()
+        for _para in extra_i.split("\n\n"):
+            _para = _para.strip()
+            if _para:
+                _seg(None, "P", [_para.replace("\n", "<br>")])
+        _seg("cena", "P", cena_s)
+        _seg(None, "P", ["Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢"])
+        if _segments_out is not None:
+            _segments_out.append(_segs)
+        segments_i = _parse_segments(L.get("Agent_text_segments"))
+        if segments_i:
+            _apply_segments(_segs, segments_i)
+        return _render_from_segs(_segs)
 
     # Ēkas konteksts (vajadzīgs gan virsrakstam, gan ievadam)
     addr_nom = _street_nominative(g("street") or gb("full_address"))  # virsraksta adrese
