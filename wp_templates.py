@@ -961,7 +961,9 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
                 else "klusā un reprezentablā darba vidē")
         intro.append(f"Telpas {atr} {fn}. stāvā, {vide}.")
     blocks.append(("P", " ".join(intro)))
-    _seg("eka", "P", intro, sep=" ")
+    # pārdošanā katrs būvētāja teikums savā rindā (kā investīciju objektam; Raimonds 2026-11-23 — nomai pagaidām rindkopa)
+    _sp = "<br>" if sale else " "
+    _seg("eka", "P", intro, sep=_sp)
 
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
     tech: list[str] = []
@@ -1098,7 +1100,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
             tech.append(f"Piemērotas arī {gen} vajadzībām.")
     if tech:
         blocks.append(("S", ("Telpu plānojums un tehniskais stāvoklis:", " ".join(tech))))
-        _seg("telpa", "S", tech, heading="Telpu plānojums un tehniskais stāvoklis:", sep=" ")
+        _seg("telpa", "S", tech, heading="Telpu plānojums un tehniskais stāvoklis:", sep=_sp)
 
     # 4. PRIEKŠROCĪBAS (ēkas līmenis; slieksnis: ≥1 īsta iespēja)
     bld = []
@@ -1127,7 +1129,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
     if real_amen >= 1 and bld:
         _priek_sent = _fut("Ēkā ir ", "Ēkā būs ") + _join_lv(bld) + "."
         blocks.append(("S", ("Priekšrocības:", _priek_sent)))
-        _seg("priek", "S", [_priek_sent], heading="Priekšrocības:", sep=" ")
+        _seg("priek", "S", [_priek_sent], heading="Priekšrocības:", sep=_sp)
 
     # 4.5. PAPILDU TEKSTS (Raimonds 2026-07-28) — aģenta manuālais brīvteksts
     # (listings.Agent_text_extra, panelī "Papildu teksts sludinājumā"). Šablons to
@@ -1217,7 +1219,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
     if _segments_out is not None:
         _segments_out.append(copy.deepcopy(_segs))
     segments = _parse_segments(L.get("Agent_text_segments"))
-    if segments:
+    if segments or sale:
         _apply_segments(_segs, segments)
         return _render_from_segs(_segs)
 
