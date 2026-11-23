@@ -776,12 +776,17 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
         dist = _location_phrase(g("district") or gb("district"), g("city") or gb("city"))
         if dist:
             head_z += " " + dist
-        zhtml = [f"<p>{_b(head_z)}</p>"]
-        desc = g("land_description")
-        if desc:
-            zhtml.append(f"<p>{desc}</p>")
-        zhtml.append("<p>Sazinieties ar mums, lai uzzinātu vairāk par šo zemes gabalu. 🌳</p>")
-        return "".join(zhtml)
+        # teksta būvētājs arī zemei (Raimonds 2026-11-23: «jebkuram tipam vajag opciju izlabot tekstu»)
+        _seg("virsraksts", "B", [head_z])
+        _seg("apraksts", "P", _split_sents(g("land_description") or ""), sep=("P" if sale else " "))
+        for _para in (g("Agent_text_extra") or "").strip().split("\n\n"):
+            if _para.strip():
+                _seg(None, "P", [_para.strip().replace("\n", "<br>")])
+        _seg(None, "P", ["Sazinieties ar mums, lai uzzinātu vairāk par šo zemes gabalu. 🌳"])
+        if _segments_out is not None:
+            _segments_out.append(copy.deepcopy(_segs))
+        _apply_segments(_segs, _parse_segments(L.get("Agent_text_segments")))
+        return _render_from_segs(_segs)
 
     # ── INVESTĪCIJU OBJEKTS (Raimonds 2026-07-05) — teksts no AI uzrakstītā
     # investment_description (intro + ēku saraksts + finanšu skaitļi + investīciju
