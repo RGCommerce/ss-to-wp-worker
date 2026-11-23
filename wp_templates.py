@@ -556,8 +556,9 @@ def _parse_segments(raw) -> list[dict]:
         if not isinstance(it, dict):
             continue
         text = str(it.get("text") or "").strip()
-        if not text:
-            continue
+        position_ = str(it.get("position") or "after").strip().lower()
+        if not text and position_ != "replace":
+            continue   # tukšs pieraksts = nekas; tukšs «replace» = teikums IZDZĒSTS (Raimonds 2026-11-23)
         si = it.get("sent_index")
         out.append({
             "section": str(it.get("section") or "").strip(),
@@ -594,7 +595,21 @@ def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
         for i, s in enumerate(sents):
             if _norm_sent(s) == anchor:
                 return i
+        # vecais anchor = vairāki tagadējie teikumi (sadalīts) vai tagadējais teikums garāks (apvienots)
+        for i, s in enumerate(sents):
+            ns = _norm_sent(s)
+            if len(ns) >= 12 and (ns in anchor or anchor in ns):
+                return i
         return None
+
+    def _covered(sents, anchor, idx):
+        """Pārējie teikumi, kas ietilpst vecajā (apvienotajā) anchor — replace tos arī noņem."""
+        out = []
+        for i, s in enumerate(sents):
+            ns = _norm_sent(s)
+            if i != idx and len(ns) >= 12 and ns in anchor and ns != anchor:
+                out.append(i)
+        return out
 
     inserts = [s for s in segments if s["position"] != "replace"]
     replaces = [s for s in segments if s["position"] == "replace"]
@@ -627,9 +642,12 @@ def _apply_segments(segs: list[dict], segments: list[dict]) -> None:
         target = by_sid.get(seg["section"])
         if target is None:
             continue
-        idx = _match(target["sents"], _norm_sent(seg["anchor_text"]))
+        anchor = _norm_sent(seg["anchor_text"])
+        idx = _match(target["sents"], anchor)
         if idx is not None:
-            target["sents"][idx] = seg["text"]
+            for j in _covered(target["sents"], anchor, idx):
+                target["sents"][j] = ""
+            target["sents"][idx] = seg["text"]   # "" = izdzēsts
 
     if orphans:
         ci = next((i for i, s in enumerate(segs) if s.get("sid") == "cena"), len(segs))
@@ -670,11 +688,12 @@ def _render_from_segs(segs: list[dict]) -> str:
     for s in segs:
         body = _md_bold(_join_sents([x for x in s["sents"] if x], s["sep"]))
         k = s["kind"]
+        if not body:
+            continue   # viss izdzēsts → sadaļas nav (arī virsraksta)
         if k == "B":
             html.append(f"<p>{_b(body)}</p>")
         elif k == "P":
-            if body:
-                html.append(f"<p>{body}</p>")
+            html.append(f"<p>{body}</p>")
         elif k == "S":
             html.append(f"<p>{_b(s['heading'])}<br>{body}</p>")
     return "".join(html)
