@@ -682,10 +682,42 @@ def _join_sents(sents: list[str], sep: str) -> str:
     return out
 
 
+def _paras_from_sents(sents: list[str]) -> list[str]:
+    """Rindkopu režīms (Raimonds 2026-11-23: «katra rinda, kur ir labot/pierakstīt, ir sava rindkopa ar atstarpi, it kā
+    būtu Enter»). Teikumā: viens Enter = jauna rinda (<br>), tukša rinda = jauna rindkopa."""
+    _edge = re.compile(r"^(\s*<br>\s*)+|(\s*<br>\s*)+$")
+    is_item = lambda x: bool(re.match(r"^(\d+\)|[-–•]\s)", x))
+    paras: list[str] = []
+    prev = None
+    for raw in sents:
+        for k, chunk in enumerate(re.split(r"(?:\s*<br>\s*){2,}", str(raw or ""))):
+            x = _edge.sub("", chunk).strip()
+            if not x:
+                continue
+            glue = (k == 0 and paras and prev is not None
+                    and (prev.endswith(":") or (is_item(x) and (is_item(prev) or prev.endswith(":")))))
+            if glue:
+                paras[-1] += "<br>" + x
+            else:
+                paras.append(x)
+            prev = x.split("<br>")[-1]
+    return paras
+
+
 def _render_from_segs(segs: list[dict]) -> str:
     """_segs → HTML (tas pats formāts kā blocks-ceļā)."""
     html: list[str] = []
     for s in segs:
+        if s.get("sep") == "P":
+            paras = [_md_bold(x) for x in _paras_from_sents([x for x in s["sents"] if x])]
+            if not paras:
+                continue
+            if s["kind"] == "S":
+                paras[0] = f"{_b(s['heading'])}<br>{paras[0]}"
+            elif s["kind"] == "B":
+                paras = [_b(x) for x in paras]
+            html += [f"<p>{x}</p>" for x in paras]
+            continue
         body = _md_bold(_join_sents([x for x in s["sents"] if x], s["sep"]))
         k = s["kind"]
         if not body:
@@ -813,8 +845,8 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
             else:
                 cena_s.append(f"Nomas maksa ir {_money_lv(price_i)} EUR mēnesī.")
         # katrs būvētāja teikums savā rindā (kā Enter), Raimonds 2026-11-23
-        _seg("eka", "P", eka_s, sep="<br>")
-        _seg("apraksts", "P", apr_s, sep="<br>")
+        _seg("eka", "P", eka_s, sep="P")
+        _seg("apraksts", "P", apr_s, sep="P")
         extra_i = (g("Agent_text_extra") or "").strip()
         for _para in extra_i.split("\n\n"):
             _para = _para.strip()
@@ -962,7 +994,7 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
         intro.append(f"Telpas {atr} {fn}. stāvā, {vide}.")
     blocks.append(("P", " ".join(intro)))
     # pārdošanā katrs būvētāja teikums savā rindā (kā investīciju objektam; Raimonds 2026-11-23 — nomai pagaidām rindkopa)
-    _sp = "<br>" if sale else " "
+    _sp = "P" if sale else " "
     _seg("eka", "P", intro, sep=_sp)
 
     # 3. TELPU PLĀNOJUMS UN TEHNISKAIS STĀVOKLIS
