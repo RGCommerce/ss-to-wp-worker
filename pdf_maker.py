@@ -281,21 +281,57 @@ def _facts(listing: dict, bp: dict) -> list[tuple[str, str]]:
 # Bildes — fasāde pirmā, plāns izlaists; downscale pirms iegulšanas
 # ---------------------------------------------------------------------------
 
-def _ordered_images(listing_id: int) -> list[Path]:
-    """ai_ready bildes, sakārtotas fasāde→interjers→cits, plāns IZLAISTS."""
+_IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _ordered_images(listing_id: int, listing: Optional[dict] = None) -> list[Path]:
+    """ai_ready bildes TĀDĀ PAŠĀ secībā kā mājaslapā (publish_to_wp._split_by_manifest):
+    viena fasāde (★ galvenā) pirmā → interjers → pārējās fasādes → cits; plāni IZLAISTI;
+    manuālā secība (manifestā `__manual_order__`) tiek respektēta.
+    Bug (Raimonds 2026-11-25, #112476): agrāk glob tikai «img_*.jpg» → .jpeg bildes (t.sk. ★)
+    PDF nemaz nenonāca un titulbilde atšķīrās no mājaslapas galvenās."""
     ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
-    if not ai_dir.is_dir():
+    imgs: list[Path] = []
+    rel = (listing or {}).get("local_image_paths_processed") if listing else None
+    if rel:
+        imgs = [STORAGE_ROOT / r for r in rel]
+        imgs = [p for p in imgs if p.is_file() and p.suffix.lower() in _IMG_EXTS]
+    if not imgs and ai_dir.is_dir():
+        imgs = sorted(p for p in ai_dir.glob("img_*")
+                      if p.is_file() and p.suffix.lower() in _IMG_EXTS)
+    if not imgs:
         return []
-    imgs = sorted(ai_dir.glob("img_*.jpg"))
     try:
         manifest = image_classify.load_manifest(STORAGE_ROOT, listing_id)
     except Exception:
         manifest = {}
-    order = {"fasade": 0, "interjers": 1, "cits": 2}
-    gallery = [p for p in imgs
-               if (manifest.get(p.name) or {}).get("type") != "plans"]
-    gallery.sort(key=lambda p: order.get(
-        (manifest.get(p.name) or {}).get("type", "interjers"), 1))
+    if not isinstance(manifest, dict):
+        manifest = {}
+
+    def _t(p: Path) -> str:
+        return (manifest.get(p.name) or {}).get("type", "interjers")
+
+    gallery = [p for p in imgs if _t(p) != "plans"]
+    if not gallery:
+        return []
+    first_fas = next((p for p in gallery if _t(p) == "fasade"), None)
+    if not manifest.get("__manual_order__"):
+        def _key(pair: tuple[int, Path]) -> tuple[int, int]:
+            i, p = pair
+            t = _t(p)
+            if p is first_fas:
+                grp = 0
+            elif t == "interjers":
+                grp = 1
+            elif t == "fasade":
+                grp = 2
+            else:
+                grp = 3
+            return (grp, i)
+        gallery = [p for _i, p in sorted(enumerate(gallery), key=_key)]
+    elif first_fas is not None:
+        # Manuālā secība: galerija paliek, bet titulbilde = ★ (pirmā fasāde), kā WP featured_media
+        gallery = [first_fas] + [p for p in gallery if p is not first_fas]
     return gallery
 
 
@@ -483,7 +519,7 @@ def build_html(listing: dict, bp: dict, listing_id: int,
     land = _num(listing.get("Zemes_gabals_m2"))
 
     # ---- Bildes (downscale) ----
-    imgs = _ordered_images(listing_id)
+    imgs = _ordered_images(listing_id, listing)
     hero = _data_uri(imgs[0], 1900, 84) if imgs else ""
     gallery_imgs = imgs[1:] if len(imgs) > 1 else []
 
@@ -648,7 +684,7 @@ def _ensure_ai_ready(listing_id: int) -> None:
     + classify (gpt-4o-mini). ~3-8 min, $0.20-0.60.
     """
     ai_dir = STORAGE_ROOT / "listings" / str(listing_id) / "ai_ready"
-    if ai_dir.is_dir() and any(ai_dir.glob("img_*.jpg")):
+    if ai_dir.is_dir() and any(p.suffix.lower() in _IMG_EXTS for p in ai_dir.glob("img_*")):
         return  # cache hit
 
     print(f"[pdf_maker] AI bildes vēl nav listingam {listing_id}, "
