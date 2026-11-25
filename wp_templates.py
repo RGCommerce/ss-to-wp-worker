@@ -859,13 +859,14 @@ def render_body(space_group: str, listing: dict, bp: Optional[dict] = None,
                 cena_s.append(f"Nomas maksa ir {_money_lv(price_i)} EUR mēnesī.")
         # katrs būvētāja teikums savā rindā (kā Enter), Raimonds 2026-11-23
         _seg("eka", "P", eka_s, sep="P")
-        _seg("apraksts", "P", apr_s, sep="P")
+        # Sadaļu virsraksti treknā kā parastajam šablonam (Raimonds 2026-11-25, #112476: «smuki pa daļām»)
+        _seg("apraksts", "S", apr_s, heading="Par īpašumu:", sep="P")
         extra_i = (g("Agent_text_extra") or "").strip()
         for _para in extra_i.split("\n\n"):
             _para = _para.strip()
             if _para:
                 _seg(None, "P", [_para.replace("\n", "<br>")])
-        _seg("cena", "P", cena_s, sep="<br>")
+        _seg("cena", "S", cena_s, heading=("Pārdošanas nosacījumi:" if sale else "Nomas nosacījumi:"), sep="<br>")
         _seg(None, "P", ["Sazinieties ar mums, lai uzzinātu vairāk par šo investīciju objektu. 🏢"])
         if _segments_out is not None:
             _segments_out.append(copy.deepcopy(_segs))
