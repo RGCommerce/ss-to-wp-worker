@@ -535,8 +535,15 @@ def _norm_sent(s) -> str:
 
 
 def _md_bold(html: str) -> str:
-    """Aģenta tekstā **treknraksts** (Markdown) → <strong> (Raimonds 2026-11-23)."""
-    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html) if "**" in html else html
+    """Aģenta tekstā Markdown marķieri → HTML (būvētāja rīkjosla, Raimonds 2026-11-23/25):
+    **trekns**, *slīps*, __pasvītrots__, ~~pārsvītrots~~; rinda «- x» = saraksta rinda (paliek ar defisi)."""
+    if not any(m in html for m in ("**", "*", "__", "~~")):
+        return html
+    html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
+    html = re.sub(r"__(.+?)__", r"<u>\1</u>", html)
+    html = re.sub(r"~~(.+?)~~", r"<s>\1</s>", html)
+    html = re.sub(r"(?<![\w*])\*(?!\s)([^*<>]+?)(?<!\s)\*(?![\w*])", r"<em>\1</em>", html)
+    return html
 
 
 def _parse_segments(raw) -> list[dict]:
