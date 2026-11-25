@@ -508,6 +508,7 @@ def _street_locative(s) -> str:
 # ja visa daļa pazūd → <p> pirms cenas. Sekciju id: eka/telpa/priek/cena.
 # Darbība = $0 (deterministisks, bez AI). render_body no-segmentu ceļš NEMAINĀS.
 _SECTION_LABELS = {
+    "virsraksts": "Virsraksts",   # arī virsrakstu var labot (Raimonds 2026-11-25: «vienmēr var salabot arī titulu»)
     "eka": "Par ēku", "telpa": "Par telpu",
     "priek": "Priekšrocības", "cena": "Par cenu",
     "apraksts": "Apraksts",   # investīciju objekts: aģenta/AI apraksts
