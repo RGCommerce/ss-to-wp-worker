@@ -43,6 +43,7 @@ except Exception:
     pass
 
 sys.path.insert(0, str(Path(__file__).parent))
+from wp_templates import _VEIDS as _WP_VEIDS  # noqa: E402  (tipi, ko teksta šablons pazīst)
 from wp_templates import (render_body, _floor as _clean_floor,  # noqa: E402
                           _street_nominative, _cap)
 import image_classify  # noqa: E402
@@ -96,6 +97,10 @@ _VEIDS = {
     "Noliktava": "Noliktavas telpas", "Ražošana": "Ražošanas telpas",
     "Medicīna": "Medicīnas telpas", "Restorans/Cafe": "Ēdināšanas telpas",
     "Studija": "Studijas telpas", "Autoserviss": "Autoservisa telpas",
+    # 2026-11-25 (Raimonds, #112476): trūka → PDF teksts gāja pa «Birojs» šablonu
+    "Sporta zāle": "Sporta telpas", "PVD": "Pārtikas ražošanas telpas",
+    "StockOfiss": "Noliktavas-biroja telpas", "Zeme": "Zemes gabals",
+    "Investīciju objekts": "Investīciju objekts",
 }
 
 # Vērtības, kuras uzskatām par "tukšām" (nerādām faktos)
@@ -526,7 +531,9 @@ def build_html(listing: dict, bp: dict, listing_id: int,
     # ---- Apraksts — tas pats render_body teksts ----
     # listing + bp ATSEVIŠĶI: street no listing = pilns "Stirnu 25";
     # bp.street = "Stirnu" (numurs atsevišķi house_number) → NEpārrakstīt.
-    desc_html = render_body(sg if sg in _VEIDS else "Birojs", listing, bp)
+    # Teksts pa TO PAŠU šablonu kā mājaslapā: tips, ko wp_templates pazīst (t.sk. Investīciju objekts / Zeme),
+    # citādi «Birojs». Agrāk pārbaude pret PDF savu sarakstu → investīciju objektam biroja teksts (#112476).
+    desc_html = render_body(sg if sg in _WP_VEIDS else "Birojs", listing, bp)
 
     # ---- Agents ----
     # PDF kontakts = ielogotais lietotājs (agent_id), ja atpazīts; citādi vecais
