@@ -1541,7 +1541,8 @@ def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: 
     if not like or area is None:
         return []
     rows = conn.execute(
-        """SELECT id, street, area_m2, floor, price, link, is_agent, date_posted, last_updated, skip_reason, phone_numbers
+        """SELECT id, street, area_m2, floor, price, link, is_agent, date_posted, last_updated, skip_reason, phone_numbers,
+                  first_seen_at, republish_count
              FROM properties.scrape_inbox
             WHERE translate(lower(street),'āēīōūčšžģķļņŗ','aeiouczsgklnr') ~ %s
               AND (%s = '' OR lower(coalesce(city,'')) LIKE %s)
@@ -1573,6 +1574,9 @@ def _inbox_candidates(conn, street: str, city: Optional[str], floor: str, area: 
                     "price": r["price"], "link": r["link"], "is_agent": str(r["is_agent"]).lower() == "true",
                     "phone": r.get("phone_numbers"),
                     "last_updated": str(r["last_updated"])[:10] if r["last_updated"] else None,
+                    "first_seen": str(r.get("first_seen_at") or "")[:10] or None,
+                    "date_posted": str(r.get("date_posted") or "")[:10] or None,
+                    "republish": r.get("republish_count"),
                     "same_room_score": round(score, 2), "floor_ok": floor_ok,
                     "via_alt_area": None if primary else alt_hit})
     # score, tad īpašnieks pirms aģenta, tad jaunākais (Raimonds 2026-10-26: «rāda to, kas nav aģents, ja tāds ir»)
@@ -2567,10 +2571,11 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
         for u in addr.get("units") or []:
             facts = _clean_unit_facts((unit_fields.get(str(u["idx"])) or {}).get("facts"))
             potential = list(u.get("_potential") or [])
+            comment = str((unit_fields.get(str(u["idx"])) or {}).get("comment") or "").strip()[:4000]
             dec = str(unit_dec.get(str(u["idx"]), u.get("decision")) or "")
             if dec == "keep" and u.get("facts_diff"):
                 facts = {}   # «jau ir DB — nemainīt» = partnera piezīmju faktus neraksta pāri
-            if not facts and not potential:
+            if not facts and not potential and not comment:
                 continue
             lid = None
             try:
@@ -2583,6 +2588,15 @@ def _apply_facts_after(conn, report: dict, result: dict, prev: dict, prev_create
                     continue
                 _apply_unit_facts(conn, lid, facts)
                 _apply_potential(conn, lid, potential)
+                if comment:
+                    # aģenta komentārs importa stadijā («neesmu drošs, vai šis ir īstais birojs…») → sludinājuma
+                    # komentārs (panelī pie sludinājuma, mājaslapā neiet); atkārtoti apstiprinot nedublē
+                    dup = conn.execute("SELECT 1 FROM properties.notes WHERE kind='listing_comment' AND listing_id=%s AND body=%s LIMIT 1",
+                                       (lid, comment)).fetchone()
+                    if not dup:
+                        conn.execute("INSERT INTO properties.notes (kind, listing_id, body, agent) VALUES ('listing_comment', %s, %s, %s)",
+                                     (lid, comment, requested_by))
+                        conn.commit()
             except Exception as e:
                 try:
                     conn.rollback()
@@ -3929,6 +3943,9 @@ def unit_image_candidates(intake_id: str, idx: str, prepare: bool = False, pick:
     out["sslv_candidates"] = [{"link": c["link"], "url": c["link"] if c["link"].startswith("http") else f"https://www.{c['link']}",
                                "area_m2": c.get("area_m2"), "floor": c.get("floor"), "price": c.get("price"),
                                "is_agent": bool(c.get("is_agent")), "from_email": bool(c.get("from_email")), "own": bool(c.get("own")),
+                               # «no kurienes bildes» (Raimonds 2026-11-28): numurs, kopš kura laika ss.lv, pēdējoreiz redzēts, pārpublicēts
+                               "phone": c.get("phone"), "first_seen": c.get("first_seen"), "date_posted": c.get("date_posted"),
+                               "last_updated": c.get("last_updated"), "republish": c.get("republish"), "inbox_id": c.get("inbox_id"),
                                "score": c.get("same_room_score"), "n": len(cache.get(c["link"]) or []) if c["link"] in cache and isinstance(cache.get(c["link"]), list) else None}
                               for c in cands[:5]]
     pick = _bare_sslv(pick)
